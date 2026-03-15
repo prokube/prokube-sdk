@@ -167,7 +167,7 @@ class SandboxClient:
         )
         response = self._http.post(
             f"{self._sandbox_path(name)}/exec",
-            json=request.model_dump(by_alias=True, exclude_none=True),
+            json=request.model_dump(exclude_none=True),
         )
         return CodeResult(
             stdout=response.get("stdout", ""),
@@ -205,7 +205,7 @@ class SandboxClient:
         )
         response = self._http.post(
             f"{self._sandbox_path(name)}/exec",
-            json=request.model_dump(by_alias=True),
+            json=request.model_dump(),
         )
         return CommandResult(
             stdout=response.get("stdout", ""),

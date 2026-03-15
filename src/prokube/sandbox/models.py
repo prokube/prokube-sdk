@@ -77,16 +77,12 @@ class ExecRequest(BaseModel):
 
     code: str = Field(..., description="Code or command to execute")
     use_jupyter: bool = Field(
-        default=True,
-        serialization_alias="useJupyter",
-        description="Use Jupyter kernel (stateful) vs shell",
+        default=True, description="Use Jupyter kernel (stateful) vs shell"
     )
     timeout: int = Field(default=300, description="Timeout in seconds")
     language: str = Field(default="python", description="Language for Jupyter kernel")
     session_id: str | None = Field(
-        default=None,
-        serialization_alias="sessionId",
-        description="Session ID for stateful Jupyter execution",
+        default=None, description="Session ID for stateful Jupyter execution"
     )
 
 
