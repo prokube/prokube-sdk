@@ -157,6 +157,7 @@ class Sandbox:
             >>> sbx.reset_session()
             >>> result = sbx.run_code("print(x)")  # NameError: x is not defined
         """
+        self._check_not_killed()
         self._code.reset_session()
 
     @property
