@@ -24,6 +24,17 @@ class TestParseVersion:
         """Test parsing single-part version (normalized to 3 parts)."""
         assert parse_version("1") == (1, 0, 0)
 
+    def test_version_with_v_prefix(self):
+        """Test parsing version with v prefix."""
+        assert parse_version("v0.1.0") == (0, 1, 0)
+        assert parse_version("V1.2.3") == (1, 2, 3)
+
+    def test_version_with_rc_suffix(self):
+        """Test parsing version with rc/beta suffix in component."""
+        assert parse_version("1.2.3rc1") == (1, 2, 3)
+        assert parse_version("1.2.3beta2") == (1, 2, 3)
+        assert parse_version("1.2.0a1") == (1, 2, 0)
+
 
 class TestGetSdkVersion:
     """Tests for get_sdk_version function."""

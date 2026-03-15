@@ -18,16 +18,26 @@ def parse_version(version_string: str) -> tuple[int, int, int]:
     """Parse a version string into a normalized (major, minor, patch) tuple.
 
     Args:
-        version_string: Version string like "1.2.3", "0.1", or "0.1.0-dev".
+        version_string: Version string like "1.2.3", "v0.1", "0.1.0-dev", or "1.2.3rc1".
 
     Returns:
         Tuple of (major, minor, patch) version numbers, e.g., (1, 2, 3).
         Missing components are defaulted to 0 (e.g., "0.1" -> (0, 1, 0)).
     """
-    # Remove any suffix like "-dev", "-alpha", etc.
-    clean_version = version_string.split("-")[0].split("+")[0]
+    import re
+
+    # Remove v prefix if present
+    clean_version = version_string.lstrip("vV")
+    # Remove any suffix like "-dev", "-alpha", "+build", etc.
+    clean_version = clean_version.split("-")[0].split("+")[0]
     parts = clean_version.split(".")
-    version_parts = [int(p) for p in parts if p.isdigit()]
+
+    version_parts: list[int] = []
+    for p in parts:
+        # Extract leading numeric portion (handles "3rc1" -> 3)
+        match = re.match(r"(\d+)", p)
+        if match:
+            version_parts.append(int(match.group(1)))
 
     # Normalize to exactly 3 components (major, minor, patch)
     while len(version_parts) < 3:

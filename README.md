@@ -98,7 +98,7 @@ The main class for interacting with sandboxes.
 class Sandbox:
     name: str           # Sandbox name
     workspace: str      # Workspace (Kubernetes namespace)
-    status: str         # Pending, Running, Succeeded, Failed
+    status: str         # Pending, Running, Bound, Succeeded, Failed, Unknown
     
     @classmethod
     def from_pool(cls, pool: str, **config) -> Sandbox:

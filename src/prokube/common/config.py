@@ -11,7 +11,9 @@ class Config:
     """Configuration for prokube SDK.
 
     Configuration can be provided explicitly or via environment variables:
-    - PROKUBE_API_URL: Base URL for the prokube API
+    - PROKUBE_API_URL: Base URL for the prokube API (e.g., "https://prokube.ai/pkui").
+      Can include a path prefix; the SDK appends "/api/..." paths to this URL.
+      Do NOT include "/api" in this URL - use the base UI URL instead.
     - PROKUBE_WORKSPACE: Workspace (Kubernetes namespace)
     - PROKUBE_USER_ID: User ID for authentication
     - PROKUBE_TIMEOUT: Default timeout in seconds (default: 300)
