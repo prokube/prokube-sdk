@@ -1,0 +1,167 @@
+"""Base HTTP client for prokube SDK."""
+
+from __future__ import annotations
+
+from typing import Any
+
+import httpx
+
+from prokube.common.auth import get_auth_headers
+from prokube.common.config import Config
+from prokube.common.exceptions import ProKubeError, SandboxNotFoundError
+
+
+class HttpClient:
+    """HTTP client for making requests to the prokube API."""
+
+    def __init__(self, config: Config) -> None:
+        """Initialize HTTP client.
+
+        Args:
+            config: SDK configuration.
+        """
+        self.config = config
+        self._client: httpx.Client | None = None
+
+    @property
+    def client(self) -> httpx.Client:
+        """Get or create the httpx client."""
+        if self._client is None:
+            self._client = httpx.Client(
+                base_url=self.config.api_url,
+                headers=get_auth_headers(self.config),
+                timeout=self.config.timeout,
+            )
+        return self._client
+
+    def close(self) -> None:
+        """Close the HTTP client."""
+        if self._client is not None:
+            self._client.close()
+            self._client = None
+
+    def get(self, path: str, **kwargs: Any) -> dict[str, Any]:
+        """Make a GET request.
+
+        Args:
+            path: API path (will be joined with base_url).
+            **kwargs: Additional arguments to pass to httpx.
+
+        Returns:
+            JSON response as dictionary.
+
+        Raises:
+            SandboxNotFoundError: If resource is not found (404).
+            ProKubeError: For other HTTP errors.
+        """
+        response = self.client.get(path, **kwargs)
+        return self._handle_response(response)
+
+    def post(self, path: str, **kwargs: Any) -> dict[str, Any]:
+        """Make a POST request.
+
+        Args:
+            path: API path (will be joined with base_url).
+            **kwargs: Additional arguments to pass to httpx.
+
+        Returns:
+            JSON response as dictionary.
+
+        Raises:
+            SandboxNotFoundError: If resource is not found (404).
+            ProKubeError: For other HTTP errors.
+        """
+        response = self.client.post(path, **kwargs)
+        return self._handle_response(response)
+
+    def delete(self, path: str, **kwargs: Any) -> dict[str, Any] | None:
+        """Make a DELETE request.
+
+        Args:
+            path: API path (will be joined with base_url).
+            **kwargs: Additional arguments to pass to httpx.
+
+        Returns:
+            JSON response as dictionary, or None if no content.
+
+        Raises:
+            SandboxNotFoundError: If resource is not found (404).
+            ProKubeError: For other HTTP errors.
+        """
+        response = self.client.delete(path, **kwargs)
+        if response.status_code == 204:
+            return None
+        return self._handle_response(response)
+
+    def get_bytes(self, path: str, **kwargs: Any) -> bytes:
+        """Make a GET request and return raw bytes.
+
+        Args:
+            path: API path (will be joined with base_url).
+            **kwargs: Additional arguments to pass to httpx.
+
+        Returns:
+            Raw response bytes.
+
+        Raises:
+            SandboxNotFoundError: If resource is not found (404).
+            ProKubeError: For other HTTP errors.
+        """
+        response = self.client.get(path, **kwargs)
+        self._check_status(response)
+        return response.content
+
+    def post_bytes(self, path: str, content: bytes, **kwargs: Any) -> dict[str, Any]:
+        """Make a POST request with raw bytes.
+
+        Args:
+            path: API path (will be joined with base_url).
+            content: Raw bytes to send.
+            **kwargs: Additional arguments to pass to httpx.
+
+        Returns:
+            JSON response as dictionary.
+
+        Raises:
+            SandboxNotFoundError: If resource is not found (404).
+            ProKubeError: For other HTTP errors.
+        """
+        response = self.client.post(path, content=content, **kwargs)
+        return self._handle_response(response)
+
+    def _handle_response(self, response: httpx.Response) -> dict[str, Any]:
+        """Handle HTTP response and return JSON.
+
+        Args:
+            response: HTTP response object.
+
+        Returns:
+            JSON response as dictionary.
+
+        Raises:
+            SandboxNotFoundError: If resource is not found (404).
+            ProKubeError: For other HTTP errors.
+        """
+        self._check_status(response)
+        return response.json()
+
+    def _check_status(self, response: httpx.Response) -> None:
+        """Check response status and raise appropriate errors.
+
+        Args:
+            response: HTTP response object.
+
+        Raises:
+            SandboxNotFoundError: If resource is not found (404).
+            ProKubeError: For other HTTP errors.
+        """
+        if response.status_code == 404:
+            raise SandboxNotFoundError(f"Resource not found: {response.url}")
+        if response.status_code >= 400:
+            try:
+                error_detail = response.json().get("detail", response.text)
+            except Exception:
+                error_detail = response.text
+            raise ProKubeError(
+                f"API request failed ({response.status_code}): {error_detail}"
+            )
