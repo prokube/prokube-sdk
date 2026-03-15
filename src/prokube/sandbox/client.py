@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 from typing import TYPE_CHECKING
 
+from prokube.common.compat import check_backend_compatibility
 from prokube.common.http import HttpClient
 from prokube.sandbox.models import (
     ClaimRequest,
@@ -25,14 +26,18 @@ if TYPE_CHECKING:
 class SandboxClient:
     """Client for sandbox API operations."""
 
-    def __init__(self, config: Config) -> None:
+    def __init__(self, config: Config, check_version: bool = True) -> None:
         """Initialize sandbox client.
 
         Args:
             config: SDK configuration.
+            check_version: Whether to check backend version compatibility.
         """
         self.config = config
         self._http = HttpClient(config)
+
+        if check_version:
+            check_backend_compatibility(self._http)
 
     def close(self) -> None:
         """Close the client."""
