@@ -163,7 +163,9 @@ class SandboxClient:
             stdout=response.get("stdout", ""),
             stderr=response.get("stderr", ""),
             success=response.get("success", False),
-            execution_time_ms=response.get("execution_time_ms", 0),
+            execution_time_ms=response.get(
+                "durationMs", response.get("execution_time_ms", 0)
+            ),
             error_name=response.get("error_name"),
             error_value=response.get("error_value"),
             traceback=response.get("traceback"),
@@ -198,8 +200,8 @@ class SandboxClient:
         return CommandResult(
             stdout=response.get("stdout", ""),
             stderr=response.get("stderr", ""),
-            exit_code=response.get("exit_code", -1),
-            duration_ms=response.get("duration_ms", 0),
+            exit_code=response.get("exitCode", response.get("exit_code", -1)),
+            duration_ms=response.get("durationMs", response.get("duration_ms", 0)),
         )
 
     def write_file(self, name: str, path: str, content: bytes) -> None:
@@ -212,7 +214,7 @@ class SandboxClient:
         """
         request = FileWriteRequest(
             path=path,
-            content_base64=base64.b64encode(content).decode("ascii"),
+            content=base64.b64encode(content).decode("ascii"),
         )
         self._http.post(
             f"{self._sandbox_path(name)}/files",

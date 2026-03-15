@@ -173,7 +173,7 @@ class TestRequestModels:
         """Test FileWriteRequest."""
         req = FileWriteRequest(
             path="/workspace/test.txt",
-            content_base64="aGVsbG8gd29ybGQ=",  # "hello world"
+            content="aGVsbG8gd29ybGQ=",  # "hello world" base64-encoded
         )
         assert req.path == "/workspace/test.txt"
-        assert req.content_base64 == "aGVsbG8gd29ybGQ="
+        assert req.content == "aGVsbG8gd29ybGQ="

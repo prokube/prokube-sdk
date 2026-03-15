@@ -102,4 +102,4 @@ class FileWriteRequest(BaseModel):
     """Request to write a file to sandbox."""
 
     path: str = Field(..., description="Path where to write the file")
-    content_base64: str = Field(..., description="Base64-encoded file content")
+    content: str = Field(..., description="Base64-encoded file content")
