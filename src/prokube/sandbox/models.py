@@ -61,6 +61,13 @@ class CodeResult(BaseModel):
         default=None, description="Session ID for stateful execution"
     )
 
+    @property
+    def output(self) -> str:
+        """Combined stdout and stderr for convenience."""
+        if self.stdout and self.stderr:
+            return f"{self.stdout}\n{self.stderr}"
+        return self.stdout or self.stderr
+
 
 class FileInfo(BaseModel):
     """Information about a file in the sandbox."""
