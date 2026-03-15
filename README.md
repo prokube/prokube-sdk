@@ -66,7 +66,7 @@ Configuration can be provided via environment variables or explicitly:
 
 ```bash
 export PROKUBE_API_URL=https://prokube.ai/pkui
-export PROKUBE_NAMESPACE=my-namespace
+export PROKUBE_WORKSPACE=my-workspace
 export PROKUBE_USER_ID=user@example.com  # Optional, auto-detected in-cluster
 export PROKUBE_TIMEOUT=300  # Optional, default 300 seconds
 ```
@@ -79,7 +79,7 @@ from prokube.sandbox import Sandbox
 sbx = Sandbox.from_pool(
     pool="python-pool",
     api_url="https://prokube.ai/pkui",
-    namespace="my-namespace",
+    workspace="my-workspace",
     user_id="user@example.com",
 )
 ```
@@ -93,7 +93,7 @@ The main class for interacting with sandboxes.
 ```python
 class Sandbox:
     name: str           # Sandbox name
-    namespace: str      # Kubernetes namespace
+    workspace: str      # Workspace (Kubernetes namespace)
     status: str         # Pending, Running, Succeeded, Failed
     
     @classmethod

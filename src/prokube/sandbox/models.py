@@ -21,7 +21,7 @@ class SandboxInfo(BaseModel):
     """Information about a sandbox."""
 
     name: str = Field(..., description="Name of the sandbox")
-    namespace: str = Field(..., description="Kubernetes namespace")
+    workspace: str = Field(..., description="Workspace (Kubernetes namespace)")
     status: SandboxStatus = Field(
         default=SandboxStatus.UNKNOWN, description="Current status"
     )

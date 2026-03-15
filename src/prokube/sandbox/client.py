@@ -45,7 +45,7 @@ class SandboxClient:
 
     def _sandbox_path(self, name: str) -> str:
         """Get API path for a sandbox."""
-        return f"/api/namespaces/{self.config.namespace}/sandboxes/{name}"
+        return f"/api/namespaces/{self.config.workspace}/sandboxes/{name}"
 
     def claim_from_pool(self, pool: str) -> SandboxInfo:
         """Claim a sandbox from a warm pool.
@@ -58,12 +58,12 @@ class SandboxClient:
         """
         request = ClaimRequest(pool=pool)
         response = self._http.post(
-            f"/api/namespaces/{self.config.namespace}/sandboxes/claim",
+            f"/api/namespaces/{self.config.workspace}/sandboxes/claim",
             json=request.model_dump(),
         )
         return SandboxInfo(
             name=response["name"],
-            namespace=self.config.namespace,
+            workspace=self.config.workspace,
             status=SandboxStatus(response.get("status", "Running")),
             pool=pool,
         )
@@ -80,12 +80,12 @@ class SandboxClient:
         """
         request = CreateRequest(image=image, name=name)
         response = self._http.post(
-            f"/api/namespaces/{self.config.namespace}/sandboxes",
+            f"/api/namespaces/{self.config.workspace}/sandboxes",
             json=request.model_dump(exclude_none=True),
         )
         return SandboxInfo(
             name=response["name"],
-            namespace=self.config.namespace,
+            workspace=self.config.workspace,
             status=SandboxStatus(response.get("status", "Pending")),
             image=image,
         )
@@ -102,7 +102,7 @@ class SandboxClient:
         response = self._http.get(self._sandbox_path(name))
         return SandboxInfo(
             name=response["name"],
-            namespace=self.config.namespace,
+            workspace=self.config.workspace,
             status=SandboxStatus(response.get("status", "Unknown")),
             image=response.get("image"),
             pool=response.get("pool"),

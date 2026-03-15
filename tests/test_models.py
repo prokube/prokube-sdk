@@ -30,9 +30,9 @@ class TestSandboxInfo:
 
     def test_minimal_sandbox_info(self):
         """Test creating SandboxInfo with minimal fields."""
-        info = SandboxInfo(name="test-sandbox", namespace="test-ns")
+        info = SandboxInfo(name="test-sandbox", workspace="test-ws")
         assert info.name == "test-sandbox"
-        assert info.namespace == "test-ns"
+        assert info.workspace == "test-ws"
         assert info.status == SandboxStatus.UNKNOWN
         assert info.image is None
         assert info.pool is None
@@ -41,7 +41,7 @@ class TestSandboxInfo:
         """Test creating SandboxInfo with all fields."""
         info = SandboxInfo(
             name="test-sandbox",
-            namespace="test-ns",
+            workspace="test-ws",
             status=SandboxStatus.RUNNING,
             image="python:3.10",
             pool="my-pool",

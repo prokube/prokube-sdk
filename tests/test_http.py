@@ -13,7 +13,7 @@ def config():
     """Create a test config."""
     return Config(
         api_url="https://test.example.com",
-        namespace="test-ns",
+        workspace="test-ws",
         user_id="test-user@example.com",
     )
 

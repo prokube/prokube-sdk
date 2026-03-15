@@ -12,13 +12,13 @@ class Config:
 
     Configuration can be provided explicitly or via environment variables:
     - PROKUBE_API_URL: Base URL for the prokube API
-    - PROKUBE_NAMESPACE: Kubernetes namespace
+    - PROKUBE_WORKSPACE: Workspace (Kubernetes namespace)
     - PROKUBE_USER_ID: User ID for authentication
     - PROKUBE_TIMEOUT: Default timeout in seconds (default: 300)
     """
 
     api_url: str = field(default_factory=lambda: _get_api_url())
-    namespace: str = field(default_factory=lambda: _get_namespace())
+    workspace: str = field(default_factory=lambda: _get_workspace())
     user_id: str | None = field(default_factory=lambda: _get_user_id())
     timeout: int = field(default_factory=lambda: _get_timeout())
 
@@ -29,10 +29,10 @@ class Config:
                 "API URL is required. Set PROKUBE_API_URL environment variable "
                 "or pass api_url parameter."
             )
-        if not self.namespace:
+        if not self.workspace:
             raise ValueError(
-                "Namespace is required. Set PROKUBE_NAMESPACE environment variable "
-                "or pass namespace parameter."
+                "Workspace is required. Set PROKUBE_WORKSPACE environment variable "
+                "or pass workspace parameter."
             )
         # Ensure api_url doesn't have trailing slash
         self.api_url = self.api_url.rstrip("/")
@@ -43,9 +43,9 @@ def _get_api_url() -> str:
     return os.environ.get("PROKUBE_API_URL", "")
 
 
-def _get_namespace() -> str:
-    """Get namespace from environment."""
-    return os.environ.get("PROKUBE_NAMESPACE", "")
+def _get_workspace() -> str:
+    """Get workspace from environment."""
+    return os.environ.get("PROKUBE_WORKSPACE", "")
 
 
 def _get_user_id() -> str | None:

@@ -48,7 +48,7 @@ class Sandbox:
     def __init__(
         self,
         name: str,
-        namespace: str,
+        workspace: str,
         client: SandboxClient,
         status: SandboxStatus = SandboxStatus.RUNNING,
         pool: str | None = None,
@@ -61,14 +61,14 @@ class Sandbox:
 
         Args:
             name: Sandbox name.
-            namespace: Kubernetes namespace.
+            workspace: Workspace (Kubernetes namespace).
             client: Sandbox API client.
             status: Current sandbox status.
             pool: WarmPool name if claimed from pool.
             image: Container image if created directly.
         """
         self._name = name
-        self._namespace = namespace
+        self._workspace = workspace
         self._client = client
         self._status = status
         self._pool = pool
@@ -85,9 +85,9 @@ class Sandbox:
         return self._name
 
     @property
-    def namespace(self) -> str:
-        """Get the Kubernetes namespace."""
-        return self._namespace
+    def workspace(self) -> str:
+        """Get the workspace (Kubernetes namespace)."""
+        return self._workspace
 
     @property
     def status(self) -> str:
@@ -150,7 +150,7 @@ class Sandbox:
         pool: str,
         *,
         api_url: str | None = None,
-        namespace: str | None = None,
+        workspace: str | None = None,
         user_id: str | None = None,
         timeout: int | None = None,
     ) -> Self:
@@ -162,7 +162,7 @@ class Sandbox:
         Args:
             pool: Name of the warm pool.
             api_url: API URL (default: from PROKUBE_API_URL env var).
-            namespace: Namespace (default: from PROKUBE_NAMESPACE env var).
+            workspace: Workspace (default: from PROKUBE_WORKSPACE env var).
             user_id: User ID (default: from PROKUBE_USER_ID env var).
             timeout: Request timeout (default: from PROKUBE_TIMEOUT env var).
 
@@ -175,7 +175,7 @@ class Sandbox:
         """
         config = cls._build_config(
             api_url=api_url,
-            namespace=namespace,
+            workspace=workspace,
             user_id=user_id,
             timeout=timeout,
         )
@@ -184,7 +184,7 @@ class Sandbox:
 
         return cls(
             name=info.name,
-            namespace=info.namespace,
+            workspace=info.workspace,
             client=client,
             status=info.status,
             pool=pool,
@@ -197,7 +197,7 @@ class Sandbox:
         *,
         name: str | None = None,
         api_url: str | None = None,
-        namespace: str | None = None,
+        workspace: str | None = None,
         user_id: str | None = None,
         timeout: int | None = None,
     ) -> Self:
@@ -210,7 +210,7 @@ class Sandbox:
             image: Container image to use.
             name: Optional sandbox name (auto-generated if not provided).
             api_url: API URL (default: from PROKUBE_API_URL env var).
-            namespace: Namespace (default: from PROKUBE_NAMESPACE env var).
+            workspace: Workspace (default: from PROKUBE_WORKSPACE env var).
             user_id: User ID (default: from PROKUBE_USER_ID env var).
             timeout: Request timeout (default: from PROKUBE_TIMEOUT env var).
 
@@ -227,7 +227,7 @@ class Sandbox:
         """
         config = cls._build_config(
             api_url=api_url,
-            namespace=namespace,
+            workspace=workspace,
             user_id=user_id,
             timeout=timeout,
         )
@@ -236,7 +236,7 @@ class Sandbox:
 
         return cls(
             name=info.name,
-            namespace=info.namespace,
+            workspace=info.workspace,
             client=client,
             status=info.status,
             image=image,
@@ -245,7 +245,7 @@ class Sandbox:
     @staticmethod
     def _build_config(
         api_url: str | None,
-        namespace: str | None,
+        workspace: str | None,
         user_id: str | None,
         timeout: int | None,
     ) -> Config:
@@ -253,8 +253,8 @@ class Sandbox:
         kwargs: dict = {}
         if api_url is not None:
             kwargs["api_url"] = api_url
-        if namespace is not None:
-            kwargs["namespace"] = namespace
+        if workspace is not None:
+            kwargs["workspace"] = workspace
         if user_id is not None:
             kwargs["user_id"] = user_id
         if timeout is not None:
@@ -273,6 +273,6 @@ class Sandbox:
         """Return string representation."""
         return (
             f"Sandbox(name={self._name!r}, "
-            f"namespace={self._namespace!r}, "
+            f"workspace={self._workspace!r}, "
             f"status={self._status.value!r})"
         )
