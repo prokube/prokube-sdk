@@ -2,6 +2,7 @@
 
 from prokube.common.exceptions import (
     AuthenticationError,
+    NotFoundError,
     PoolExhaustedError,
     PoolNotFoundError,
     ProKubeError,
@@ -32,10 +33,16 @@ class TestExceptions:
         error = SandboxError("sandbox failed")
         assert isinstance(error, ProKubeError)
 
-    def test_sandbox_not_found_inherits_from_sandbox(self):
-        """Test SandboxNotFoundError inherits from SandboxError."""
+    def test_not_found_error_inherits_from_prokube(self):
+        """Test NotFoundError inherits from ProKubeError."""
+        error = NotFoundError("not found")
+        assert isinstance(error, ProKubeError)
+
+    def test_sandbox_not_found_inherits_from_both(self):
+        """Test SandboxNotFoundError inherits from SandboxError and NotFoundError."""
         error = SandboxNotFoundError("not found")
         assert isinstance(error, SandboxError)
+        assert isinstance(error, NotFoundError)
         assert isinstance(error, ProKubeError)
 
     def test_sandbox_timeout_inherits_from_sandbox(self):

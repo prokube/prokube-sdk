@@ -13,13 +13,19 @@ class AuthenticationError(ProKubeError):
     pass
 
 
+class NotFoundError(ProKubeError):
+    """Raised when a resource is not found (HTTP 404)."""
+
+    pass
+
+
 class SandboxError(ProKubeError):
     """Base exception for sandbox-related errors."""
 
     pass
 
 
-class SandboxNotFoundError(SandboxError):
+class SandboxNotFoundError(SandboxError, NotFoundError):
     """Raised when a sandbox cannot be found."""
 
     pass

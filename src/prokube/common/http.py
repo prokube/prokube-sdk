@@ -8,7 +8,7 @@ import httpx
 
 from prokube.common.auth import get_auth_headers
 from prokube.common.config import Config
-from prokube.common.exceptions import ProKubeError, SandboxNotFoundError
+from prokube.common.exceptions import NotFoundError, ProKubeError
 
 
 class HttpClient:
@@ -166,11 +166,11 @@ class HttpClient:
             response: HTTP response object.
 
         Raises:
-            SandboxNotFoundError: If resource is not found (404).
+            NotFoundError: If resource is not found (404).
             ProKubeError: For other HTTP errors.
         """
         if response.status_code == 404:
-            raise SandboxNotFoundError(f"Resource not found: {response.url}")
+            raise NotFoundError(f"Resource not found: {response.url}")
         if response.status_code >= 400:
             try:
                 error_detail = response.json().get("detail", response.text)

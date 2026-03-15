@@ -73,11 +73,19 @@ class Sandbox:
         self._status = status
         self._pool = pool
         self._image = image
+        self._killed = False
 
         # Initialize helpers
         self._commands = CommandRunner(client, name)
         self._files = FileManager(client, name)
         self._code = CodeRunner(client, name)
+
+    def _check_not_killed(self) -> None:
+        """Raise error if sandbox has been killed."""
+        if self._killed:
+            raise RuntimeError(
+                f"Sandbox {self._name} has been killed and cannot be used anymore"
+            )
 
     @property
     def name(self) -> str:
@@ -128,6 +136,7 @@ class Sandbox:
             >>> result = sbx.run_code("print(x * 2)")
             >>> print(result.stdout)  # "84"
         """
+        self._check_not_killed()
         return self._code.run(code, language=language, timeout=timeout)
 
     def reset_session(self) -> None:
@@ -155,13 +164,20 @@ class Sandbox:
         """Destroy the sandbox immediately.
 
         After calling this method, the sandbox cannot be used anymore.
+        Any subsequent calls to run_code(), commands, or files will raise.
         """
-        self._client.delete(self._name)
-        self._client.close()
+        if self._killed:
+            return  # Already killed, nothing to do
+        self._killed = True
+        try:
+            self._client.delete(self._name)
+        finally:
+            self._client.close()
         self._status = SandboxStatus.SUCCEEDED
 
     def refresh(self) -> None:
         """Refresh sandbox information from the API."""
+        self._check_not_killed()
         info = self._client.get(self._name)
         self._status = info.status
 
@@ -201,7 +217,11 @@ class Sandbox:
             timeout=timeout,
         )
         client = SandboxClient(config)
-        info = client.claim_from_pool(pool)
+        try:
+            info = client.claim_from_pool(pool)
+        except Exception:
+            client.close()
+            raise
 
         return cls(
             name=info.name,
@@ -253,7 +273,11 @@ class Sandbox:
             timeout=timeout,
         )
         client = SandboxClient(config)
-        info = client.create(image=image, name=name)
+        try:
+            info = client.create(image=image, name=name)
+        except Exception:
+            client.close()
+            raise
 
         return cls(
             name=info.name,

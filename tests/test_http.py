@@ -4,7 +4,7 @@ import pytest
 from pytest_httpx import HTTPXMock
 
 from prokube.common.config import Config
-from prokube.common.exceptions import ProKubeError, SandboxNotFoundError
+from prokube.common.exceptions import NotFoundError, ProKubeError
 from prokube.common.http import HttpClient
 
 
@@ -73,17 +73,17 @@ class TestHttpClient:
         response = http_client.get_bytes("/api/file")
         assert response == b"binary content"
 
-    def test_404_raises_sandbox_not_found(
+    def test_404_raises_not_found_error(
         self, http_client: HttpClient, httpx_mock: HTTPXMock
     ):
-        """Test that 404 raises SandboxNotFoundError."""
+        """Test that 404 raises NotFoundError."""
         httpx_mock.add_response(
             method="GET",
             url="https://test.example.com/api/sandbox/missing",
             status_code=404,
         )
 
-        with pytest.raises(SandboxNotFoundError, match="not found"):
+        with pytest.raises(NotFoundError, match="not found"):
             http_client.get("/api/sandbox/missing")
 
     def test_500_raises_prokube_error(
