@@ -308,10 +308,10 @@ class TestSandboxFiles:
             url="https://test.example.com/api/namespaces/test-ws/sandboxes/claim",
             json={"name": "sandbox-test", "status": "Running"},
         )
-        # Mock file read
+        # Mock file read - uses /files/download?path= endpoint
         httpx_mock.add_response(
             method="GET",
-            url="https://test.example.com/api/namespaces/test-ws/sandboxes/sandbox-test/files/workspace/test.txt",
+            url="https://test.example.com/api/namespaces/test-ws/sandboxes/sandbox-test/files/download?path=%2Fworkspace%2Ftest.txt",
             content=b"hello world",
         )
 

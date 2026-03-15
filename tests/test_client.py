@@ -48,21 +48,21 @@ class TestParseStatus:
         assert _parse_status("", SandboxStatus.RUNNING) == SandboxStatus.RUNNING
 
 
-class TestReadFileUrlEncoding:
-    """Tests for URL encoding in read_file."""
+class TestReadFile:
+    """Tests for read_file endpoint."""
 
     def test_read_file_with_spaces(self, config, httpx_mock: HTTPXMock):
-        """Test reading file with spaces in path."""
+        """Test reading file with spaces in path uses query param."""
         # Mock version check
         httpx_mock.add_response(
             method="GET",
             url="https://test.example.com/api/version",
             json={"version": "0.1.0"},
         )
-        # Mock file read - note the URL-encoded space (%20)
+        # Mock file download - path is passed as query parameter
         httpx_mock.add_response(
             method="GET",
-            url="https://test.example.com/api/namespaces/test-ws/sandboxes/test-sbx/files/workspace/my%20file.txt",
+            url="https://test.example.com/api/namespaces/test-ws/sandboxes/test-sbx/files/download?path=%2Fworkspace%2Fmy+file.txt",
             content=b"content",
         )
 
@@ -80,10 +80,10 @@ class TestReadFileUrlEncoding:
             url="https://test.example.com/api/version",
             json={"version": "0.1.0"},
         )
-        # Mock file read - special chars encoded
+        # Mock file download - special chars in query param
         httpx_mock.add_response(
             method="GET",
-            url="https://test.example.com/api/namespaces/test-ws/sandboxes/test-sbx/files/workspace/file%23%3F.txt",
+            url="https://test.example.com/api/namespaces/test-ws/sandboxes/test-sbx/files/download?path=%2Fworkspace%2Ffile%23%3F.txt",
             content=b"content",
         )
 

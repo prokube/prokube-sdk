@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import base64
 from typing import TYPE_CHECKING
-from urllib.parse import quote
 
 from prokube.common.compat import check_backend_compatibility
 from prokube.common.http import HttpClient
@@ -252,11 +251,10 @@ class SandboxClient:
         Returns:
             File content as bytes.
         """
-        # URL-encode path segments to handle spaces and special characters
-        encoded_path = "/".join(
-            quote(segment, safe="") for segment in path.lstrip("/").split("/")
+        return self._http.get_bytes(
+            f"{self._sandbox_path(name)}/files/download",
+            params={"path": path},
         )
-        return self._http.get_bytes(f"{self._sandbox_path(name)}/files/{encoded_path}")
 
     def list_files(self, name: str, path: str = "/workspace") -> list[FileInfo]:
         """List files in a directory.
