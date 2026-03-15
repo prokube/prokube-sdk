@@ -88,7 +88,9 @@ class ExecRequest(BaseModel):
 class ClaimRequest(BaseModel):
     """Request to claim a sandbox from a warm pool."""
 
-    pool: str = Field(..., description="Name of the warm pool")
+    pool_name: str = Field(
+        ..., serialization_alias="poolName", description="Name of the warm pool"
+    )
 
 
 class CreateRequest(BaseModel):

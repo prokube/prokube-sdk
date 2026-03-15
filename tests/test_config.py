@@ -47,19 +47,19 @@ class TestConfig:
             assert config.user_id == "env-user@test.com"
             assert config.timeout == 120
 
-    def test_config_nb_user_fallback(self):
-        """Test that NB_USER is used as fallback for user_id."""
+    def test_config_kf_user_fallback(self):
+        """Test that KF_USER is used as fallback for user_id."""
         env = {
             "PROKUBE_API_URL": "https://example.com",
             "PROKUBE_WORKSPACE": "test-ws",
-            "NB_USER": "jupyter-user@test.com",
+            "KF_USER": "kubeflow-user@test.com",
         }
         # Clear PROKUBE_USER_ID if it exists
         with patch.dict(os.environ, env, clear=False):
             with patch.dict(os.environ, {"PROKUBE_USER_ID": ""}, clear=False):
                 os.environ.pop("PROKUBE_USER_ID", None)
                 config = Config()
-                assert config.user_id == "jupyter-user@test.com"
+                assert config.user_id == "kubeflow-user@test.com"
 
     def test_config_missing_api_url_raises(self):
         """Test that missing API URL raises ValueError."""

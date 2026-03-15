@@ -160,8 +160,10 @@ class TestRequestModels:
 
     def test_claim_request(self):
         """Test ClaimRequest."""
-        req = ClaimRequest(pool="python-pool")
-        assert req.pool == "python-pool"
+        req = ClaimRequest(pool_name="python-pool")
+        assert req.pool_name == "python-pool"
+        # Check it serializes with camelCase alias
+        assert req.model_dump(by_alias=True) == {"poolName": "python-pool"}
 
     def test_create_request(self):
         """Test CreateRequest."""

@@ -53,12 +53,15 @@ def _get_user_id() -> str | None:
 
     Tries multiple sources:
     1. PROKUBE_USER_ID (explicit)
-    2. NB_USER (JupyterLab/DevLab)
+    2. KF_USER (Kubeflow user email/name)
+    3. Falls back to workspace name when in-cluster (for notebooks)
     """
     if user_id := os.environ.get("PROKUBE_USER_ID"):
         return user_id
-    if user_id := os.environ.get("NB_USER"):
+    if user_id := os.environ.get("KF_USER"):
         return user_id
+    # NB_USER is typically "jovyan" which won't work for auth
+    # In-cluster, the workspace name is used as the user ID
     return None
 
 

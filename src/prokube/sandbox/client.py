@@ -67,10 +67,10 @@ class SandboxClient:
         Returns:
             Information about the claimed sandbox.
         """
-        request = ClaimRequest(pool=pool)
+        request = ClaimRequest(pool_name=pool)
         response = self._http.post(
             f"/api/namespaces/{self.config.workspace}/sandboxes/claim",
-            json=request.model_dump(),
+            json=request.model_dump(by_alias=True),
         )
         return SandboxInfo(
             name=response["name"],
