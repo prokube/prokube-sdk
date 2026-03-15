@@ -14,12 +14,12 @@ class TestConfig:
     def test_config_from_explicit_params(self):
         """Test creating config with explicit parameters."""
         config = Config(
-            api_url="https://example.com/api",
+            api_url="https://example.com/pkui",
             workspace="test-ws",
             user_id="user@test.com",
             timeout=600,
         )
-        assert config.api_url == "https://example.com/api"
+        assert config.api_url == "https://example.com/pkui"
         assert config.workspace == "test-ws"
         assert config.user_id == "user@test.com"
         assert config.timeout == 600

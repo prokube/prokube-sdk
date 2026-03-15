@@ -8,7 +8,7 @@ import httpx
 
 from prokube.common.auth import get_auth_headers
 from prokube.common.config import Config
-from prokube.common.exceptions import NotFoundError, ProKubeError
+from prokube.common.exceptions import AuthenticationError, NotFoundError, ProKubeError
 
 
 class HttpClient:
@@ -166,9 +166,18 @@ class HttpClient:
             response: HTTP response object.
 
         Raises:
+            AuthenticationError: If authentication fails (401/403).
             NotFoundError: If resource is not found (404).
             ProKubeError: For other HTTP errors.
         """
+        if response.status_code in (401, 403):
+            try:
+                error_detail = response.json().get("detail", response.text)
+            except Exception:
+                error_detail = response.text
+            raise AuthenticationError(
+                f"Authentication failed ({response.status_code}): {error_detail}"
+            )
         if response.status_code == 404:
             raise NotFoundError(f"Resource not found: {response.url}")
         if response.status_code >= 400:

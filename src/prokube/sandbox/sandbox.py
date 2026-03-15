@@ -175,12 +175,15 @@ class Sandbox:
         """
         if self._killed:
             return  # Already killed, nothing to do
-        self._killed = True
         try:
             self._client.delete(self._name)
+            self._status = SandboxStatus.SUCCEEDED
         finally:
+            # Always close client and mark as killed, even if delete fails
+            # This prevents resource leaks while still allowing detection
+            # of failure via status != SUCCEEDED
+            self._killed = True
             self._client.close()
-        self._status = SandboxStatus.SUCCEEDED
 
     def refresh(self) -> None:
         """Refresh sandbox information from the API."""
