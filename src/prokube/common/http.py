@@ -27,12 +27,24 @@ class HttpClient:
     def client(self) -> httpx.Client:
         """Get or create the httpx client."""
         if self._client is None:
+            # Ensure base_url ends with / for proper path joining
+            # This allows API URLs with path prefixes (e.g., https://prokube.ai/pkui/)
+            base_url = self.config.api_url
+            if not base_url.endswith("/"):
+                base_url += "/"
             self._client = httpx.Client(
-                base_url=self.config.api_url,
+                base_url=base_url,
                 headers=get_auth_headers(self.config),
                 timeout=self.config.timeout,
             )
         return self._client
+
+    def _normalize_path(self, path: str) -> str:
+        """Normalize path for httpx URL joining.
+
+        Removes leading slash so httpx properly joins with base_url path.
+        """
+        return path.lstrip("/")
 
     def close(self) -> None:
         """Close the HTTP client."""
@@ -54,7 +66,7 @@ class HttpClient:
             SandboxNotFoundError: If resource is not found (404).
             ProKubeError: For other HTTP errors.
         """
-        response = self.client.get(path, **kwargs)
+        response = self.client.get(self._normalize_path(path), **kwargs)
         return self._handle_response(response)
 
     def post(self, path: str, **kwargs: Any) -> dict[str, Any]:
@@ -71,7 +83,7 @@ class HttpClient:
             SandboxNotFoundError: If resource is not found (404).
             ProKubeError: For other HTTP errors.
         """
-        response = self.client.post(path, **kwargs)
+        response = self.client.post(self._normalize_path(path), **kwargs)
         return self._handle_response(response)
 
     def delete(self, path: str, **kwargs: Any) -> dict[str, Any] | None:
@@ -88,7 +100,7 @@ class HttpClient:
             SandboxNotFoundError: If resource is not found (404).
             ProKubeError: For other HTTP errors.
         """
-        response = self.client.delete(path, **kwargs)
+        response = self.client.delete(self._normalize_path(path), **kwargs)
         if response.status_code == 204:
             return None
         return self._handle_response(response)
@@ -107,7 +119,7 @@ class HttpClient:
             SandboxNotFoundError: If resource is not found (404).
             ProKubeError: For other HTTP errors.
         """
-        response = self.client.get(path, **kwargs)
+        response = self.client.get(self._normalize_path(path), **kwargs)
         self._check_status(response)
         return response.content
 
@@ -126,7 +138,9 @@ class HttpClient:
             SandboxNotFoundError: If resource is not found (404).
             ProKubeError: For other HTTP errors.
         """
-        response = self.client.post(path, content=content, **kwargs)
+        response = self.client.post(
+            self._normalize_path(path), content=content, **kwargs
+        )
         return self._handle_response(response)
 
     def _handle_response(self, response: httpx.Response) -> dict[str, Any]:

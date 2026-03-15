@@ -65,7 +65,7 @@ Configuration can be provided via environment variables or explicitly:
 ### Environment Variables
 
 ```bash
-export PROKUBE_API_URL=https://prokube.ai/pkui
+export PROKUBE_API_URL=https://prokube.ai/pkui  # Can include path prefix
 export PROKUBE_WORKSPACE=my-workspace
 export PROKUBE_USER_ID=user@example.com  # Required (or KF_USER must be set)
 export PROKUBE_TIMEOUT=300  # Optional, default 300 seconds

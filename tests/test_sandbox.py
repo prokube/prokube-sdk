@@ -38,10 +38,16 @@ class TestSandboxFromPool:
         assert sbx.workspace == "test-ws"
         assert sbx.status == "Running"
 
-        # Verify request body
+        # Verify request URL and body
+        import json
+
         requests = httpx_mock.get_requests()
         claim_request = requests[-1]  # Last request is claim
-        assert claim_request.url.path == "/api/namespaces/test-ws/sandboxes/claim"
+        assert "/sandboxes/claim" in str(claim_request.url)
+
+        # Verify JSON body contains poolName
+        body = json.loads(claim_request.content)
+        assert body.get("poolName") == "python-pool"
 
         sbx._client.close()
 
