@@ -16,6 +16,9 @@ class CodeRunner:
     This class provides stateful code execution - variables and imports
     persist between calls, similar to running cells in a Jupyter notebook.
 
+    The session_id is automatically managed: the first call creates a new
+    session, and subsequent calls reuse the same session for state persistence.
+
     Example:
         >>> sandbox.run_code("import pandas as pd")
         >>> sandbox.run_code("df = pd.DataFrame({'a': [1, 2, 3]})")
@@ -34,6 +37,7 @@ class CodeRunner:
         """
         self._client = client
         self._sandbox_name = sandbox_name
+        self._session_id: str | None = None
 
     def run(
         self,
@@ -42,6 +46,9 @@ class CodeRunner:
         timeout: int = 300,
     ) -> CodeResult:
         """Execute code in the Jupyter kernel.
+
+        The kernel maintains state between calls - variables and imports
+        persist. The session is automatically managed.
 
         Args:
             code: Code to execute.
@@ -62,9 +69,27 @@ class CodeRunner:
             >>> print(result.error_name)  # "ValueError"
             >>> print(result.error_value)  # "oops"
         """
-        return self._client.exec_code(
+        result = self._client.exec_code(
             name=self._sandbox_name,
             code=code,
             language=language,
             timeout=timeout,
+            session_id=self._session_id,
         )
+        # Store session_id for subsequent calls to maintain state
+        if result.session_id:
+            self._session_id = result.session_id
+        return result
+
+    def reset_session(self) -> None:
+        """Reset the Jupyter session.
+
+        The next run_code() call will start a fresh session,
+        clearing all variables and imports.
+        """
+        self._session_id = None
+
+    @property
+    def session_id(self) -> str | None:
+        """Get the current session ID, if any."""
+        return self._session_id

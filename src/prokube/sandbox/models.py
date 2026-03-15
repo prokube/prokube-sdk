@@ -56,6 +56,9 @@ class CodeResult(BaseModel):
     error_name: str | None = Field(default=None, description="Error type if failed")
     error_value: str | None = Field(default=None, description="Error message if failed")
     traceback: list[str] | None = Field(default=None, description="Traceback if failed")
+    session_id: str | None = Field(
+        default=None, description="Session ID for stateful execution"
+    )
 
 
 class FileInfo(BaseModel):
@@ -77,6 +80,9 @@ class ExecRequest(BaseModel):
     )
     timeout: int = Field(default=300, description="Timeout in seconds")
     language: str = Field(default="python", description="Language for Jupyter kernel")
+    session_id: str | None = Field(
+        default=None, description="Session ID for stateful Jupyter execution"
+    )
 
 
 class ClaimRequest(BaseModel):

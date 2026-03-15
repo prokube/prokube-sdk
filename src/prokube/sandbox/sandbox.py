@@ -130,6 +130,27 @@ class Sandbox:
         """
         return self._code.run(code, language=language, timeout=timeout)
 
+    def reset_session(self) -> None:
+        """Reset the Jupyter kernel session.
+
+        The next run_code() call will start a fresh session,
+        clearing all variables and imports from previous executions.
+
+        Example:
+            >>> sbx.run_code("x = 42")
+            >>> sbx.reset_session()
+            >>> result = sbx.run_code("print(x)")  # NameError: x is not defined
+        """
+        self._code.reset_session()
+
+    @property
+    def session_id(self) -> str | None:
+        """Get the current Jupyter session ID, if any.
+
+        Returns None if no code has been executed yet.
+        """
+        return self._code.session_id
+
     def kill(self) -> None:
         """Destroy the sandbox immediately.
 

@@ -134,6 +134,7 @@ class SandboxClient:
         code: str,
         language: str = "python",
         timeout: int = 300,
+        session_id: str | None = None,
     ) -> CodeResult:
         """Execute code in sandbox using Jupyter kernel.
 
@@ -142,19 +143,21 @@ class SandboxClient:
             code: Code to execute.
             language: Programming language.
             timeout: Timeout in seconds.
+            session_id: Session ID for stateful execution (reuse from previous call).
 
         Returns:
-            Code execution result.
+            Code execution result including session_id for subsequent calls.
         """
         request = ExecRequest(
             code=code,
             use_jupyter=True,
             timeout=timeout,
             language=language,
+            session_id=session_id,
         )
         response = self._http.post(
             f"{self._sandbox_path(name)}/exec",
-            json=request.model_dump(),
+            json=request.model_dump(exclude_none=True),
         )
         return CodeResult(
             stdout=response.get("stdout", ""),
@@ -164,6 +167,7 @@ class SandboxClient:
             error_name=response.get("error_name"),
             error_value=response.get("error_value"),
             traceback=response.get("traceback"),
+            session_id=response.get("session_id"),
         )
 
     def exec_command(

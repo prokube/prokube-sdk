@@ -110,6 +110,110 @@ class TestSandboxRunCode:
 
         sbx._client.close()
 
+    def test_run_code_maintains_session(self, mock_env, httpx_mock: HTTPXMock):
+        """Test that session_id is maintained across run_code calls."""
+        # Mock version check
+        httpx_mock.add_response(
+            method="GET",
+            url="https://test.example.com/api/version",
+            json={"version": "0.1.0"},
+        )
+        # Mock claim
+        httpx_mock.add_response(
+            method="POST",
+            url="https://test.example.com/api/namespaces/test-ws/sandboxes/claim",
+            json={"name": "sandbox-test", "status": "Running"},
+        )
+        # First exec - returns session_id
+        httpx_mock.add_response(
+            method="POST",
+            url="https://test.example.com/api/namespaces/test-ws/sandboxes/sandbox-test/exec",
+            json={
+                "stdout": "",
+                "stderr": "",
+                "success": True,
+                "execution_time_ms": 50,
+                "session_id": "session-abc123",
+            },
+        )
+        # Second exec - should include session_id in request
+        httpx_mock.add_response(
+            method="POST",
+            url="https://test.example.com/api/namespaces/test-ws/sandboxes/sandbox-test/exec",
+            json={
+                "stdout": "42\n",
+                "stderr": "",
+                "success": True,
+                "execution_time_ms": 30,
+                "session_id": "session-abc123",
+            },
+        )
+
+        sbx = Sandbox.from_pool("python-pool")
+
+        # First call - no session_id yet
+        assert sbx.session_id is None
+        result1 = sbx.run_code("x = 42")
+        assert result1.session_id == "session-abc123"
+        assert sbx.session_id == "session-abc123"
+
+        # Second call - should reuse session_id
+        result2 = sbx.run_code("print(x)")
+        assert result2.stdout == "42\n"
+
+        # Verify second request included session_id
+        requests = httpx_mock.get_requests()
+        exec_requests = [r for r in requests if "/exec" in str(r.url)]
+        assert len(exec_requests) == 2
+
+        # First request should not have session_id
+        import json
+
+        first_body = json.loads(exec_requests[0].content)
+        assert "session_id" not in first_body or first_body.get("session_id") is None
+
+        # Second request should have session_id
+        second_body = json.loads(exec_requests[1].content)
+        assert second_body.get("session_id") == "session-abc123"
+
+        sbx._client.close()
+
+    def test_reset_session(self, mock_env, httpx_mock: HTTPXMock):
+        """Test that reset_session clears the session_id."""
+        # Mock version check
+        httpx_mock.add_response(
+            method="GET",
+            url="https://test.example.com/api/version",
+            json={"version": "0.1.0"},
+        )
+        # Mock claim
+        httpx_mock.add_response(
+            method="POST",
+            url="https://test.example.com/api/namespaces/test-ws/sandboxes/claim",
+            json={"name": "sandbox-test", "status": "Running"},
+        )
+        # First exec
+        httpx_mock.add_response(
+            method="POST",
+            url="https://test.example.com/api/namespaces/test-ws/sandboxes/sandbox-test/exec",
+            json={
+                "stdout": "",
+                "stderr": "",
+                "success": True,
+                "session_id": "session-abc123",
+            },
+        )
+
+        sbx = Sandbox.from_pool("python-pool")
+        sbx.run_code("x = 42")
+        assert sbx.session_id == "session-abc123"
+
+        # Reset session
+        sbx.reset_session()
+        assert sbx.session_id is None
+
+        sbx._client.close()
+
 
 class TestSandboxCommands:
     """Tests for Sandbox.commands."""
