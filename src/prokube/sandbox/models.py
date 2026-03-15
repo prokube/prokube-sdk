@@ -44,6 +44,13 @@ class CommandResult(BaseModel):
         """Check if command succeeded."""
         return self.exit_code == 0
 
+    @property
+    def output(self) -> str:
+        """Combined stdout and stderr for convenience."""
+        if self.stdout and self.stderr:
+            return f"{self.stdout}\n{self.stderr}"
+        return self.stdout or self.stderr
+
 
 class CodeResult(BaseModel):
     """Result of code execution in Jupyter kernel."""
