@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Self
+import sys
+
+if sys.version_info >= (3, 11):
+    from typing import Self
+else:
+    from typing_extensions import Self
 
 from prokube.common.config import Config
 from prokube.sandbox.client import SandboxClient
@@ -105,11 +110,13 @@ class Sandbox:
     @property
     def commands(self) -> CommandRunner:
         """Get the command runner for shell commands."""
+        self._check_not_killed()
         return self._commands
 
     @property
     def files(self) -> FileManager:
         """Get the file manager for file operations."""
+        self._check_not_killed()
         return self._files
 
     def run_code(

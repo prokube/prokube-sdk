@@ -63,7 +63,7 @@ class HttpClient:
             JSON response as dictionary.
 
         Raises:
-            SandboxNotFoundError: If resource is not found (404).
+            NotFoundError: If resource is not found (404).
             ProKubeError: For other HTTP errors.
         """
         response = self.client.get(self._normalize_path(path), **kwargs)
@@ -80,7 +80,7 @@ class HttpClient:
             JSON response as dictionary.
 
         Raises:
-            SandboxNotFoundError: If resource is not found (404).
+            NotFoundError: If resource is not found (404).
             ProKubeError: For other HTTP errors.
         """
         response = self.client.post(self._normalize_path(path), **kwargs)
@@ -97,7 +97,7 @@ class HttpClient:
             JSON response as dictionary, or None if no content.
 
         Raises:
-            SandboxNotFoundError: If resource is not found (404).
+            NotFoundError: If resource is not found (404).
             ProKubeError: For other HTTP errors.
         """
         response = self.client.delete(self._normalize_path(path), **kwargs)
@@ -116,7 +116,7 @@ class HttpClient:
             Raw response bytes.
 
         Raises:
-            SandboxNotFoundError: If resource is not found (404).
+            NotFoundError: If resource is not found (404).
             ProKubeError: For other HTTP errors.
         """
         response = self.client.get(self._normalize_path(path), **kwargs)
@@ -135,7 +135,7 @@ class HttpClient:
             JSON response as dictionary.
 
         Raises:
-            SandboxNotFoundError: If resource is not found (404).
+            NotFoundError: If resource is not found (404).
             ProKubeError: For other HTTP errors.
         """
         response = self.client.post(
@@ -153,7 +153,7 @@ class HttpClient:
             JSON response as dictionary.
 
         Raises:
-            SandboxNotFoundError: If resource is not found (404).
+            NotFoundError: If resource is not found (404).
             ProKubeError: For other HTTP errors.
         """
         self._check_status(response)
