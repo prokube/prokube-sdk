@@ -12,6 +12,7 @@ class SandboxStatus(str, Enum):
 
     PENDING = "Pending"
     RUNNING = "Running"
+    BOUND = "Bound"  # Claim is bound to a sandbox (ready to use)
     SUCCEEDED = "Succeeded"
     FAILED = "Failed"
     UNKNOWN = "Unknown"
