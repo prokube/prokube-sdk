@@ -72,8 +72,10 @@ class SandboxClient:
             f"/api/namespaces/{self.config.workspace}/sandboxes/claim",
             json=request.model_dump(by_alias=True),
         )
+        # API returns sandboxName for claim endpoint
+        sandbox_name = response.get("sandboxName") or response["name"]
         return SandboxInfo(
-            name=response["name"],
+            name=sandbox_name,
             workspace=self.config.workspace,
             status=_parse_status(response.get("status"), SandboxStatus.RUNNING),
             pool=pool,
@@ -84,20 +86,28 @@ class SandboxClient:
 
         Args:
             image: Container image to use.
-            name: Optional sandbox name.
+            name: Optional sandbox name (auto-generated if not provided).
 
         Returns:
             Information about the created sandbox.
         """
+        import uuid
+
+        # Generate name if not provided (backend requires name)
+        if name is None:
+            name = f"sandbox-{uuid.uuid4().hex[:8]}"
+
         request = CreateRequest(image=image, name=name)
         response = self._http.post(
             f"/api/namespaces/{self.config.workspace}/sandboxes",
-            json=request.model_dump(exclude_none=True),
+            json=request.model_dump(),
         )
+        # API returns 'phase' instead of 'status' for sandbox phase
+        status_str = response.get("status") or response.get("phase")
         return SandboxInfo(
             name=response["name"],
             workspace=self.config.workspace,
-            status=_parse_status(response.get("status"), SandboxStatus.PENDING),
+            status=_parse_status(status_str, SandboxStatus.PENDING),
             image=image,
         )
 
