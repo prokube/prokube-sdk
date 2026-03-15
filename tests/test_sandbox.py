@@ -166,15 +166,15 @@ class TestSandboxRunCode:
         exec_requests = [r for r in requests if "/exec" in str(r.url)]
         assert len(exec_requests) == 2
 
-        # First request should not have session_id
+        # First request should not have sessionId (camelCase in API)
         import json
 
         first_body = json.loads(exec_requests[0].content)
-        assert "session_id" not in first_body or first_body.get("session_id") is None
+        assert "sessionId" not in first_body or first_body.get("sessionId") is None
 
-        # Second request should have session_id
+        # Second request should have sessionId (camelCase in API)
         second_body = json.loads(exec_requests[1].content)
-        assert second_body.get("session_id") == "session-abc123"
+        assert second_body.get("sessionId") == "session-abc123"
 
         sbx._client.close()
 
