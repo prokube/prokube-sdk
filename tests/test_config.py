@@ -1,0 +1,85 @@
+"""Tests for configuration module."""
+
+import os
+from unittest.mock import patch
+
+import pytest
+
+from prokube.common.config import Config
+
+
+class TestConfig:
+    """Tests for Config class."""
+
+    def test_config_from_explicit_params(self):
+        """Test creating config with explicit parameters."""
+        config = Config(
+            api_url="https://example.com/api",
+            namespace="test-ns",
+            user_id="user@test.com",
+            timeout=600,
+        )
+        assert config.api_url == "https://example.com/api"
+        assert config.namespace == "test-ns"
+        assert config.user_id == "user@test.com"
+        assert config.timeout == 600
+
+    def test_config_strips_trailing_slash(self):
+        """Test that trailing slash is removed from API URL."""
+        config = Config(
+            api_url="https://example.com/api/",
+            namespace="test-ns",
+        )
+        assert config.api_url == "https://example.com/api"
+
+    def test_config_from_env_vars(self):
+        """Test creating config from environment variables."""
+        env = {
+            "PROKUBE_API_URL": "https://env.example.com",
+            "PROKUBE_NAMESPACE": "env-ns",
+            "PROKUBE_USER_ID": "env-user@test.com",
+            "PROKUBE_TIMEOUT": "120",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            config = Config()
+            assert config.api_url == "https://env.example.com"
+            assert config.namespace == "env-ns"
+            assert config.user_id == "env-user@test.com"
+            assert config.timeout == 120
+
+    def test_config_nb_user_fallback(self):
+        """Test that NB_USER is used as fallback for user_id."""
+        env = {
+            "PROKUBE_API_URL": "https://example.com",
+            "PROKUBE_NAMESPACE": "test-ns",
+            "NB_USER": "jupyter-user@test.com",
+        }
+        # Clear PROKUBE_USER_ID if it exists
+        with patch.dict(os.environ, env, clear=False):
+            with patch.dict(os.environ, {"PROKUBE_USER_ID": ""}, clear=False):
+                os.environ.pop("PROKUBE_USER_ID", None)
+                config = Config()
+                assert config.user_id == "jupyter-user@test.com"
+
+    def test_config_missing_api_url_raises(self):
+        """Test that missing API URL raises ValueError."""
+        with patch.dict(os.environ, {}, clear=True):
+            with pytest.raises(ValueError, match="API URL is required"):
+                Config(namespace="test-ns")
+
+    def test_config_missing_namespace_raises(self):
+        """Test that missing namespace raises ValueError."""
+        with patch.dict(os.environ, {}, clear=True):
+            with pytest.raises(ValueError, match="Namespace is required"):
+                Config(api_url="https://example.com")
+
+    def test_config_invalid_timeout_uses_default(self):
+        """Test that invalid timeout falls back to default."""
+        env = {
+            "PROKUBE_API_URL": "https://example.com",
+            "PROKUBE_NAMESPACE": "test-ns",
+            "PROKUBE_TIMEOUT": "invalid",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            config = Config()
+            assert config.timeout == 300  # default
