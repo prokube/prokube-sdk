@@ -126,12 +126,14 @@ class CommandRunner:
     def run(self, command: str, timeout: int = 300) -> CommandResult:
         """Execute shell command."""
 
-@dataclass
-class CommandResult:
+class CommandResult(BaseModel):  # Pydantic model
     stdout: str
     stderr: str
     exit_code: int
     duration_ms: int
+    
+    @property
+    def success(self) -> bool: ...
 ```
 
 ### FileManager
@@ -151,12 +153,14 @@ class FileManager:
 ### CodeResult
 
 ```python
-@dataclass
-class CodeResult:
+class CodeResult(BaseModel):  # Pydantic model
     stdout: str
     stderr: str
     success: bool
     execution_time_ms: int
+    error_name: str | None      # Set on failure
+    error_value: str | None     # Set on failure
+    traceback: list[str] | None # Set on failure
 ```
 
 ## Development

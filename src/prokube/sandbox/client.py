@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 from typing import TYPE_CHECKING
+from urllib.parse import quote
 
 from prokube.common.compat import check_backend_compatibility
 from prokube.common.http import HttpClient
@@ -21,6 +22,16 @@ from prokube.sandbox.models import (
 
 if TYPE_CHECKING:
     from prokube.common.config import Config
+
+
+def _parse_status(status_str: str | None, default: SandboxStatus) -> SandboxStatus:
+    """Parse status string to SandboxStatus enum, falling back to default on error."""
+    if not status_str:
+        return default
+    try:
+        return SandboxStatus(status_str)
+    except ValueError:
+        return SandboxStatus.UNKNOWN
 
 
 class SandboxClient:
@@ -64,7 +75,7 @@ class SandboxClient:
         return SandboxInfo(
             name=response["name"],
             workspace=self.config.workspace,
-            status=SandboxStatus(response.get("status", "Running")),
+            status=_parse_status(response.get("status"), SandboxStatus.RUNNING),
             pool=pool,
         )
 
@@ -86,7 +97,7 @@ class SandboxClient:
         return SandboxInfo(
             name=response["name"],
             workspace=self.config.workspace,
-            status=SandboxStatus(response.get("status", "Pending")),
+            status=_parse_status(response.get("status"), SandboxStatus.PENDING),
             image=image,
         )
 
@@ -103,7 +114,7 @@ class SandboxClient:
         return SandboxInfo(
             name=response["name"],
             workspace=self.config.workspace,
-            status=SandboxStatus(response.get("status", "Unknown")),
+            status=_parse_status(response.get("status"), SandboxStatus.UNKNOWN),
             image=response.get("image"),
             pool=response.get("pool"),
             created_at=response.get("created_at"),
@@ -214,10 +225,11 @@ class SandboxClient:
         Returns:
             File content as bytes.
         """
-        # URL-encode the path as query parameter
-        return self._http.get_bytes(
-            f"{self._sandbox_path(name)}/files/{path.lstrip('/')}"
+        # URL-encode path segments to handle spaces and special characters
+        encoded_path = "/".join(
+            quote(segment, safe="") for segment in path.lstrip("/").split("/")
         )
+        return self._http.get_bytes(f"{self._sandbox_path(name)}/files/{encoded_path}")
 
     def list_files(self, name: str, path: str = "/workspace") -> list[FileInfo]:
         """List files in a directory.

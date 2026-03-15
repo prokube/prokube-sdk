@@ -265,9 +265,18 @@ class Sandbox:
         """Enter context manager."""
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
-        """Exit context manager - kills the sandbox."""
-        self.kill()
+    def __exit__(self, exc_type, exc_val, exc_tb) -> bool:
+        """Exit context manager - kills the sandbox.
+
+        Cleanup errors are suppressed to avoid masking exceptions from
+        the with-block. The original exception (if any) is always propagated.
+        """
+        try:
+            self.kill()
+        except Exception:
+            # Don't mask the original exception from the with-block
+            pass
+        return False  # Never suppress exceptions from the with-block
 
     def __repr__(self) -> str:
         """Return string representation."""
