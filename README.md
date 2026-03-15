@@ -67,9 +67,13 @@ Configuration can be provided via environment variables or explicitly:
 ```bash
 export PROKUBE_API_URL=https://prokube.ai/pkui
 export PROKUBE_WORKSPACE=my-workspace
-export PROKUBE_USER_ID=user@example.com  # Optional, auto-detected in-cluster
+export PROKUBE_USER_ID=user@example.com  # Required (or KF_USER must be set)
 export PROKUBE_TIMEOUT=300  # Optional, default 300 seconds
 ```
+
+**Note:** `PROKUBE_USER_ID` is required for authentication. If not set, the SDK
+will fall back to `KF_USER` (set by some Kubeflow deployments). If neither is
+available, you must pass `user_id` explicitly when creating a Sandbox.
 
 ### Explicit Configuration
 

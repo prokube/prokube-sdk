@@ -51,17 +51,20 @@ def _get_workspace() -> str:
 def _get_user_id() -> str | None:
     """Get user ID from environment.
 
-    Tries multiple sources:
-    1. PROKUBE_USER_ID (explicit)
-    2. KF_USER (Kubeflow user email/name)
-    3. Falls back to workspace name when in-cluster (for notebooks)
+    Tries the following sources in order:
+    1. PROKUBE_USER_ID (explicit configuration)
+    2. KF_USER (Kubeflow user email/name, set by some Kubeflow deployments)
+
+    Returns None if neither is set. In this case, you must provide user_id
+    explicitly when creating a Sandbox, or set PROKUBE_USER_ID.
+
+    Note: NB_USER is not used because it's typically "jovyan" in Jupyter
+    environments, which doesn't match the actual Kubeflow user.
     """
     if user_id := os.environ.get("PROKUBE_USER_ID"):
         return user_id
     if user_id := os.environ.get("KF_USER"):
         return user_id
-    # NB_USER is typically "jovyan" which won't work for auth
-    # In-cluster, the workspace name is used as the user ID
     return None
 
 

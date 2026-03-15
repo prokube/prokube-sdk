@@ -17,12 +17,12 @@ class TestParseVersion:
         assert parse_version("1.2.3+build.123") == (1, 2, 3)
 
     def test_two_part_version(self):
-        """Test parsing two-part version."""
-        assert parse_version("1.0") == (1, 0)
+        """Test parsing two-part version (normalized to 3 parts)."""
+        assert parse_version("1.0") == (1, 0, 0)
 
     def test_single_part_version(self):
-        """Test parsing single-part version."""
-        assert parse_version("1") == (1,)
+        """Test parsing single-part version (normalized to 3 parts)."""
+        assert parse_version("1") == (1, 0, 0)
 
 
 class TestGetSdkVersion:

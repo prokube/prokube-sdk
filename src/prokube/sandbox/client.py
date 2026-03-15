@@ -25,7 +25,16 @@ if TYPE_CHECKING:
 
 
 def _parse_status(status_str: str | None, default: SandboxStatus) -> SandboxStatus:
-    """Parse status string to SandboxStatus enum, falling back to default on error."""
+    """Parse status string to SandboxStatus enum.
+
+    Args:
+        status_str: Status string from API response.
+        default: Default status to use if status_str is None/empty.
+
+    Returns:
+        SandboxStatus enum value. Returns default if status_str is falsy,
+        or UNKNOWN if the status string doesn't match any known status.
+    """
     if not status_str:
         return default
     try:

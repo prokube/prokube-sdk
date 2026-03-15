@@ -14,19 +14,26 @@ if TYPE_CHECKING:
 MIN_BACKEND_VERSION = "0.1.0"
 
 
-def parse_version(version_string: str) -> tuple[int, ...]:
-    """Parse a version string into a tuple of integers.
+def parse_version(version_string: str) -> tuple[int, int, int]:
+    """Parse a version string into a normalized (major, minor, patch) tuple.
 
     Args:
-        version_string: Version string like "1.2.3" or "0.1.0-dev".
+        version_string: Version string like "1.2.3", "0.1", or "0.1.0-dev".
 
     Returns:
-        Tuple of version numbers, e.g., (1, 2, 3).
+        Tuple of (major, minor, patch) version numbers, e.g., (1, 2, 3).
+        Missing components are defaulted to 0 (e.g., "0.1" -> (0, 1, 0)).
     """
     # Remove any suffix like "-dev", "-alpha", etc.
     clean_version = version_string.split("-")[0].split("+")[0]
     parts = clean_version.split(".")
-    return tuple(int(p) for p in parts if p.isdigit())
+    version_parts = [int(p) for p in parts if p.isdigit()]
+
+    # Normalize to exactly 3 components (major, minor, patch)
+    while len(version_parts) < 3:
+        version_parts.append(0)
+
+    return (version_parts[0], version_parts[1], version_parts[2])
 
 
 def check_backend_compatibility(client: HttpClient) -> None:
