@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 from prokube.sandbox.models import CommandResult
 
@@ -24,15 +24,22 @@ class CommandRunner:
         Successfully installed pandas-2.0.0
     """
 
-    def __init__(self, client: SandboxClient, sandbox_name: str) -> None:
+    def __init__(
+        self,
+        client: SandboxClient,
+        sandbox_name: str,
+        check_killed: Callable[[], None] | None = None,
+    ) -> None:
         """Initialize command runner.
 
         Args:
             client: Sandbox API client.
             sandbox_name: Name of the sandbox.
+            check_killed: Optional callback to check if sandbox is killed.
         """
         self._client = client
         self._sandbox_name = sandbox_name
+        self._check_killed = check_killed
 
     def run(self, command: str, timeout: int = 300) -> CommandResult:
         """Execute a shell command in the sandbox.
@@ -51,6 +58,8 @@ class CommandRunner:
             ... else:
             ...     print(f"Failed: {result.stderr}")
         """
+        if self._check_killed:
+            self._check_killed()
         return self._client.exec_command(
             name=self._sandbox_name,
             command=command,

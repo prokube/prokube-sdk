@@ -216,11 +216,13 @@ class SandboxClient:
             use_jupyter=False,
             timeout=timeout,
         )
-        # Exclude language and session_id for shell commands
+        # Exclude Jupyter-specific fields for shell commands
         # (language field triggers Python interpreter in backend)
         response = self._http.post(
             f"{self._sandbox_path(name)}/exec",
-            json=request.model_dump(exclude={"language", "session_id"}),
+            json=request.model_dump(
+                exclude={"language", "session_id", "reset_session"}
+            ),
         )
         return CommandResult(
             stdout=response.get("stdout", ""),

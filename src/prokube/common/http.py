@@ -104,9 +104,15 @@ class HttpClient:
             ProKubeError: For other HTTP errors.
         """
         response = self.client.delete(self._normalize_path(path), **kwargs)
-        if response.status_code == 204:
+        self._check_status(response)
+        # Handle empty response body (common for DELETE)
+        if response.status_code == 204 or not response.content:
             return None
-        return self._handle_response(response)
+        try:
+            return response.json()
+        except Exception:
+            # Response is not JSON, treat as success with no data
+            return None
 
     def get_bytes(self, path: str, **kwargs: Any) -> bytes:
         """Make a GET request and return raw bytes.

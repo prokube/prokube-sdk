@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 from prokube.sandbox.models import CodeResult
 
@@ -28,17 +28,24 @@ class CodeRunner:
         dtype: int64
     """
 
-    def __init__(self, client: SandboxClient, sandbox_name: str) -> None:
+    def __init__(
+        self,
+        client: SandboxClient,
+        sandbox_name: str,
+        check_killed: Callable[[], None] | None = None,
+    ) -> None:
         """Initialize code runner.
 
         Args:
             client: Sandbox API client.
             sandbox_name: Name of the sandbox.
+            check_killed: Optional callback to check if sandbox is killed.
         """
         self._client = client
         self._sandbox_name = sandbox_name
         self._session_id: str | None = None
         self._reset_on_next_exec: bool = False
+        self._check_killed = check_killed
 
     def run(
         self,
@@ -70,18 +77,28 @@ class CodeRunner:
             >>> print(result.error_name)  # "ValueError"
             >>> print(result.error_value)  # "oops"
         """
+        if self._check_killed:
+            self._check_killed()
+
         # Check if we need to reset the session
         reset_session = self._reset_on_next_exec
-        self._reset_on_next_exec = False
 
-        result = self._client.exec_code(
-            name=self._sandbox_name,
-            code=code,
-            language=language,
-            timeout=timeout,
-            session_id=self._session_id,
-            reset_session=reset_session,
-        )
+        try:
+            result = self._client.exec_code(
+                name=self._sandbox_name,
+                code=code,
+                language=language,
+                timeout=timeout,
+                session_id=self._session_id,
+                reset_session=reset_session,
+            )
+        except Exception:
+            # Don't clear reset flag on failure so next call can retry
+            raise
+        else:
+            # Only clear reset flag after successful execution
+            self._reset_on_next_exec = False
+
         # Store session_id for subsequent calls to maintain state
         if result.session_id:
             self._session_id = result.session_id

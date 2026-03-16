@@ -209,6 +209,17 @@ class TestSandboxRunCode:
                 "session_id": "session-abc123",
             },
         )
+        # Second exec (after reset)
+        httpx_mock.add_response(
+            method="POST",
+            url="https://test.example.com/api/namespaces/test-ws/sandboxes/sandbox-test/exec",
+            json={
+                "stdout": "",
+                "stderr": "",
+                "success": True,
+                "session_id": "session-new456",
+            },
+        )
 
         sbx = Sandbox.from_pool("python-pool")
         sbx.run_code("x = 42")
@@ -216,8 +227,23 @@ class TestSandboxRunCode:
 
         # Reset session - sets flag for next exec, session_id stays until then
         sbx.reset_session()
-        # Session ID is kept until next run_code() call executes the reset
         assert sbx.session_id == "session-abc123"
+
+        # Next run_code should include reset_session=true in request
+        sbx.run_code("y = 1")
+
+        # Verify reset_session was included in the second exec request
+        requests = httpx_mock.get_requests()
+        exec_requests = [r for r in requests if "/exec" in str(r.url)]
+        assert len(exec_requests) == 2
+        second_exec_body = exec_requests[1].read().decode()
+        import json
+
+        second_body = json.loads(second_exec_body)
+        assert second_body.get("reset_session") is True
+
+        # After successful call, flag should be cleared
+        assert sbx.session_id == "session-new456"
 
         sbx._client.close()
 

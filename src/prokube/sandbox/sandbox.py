@@ -81,10 +81,10 @@ class Sandbox:
         self._image = image
         self._killed = False
 
-        # Initialize helpers
-        self._commands = CommandRunner(client, name)
-        self._files = FileManager(client, name)
-        self._code = CodeRunner(client, name)
+        # Initialize helpers with killed-state check callback
+        self._commands = CommandRunner(client, name, self._check_not_killed)
+        self._files = FileManager(client, name, self._check_not_killed)
+        self._code = CodeRunner(client, name, self._check_not_killed)
 
     def _check_not_killed(self) -> None:
         """Raise error if sandbox has been killed."""

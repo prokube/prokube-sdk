@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 from prokube.sandbox.models import FileInfo
 
@@ -22,15 +22,22 @@ class FileManager:
         >>> files = sandbox.files.list("/workspace")
     """
 
-    def __init__(self, client: SandboxClient, sandbox_name: str) -> None:
+    def __init__(
+        self,
+        client: SandboxClient,
+        sandbox_name: str,
+        check_killed: Callable[[], None] | None = None,
+    ) -> None:
         """Initialize file manager.
 
         Args:
             client: Sandbox API client.
             sandbox_name: Name of the sandbox.
+            check_killed: Optional callback to check if sandbox is killed.
         """
         self._client = client
         self._sandbox_name = sandbox_name
+        self._check_killed = check_killed
 
     def write(self, path: str, content: bytes | str) -> None:
         """Upload a file to the sandbox.
@@ -46,6 +53,8 @@ class FileManager:
             >>> # Write text data
             >>> sandbox.files.write("/workspace/script.py", "print('hello')")
         """
+        if self._check_killed:
+            self._check_killed()
         if isinstance(content, str):
             content = content.encode("utf-8")
         self._client.write_file(
@@ -67,6 +76,8 @@ class FileManager:
             >>> content = sandbox.files.read("/workspace/output.txt")
             >>> print(content.decode("utf-8"))
         """
+        if self._check_killed:
+            self._check_killed()
         return self._client.read_file(
             name=self._sandbox_name,
             path=path,
@@ -86,6 +97,8 @@ class FileManager:
             >>> for f in files:
             ...     print(f"{f.name} ({f.size} bytes)")
         """
+        if self._check_killed:
+            self._check_killed()
         return self._client.list_files(
             name=self._sandbox_name,
             path=path,
