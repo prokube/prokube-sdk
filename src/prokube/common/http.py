@@ -63,6 +63,7 @@ class HttpClient:
             JSON response as dictionary.
 
         Raises:
+            AuthenticationError: If authentication fails (401/403).
             NotFoundError: If resource is not found (404).
             ProKubeError: For other HTTP errors.
         """
@@ -80,6 +81,7 @@ class HttpClient:
             JSON response as dictionary.
 
         Raises:
+            AuthenticationError: If authentication fails (401/403).
             NotFoundError: If resource is not found (404).
             ProKubeError: For other HTTP errors.
         """
@@ -97,6 +99,7 @@ class HttpClient:
             JSON response as dictionary, or None if no content.
 
         Raises:
+            AuthenticationError: If authentication fails (401/403).
             NotFoundError: If resource is not found (404).
             ProKubeError: For other HTTP errors.
         """
@@ -116,6 +119,7 @@ class HttpClient:
             Raw response bytes.
 
         Raises:
+            AuthenticationError: If authentication fails (401/403).
             NotFoundError: If resource is not found (404).
             ProKubeError: For other HTTP errors.
         """
@@ -135,6 +139,7 @@ class HttpClient:
             JSON response as dictionary.
 
         Raises:
+            AuthenticationError: If authentication fails (401/403).
             NotFoundError: If resource is not found (404).
             ProKubeError: For other HTTP errors.
         """

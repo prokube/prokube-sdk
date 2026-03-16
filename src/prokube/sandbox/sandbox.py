@@ -173,16 +173,19 @@ class Sandbox:
 
         After calling this method, the sandbox cannot be used anymore.
         Any subsequent calls to run_code(), commands, or files will raise.
+
+        Note: If the delete request fails, the sandbox is still marked as
+        killed locally to prevent further use, but status will not be updated.
         """
         if self._killed:
             return  # Already killed, nothing to do
         try:
             self._client.delete(self._name)
             self._status = SandboxStatus.SUCCEEDED
+        except Exception:
+            # Delete failed, but we still mark as killed to prevent further use
+            raise
         finally:
-            # Always close client and mark as killed, even if delete fails
-            # This prevents resource leaks while still allowing detection
-            # of failure via status != SUCCEEDED
             self._killed = True
             self._client.close()
 
