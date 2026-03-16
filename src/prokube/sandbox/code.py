@@ -82,10 +82,10 @@ class CodeRunner:
         return result
 
     def reset_session(self) -> None:
-        """Reset the Jupyter session.
+        """Reset the Jupyter kernel session.
 
-        The next run_code() call will start a fresh session,
-        clearing all variables and imports.
+        Clears all variables and imports from previous executions.
+        The next run_code() call will start with a fresh state.
         """
         self._session_id = None
 

@@ -149,13 +149,13 @@ class Sandbox:
     def reset_session(self) -> None:
         """Reset the Jupyter kernel session.
 
-        The next run_code() call will start a fresh session,
-        clearing all variables and imports from previous executions.
+        Clears all variables and imports from previous executions.
+        The next run_code() call will start with a fresh state.
 
         Example:
             >>> sbx.run_code("x = 42")
             >>> sbx.reset_session()
-            >>> result = sbx.run_code("print(x)")  # NameError: x is not defined
+            >>> result = sbx.run_code("print('x' in dir())")  # False
         """
         self._check_not_killed()
         self._code.reset_session()
