@@ -175,20 +175,16 @@ class Sandbox:
         After calling this method, the sandbox cannot be used anymore.
         Any subsequent calls to run_code(), commands, or files will raise.
 
-        Note: If the delete request fails, the sandbox is still marked as
-        killed locally to prevent further use, but status will not be updated.
+        If the delete request fails, an exception is raised and the sandbox
+        remains usable so callers can retry or handle the failure.
         """
         if self._killed:
             return  # Already killed, nothing to do
-        try:
-            self._client.delete(self._name)
-            self._status = SandboxStatus.SUCCEEDED
-        except Exception:
-            # Delete failed, but we still mark as killed to prevent further use
-            raise
-        finally:
-            self._killed = True
-            self._client.close()
+        self._client.delete(self._name)
+        # Only mark as killed and close client after successful delete
+        self._status = SandboxStatus.SUCCEEDED
+        self._killed = True
+        self._client.close()
 
     def refresh(self) -> None:
         """Refresh sandbox information from the API."""
@@ -328,14 +324,18 @@ class Sandbox:
     def __exit__(self, exc_type, exc_val, exc_tb) -> bool:
         """Exit context manager - kills the sandbox.
 
-        Cleanup errors are suppressed to avoid masking exceptions from
-        the with-block. The original exception (if any) is always propagated.
+        If the with-block raised an exception, cleanup errors are suppressed
+        to avoid masking the original error. If the with-block succeeded,
+        cleanup errors are propagated so failures are visible.
         """
         try:
             self.kill()
         except Exception:
-            # Don't mask the original exception from the with-block
-            pass
+            if exc_type is not None:
+                # Don't mask the original exception from the with-block
+                return False
+            # No exception from with-block: propagate cleanup failure
+            raise
         return False  # Never suppress exceptions from the with-block
 
     def __repr__(self) -> str:
