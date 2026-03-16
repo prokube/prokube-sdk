@@ -10,6 +10,7 @@ else:
     from typing_extensions import Self
 
 from prokube.common.config import Config
+from prokube.common.exceptions import SandboxError
 from prokube.sandbox.client import SandboxClient
 from prokube.sandbox.code import CodeRunner
 from prokube.sandbox.commands import CommandRunner
@@ -88,7 +89,7 @@ class Sandbox:
     def _check_not_killed(self) -> None:
         """Raise error if sandbox has been killed."""
         if self._killed:
-            raise RuntimeError(
+            raise SandboxError(
                 f"Sandbox {self._name} has been killed and cannot be used anymore"
             )
 

@@ -176,6 +176,8 @@ class SandboxClient:
             session_id=session_id,
             reset_session=reset_session,
         )
+        # Note: exec endpoint uses snake_case (use_jupyter, session_id, reset_session)
+        # unlike other endpoints that use camelCase. Do NOT use by_alias=True here.
         response = self._http.post(
             f"{self._sandbox_path(name)}/exec",
             json=request.model_dump(exclude_none=True),
