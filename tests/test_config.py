@@ -27,10 +27,10 @@ class TestConfig:
     def test_config_strips_trailing_slash(self):
         """Test that trailing slash is removed from API URL."""
         config = Config(
-            api_url="https://example.com/api/",
+            api_url="https://example.com/pkui/",
             workspace="test-ws",
         )
-        assert config.api_url == "https://example.com/api"
+        assert config.api_url == "https://example.com/pkui"
 
     def test_config_from_env_vars(self):
         """Test creating config from environment variables."""
