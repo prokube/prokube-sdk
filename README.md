@@ -108,7 +108,7 @@ class Sandbox:
     def create(cls, image: str, **config) -> Sandbox:
         """Create sandbox directly (cold start)."""
     
-    def run_code(self, code: str, language: str = "python") -> CodeResult:
+    def run_code(self, code: str, language: str = "python", timeout: int = 300) -> CodeResult:
         """Execute code with stateful Jupyter kernel."""
     
     def kill(self) -> None:
@@ -165,6 +165,7 @@ class CodeResult(BaseModel):  # Pydantic model
     error_name: str | None      # Set on failure
     error_value: str | None     # Set on failure
     traceback: list[str] | None # Set on failure
+    session_id: str | None      # For stateful execution
 ```
 
 ## Development
