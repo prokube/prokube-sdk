@@ -280,7 +280,8 @@ class SandboxClient:
             FileInfo(
                 name=f["name"],
                 path=f["path"],
-                is_dir=f.get("is_dir", False),
+                # Handle both snake_case and camelCase from backend
+                is_dir=f.get("is_dir", f.get("isDir", False)),
                 size=f.get("size", 0),
                 modified=f.get("modified"),
             )

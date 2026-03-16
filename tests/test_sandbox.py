@@ -185,7 +185,7 @@ class TestSandboxRunCode:
         sbx._client.close()
 
     def test_reset_session(self, mock_env, httpx_mock: HTTPXMock):
-        """Test that reset_session clears the session_id."""
+        """Test that reset_session sets flag for next run_code to reset kernel."""
         # Mock version check
         httpx_mock.add_response(
             method="GET",
