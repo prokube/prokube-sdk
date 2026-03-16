@@ -20,6 +20,7 @@ class TestSandboxStatus:
         """Test status enum values."""
         assert SandboxStatus.PENDING.value == "Pending"
         assert SandboxStatus.RUNNING.value == "Running"
+        assert SandboxStatus.BOUND.value == "Bound"
         assert SandboxStatus.SUCCEEDED.value == "Succeeded"
         assert SandboxStatus.FAILED.value == "Failed"
         assert SandboxStatus.UNKNOWN.value == "Unknown"
