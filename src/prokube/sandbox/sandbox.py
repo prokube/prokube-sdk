@@ -147,15 +147,11 @@ class Sandbox:
         return self._code.run(code, language=language, timeout=timeout)
 
     def reset_session(self) -> None:
-        """Reset the Jupyter kernel session.
+        """Reset the local session ID.
 
-        Clears all variables and imports from previous executions.
-        The next run_code() call will start with a fresh state.
-
-        Example:
-            >>> sbx.run_code("x = 42")
-            >>> sbx.reset_session()
-            >>> result = sbx.run_code("print('x' in dir())")  # False
+        Note: This currently only resets the local session tracking.
+        The backend may reuse the same kernel session. To fully reset
+        execution state, create a new sandbox.
         """
         self._check_not_killed()
         self._code.reset_session()

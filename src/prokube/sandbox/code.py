@@ -82,10 +82,13 @@ class CodeRunner:
         return result
 
     def reset_session(self) -> None:
-        """Reset the Jupyter kernel session.
+        """Reset the local session ID.
 
-        Clears all variables and imports from previous executions.
-        The next run_code() call will start with a fresh state.
+        Note: This currently only resets the local session tracking.
+        The backend may reuse the same kernel session. To fully reset
+        execution state, create a new sandbox.
+
+        TODO: Backend needs to support session reset.
         """
         self._session_id = None
 
