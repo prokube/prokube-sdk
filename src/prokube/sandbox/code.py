@@ -38,6 +38,7 @@ class CodeRunner:
         self._client = client
         self._sandbox_name = sandbox_name
         self._session_id: str | None = None
+        self._reset_on_next_exec: bool = False
 
     def run(
         self,
@@ -69,12 +70,17 @@ class CodeRunner:
             >>> print(result.error_name)  # "ValueError"
             >>> print(result.error_value)  # "oops"
         """
+        # Check if we need to reset the session
+        reset_session = self._reset_on_next_exec
+        self._reset_on_next_exec = False
+
         result = self._client.exec_code(
             name=self._sandbox_name,
             code=code,
             language=language,
             timeout=timeout,
             session_id=self._session_id,
+            reset_session=reset_session,
         )
         # Store session_id for subsequent calls to maintain state
         if result.session_id:
@@ -82,15 +88,12 @@ class CodeRunner:
         return result
 
     def reset_session(self) -> None:
-        """Reset the local session ID.
+        """Reset the Jupyter kernel session.
 
-        Note: This currently only resets the local session tracking.
-        The backend may reuse the same kernel session. To fully reset
-        execution state, create a new sandbox.
-
-        TODO: Backend needs to support session reset.
+        The next run_code() call will restart the kernel and clear all
+        variables and imports from previous executions.
         """
-        self._session_id = None
+        self._reset_on_next_exec = True
 
     @property
     def session_id(self) -> str | None:

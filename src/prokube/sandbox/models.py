@@ -98,6 +98,9 @@ class ExecRequest(BaseModel):
     session_id: str | None = Field(
         default=None, description="Session ID for stateful Jupyter execution"
     )
+    reset_session: bool = Field(
+        default=False, description="Restart kernel before executing code"
+    )
 
 
 class ClaimRequest(BaseModel):

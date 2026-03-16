@@ -214,9 +214,10 @@ class TestSandboxRunCode:
         sbx.run_code("x = 42")
         assert sbx.session_id == "session-abc123"
 
-        # Reset session
+        # Reset session - sets flag for next exec, session_id stays until then
         sbx.reset_session()
-        assert sbx.session_id is None
+        # Session ID is kept until next run_code() call executes the reset
+        assert sbx.session_id == "session-abc123"
 
         sbx._client.close()
 

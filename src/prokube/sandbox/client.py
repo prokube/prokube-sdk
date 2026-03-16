@@ -153,6 +153,7 @@ class SandboxClient:
         language: str = "python",
         timeout: int = 300,
         session_id: str | None = None,
+        reset_session: bool = False,
     ) -> CodeResult:
         """Execute code in sandbox using Jupyter kernel.
 
@@ -162,6 +163,7 @@ class SandboxClient:
             language: Programming language.
             timeout: Timeout in seconds.
             session_id: Session ID for stateful execution (reuse from previous call).
+            reset_session: If True, restart the kernel before executing code.
 
         Returns:
             Code execution result including session_id for subsequent calls.
@@ -172,6 +174,7 @@ class SandboxClient:
             timeout=timeout,
             language=language,
             session_id=session_id,
+            reset_session=reset_session,
         )
         response = self._http.post(
             f"{self._sandbox_path(name)}/exec",
