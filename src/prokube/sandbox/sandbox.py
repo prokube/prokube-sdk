@@ -243,6 +243,57 @@ class Sandbox:
         )
 
     @classmethod
+    def get(
+        cls,
+        name: str,
+        *,
+        api_url: str | None = None,
+        workspace: str | None = None,
+        user_id: str | None = None,
+        timeout: int | None = None,
+    ) -> Self:
+        """Connect to an existing sandbox.
+
+        Use this to interact with a sandbox that was created elsewhere
+        (e.g., via the UI or another process).
+
+        Args:
+            name: Name of the existing sandbox.
+            api_url: API URL (default: from PROKUBE_API_URL env var).
+            workspace: Workspace (default: from PROKUBE_WORKSPACE env var).
+            user_id: User ID (default: from PROKUBE_USER_ID env var).
+            timeout: Request timeout (default: from PROKUBE_TIMEOUT env var).
+
+        Returns:
+            A Sandbox instance connected to the existing sandbox.
+
+        Example:
+            >>> sbx = Sandbox.get("claim-abc123")
+            >>> sbx.run_code("print('Hello!')")
+        """
+        config = cls._build_config(
+            api_url=api_url,
+            workspace=workspace,
+            user_id=user_id,
+            timeout=timeout,
+        )
+        client = SandboxClient(config)
+        try:
+            info = client.get(name)
+        except Exception:
+            client.close()
+            raise
+
+        return cls(
+            name=info.name,
+            workspace=info.workspace,
+            client=client,
+            status=info.status,
+            pool=info.pool,
+            image=info.image,
+        )
+
+    @classmethod
     def create(
         cls,
         image: str,
