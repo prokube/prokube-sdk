@@ -14,6 +14,100 @@ def mock_env(monkeypatch):
     monkeypatch.setenv("PROKUBE_USER_ID", "test-user@example.com")
 
 
+class TestSandboxList:
+    """Tests for Sandbox.list()."""
+
+    def test_list_empty(self, mock_env, httpx_mock: HTTPXMock):
+        """Test listing sandboxes when none exist."""
+        httpx_mock.add_response(
+            method="GET",
+            url="https://test.example.com/api/version",
+            json={"version": "0.1.0"},
+        )
+        httpx_mock.add_response(
+            method="GET",
+            url="https://test.example.com/api/namespaces/test-ws/sandboxes",
+            json={"sandboxes": [], "total": 0},
+        )
+
+        sandboxes = Sandbox.list()
+
+        assert sandboxes == []
+
+    def test_list_multiple(self, mock_env, httpx_mock: HTTPXMock):
+        """Test listing multiple sandboxes."""
+        httpx_mock.add_response(
+            method="GET",
+            url="https://test.example.com/api/version",
+            json={"version": "0.1.0"},
+        )
+        httpx_mock.add_response(
+            method="GET",
+            url="https://test.example.com/api/namespaces/test-ws/sandboxes",
+            json={
+                "sandboxes": [
+                    {
+                        "name": "sandbox-1",
+                        "namespace": "test-ws",
+                        "image": "python:3.10",
+                        "phase": "Running",
+                        "poolName": "python-pool",
+                    },
+                    {
+                        "name": "sandbox-2",
+                        "namespace": "test-ws",
+                        "image": "node:18",
+                        "phase": "Pending",
+                    },
+                ],
+                "total": 2,
+            },
+        )
+
+        sandboxes = Sandbox.list()
+
+        assert len(sandboxes) == 2
+        assert sandboxes[0].name == "sandbox-1"
+        assert sandboxes[0].status == "Running"
+        assert sandboxes[0].workspace == "test-ws"
+        assert sandboxes[1].name == "sandbox-2"
+        assert sandboxes[1].status == "Pending"
+
+        # Clean up
+        sandboxes[0]._client.close()
+
+    def test_list_single(self, mock_env, httpx_mock: HTTPXMock):
+        """Test listing a single sandbox."""
+        httpx_mock.add_response(
+            method="GET",
+            url="https://test.example.com/api/version",
+            json={"version": "0.1.0"},
+        )
+        httpx_mock.add_response(
+            method="GET",
+            url="https://test.example.com/api/namespaces/test-ws/sandboxes",
+            json={
+                "sandboxes": [
+                    {
+                        "name": "my-sandbox",
+                        "namespace": "test-ws",
+                        "image": "python:3.10",
+                        "phase": "Running",
+                    },
+                ],
+                "total": 1,
+            },
+        )
+
+        sandboxes = Sandbox.list()
+
+        assert len(sandboxes) == 1
+        assert sandboxes[0].name == "my-sandbox"
+        assert isinstance(sandboxes[0], Sandbox)
+
+        sandboxes[0]._client.close()
+
+
 class TestSandboxFromPool:
     """Tests for Sandbox.from_pool()."""
 
