@@ -243,6 +243,57 @@ class Sandbox:
         )
 
     @classmethod
+    def list(
+        cls,
+        *,
+        api_url: str | None = None,
+        workspace: str | None = None,
+        user_id: str | None = None,
+        timeout: int | None = None,
+    ) -> list[Self]:
+        """List all sandboxes in the workspace.
+
+        Args:
+            api_url: API URL (default: from PROKUBE_API_URL env var).
+            workspace: Workspace (default: from PROKUBE_WORKSPACE env var).
+            user_id: User ID (default: from PROKUBE_USER_ID env var).
+            timeout: Request timeout (default: from PROKUBE_TIMEOUT env var).
+
+        Returns:
+            List of Sandbox instances (lightweight — connected but not fully
+            initialized with helpers like commands/files).
+
+        Example:
+            >>> sandboxes = Sandbox.list()
+            >>> for sbx in sandboxes:
+            ...     print(f"{sbx.name}: {sbx.status}")
+        """
+        config = cls._build_config(
+            api_url=api_url,
+            workspace=workspace,
+            user_id=user_id,
+            timeout=timeout,
+        )
+        client = SandboxClient(config)
+        try:
+            infos = client.list()
+        except Exception:
+            client.close()
+            raise
+
+        return [
+            cls(
+                name=info.name,
+                workspace=info.workspace,
+                client=client,
+                status=info.status,
+                pool=info.pool,
+                image=info.image,
+            )
+            for info in infos
+        ]
+
+    @classmethod
     def get(
         cls,
         name: str,

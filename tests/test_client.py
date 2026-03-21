@@ -48,6 +48,103 @@ class TestParseStatus:
         assert _parse_status("", SandboxStatus.RUNNING) == SandboxStatus.RUNNING
 
 
+class TestListSandboxes:
+    """Tests for SandboxClient.list()."""
+
+    def test_list_empty(self, config, httpx_mock: HTTPXMock):
+        """Test listing sandboxes when none exist."""
+        httpx_mock.add_response(
+            method="GET",
+            url="https://test.example.com/api/version",
+            json={"version": "0.1.0"},
+        )
+        httpx_mock.add_response(
+            method="GET",
+            url="https://test.example.com/api/namespaces/test-ws/sandboxes",
+            json={"sandboxes": [], "total": 0},
+        )
+
+        client = SandboxClient(config)
+        result = client.list()
+
+        assert result == []
+        client.close()
+
+    def test_list_multiple(self, config, httpx_mock: HTTPXMock):
+        """Test listing multiple sandboxes."""
+        httpx_mock.add_response(
+            method="GET",
+            url="https://test.example.com/api/version",
+            json={"version": "0.1.0"},
+        )
+        httpx_mock.add_response(
+            method="GET",
+            url="https://test.example.com/api/namespaces/test-ws/sandboxes",
+            json={
+                "sandboxes": [
+                    {
+                        "name": "sandbox-1",
+                        "namespace": "test-ws",
+                        "image": "python:3.10",
+                        "phase": "Running",
+                        "poolName": "python-pool",
+                        "createdAt": "2026-01-01T00:00:00Z",
+                    },
+                    {
+                        "name": "sandbox-2",
+                        "namespace": "test-ws",
+                        "image": "node:18",
+                        "phase": "Pending",
+                    },
+                ],
+                "total": 2,
+            },
+        )
+
+        client = SandboxClient(config)
+        result = client.list()
+
+        assert len(result) == 2
+        assert result[0].name == "sandbox-1"
+        assert result[0].status == SandboxStatus.RUNNING
+        assert result[0].image == "python:3.10"
+        assert result[0].pool == "python-pool"
+        assert result[0].created_at == "2026-01-01T00:00:00Z"
+        assert result[1].name == "sandbox-2"
+        assert result[1].status == SandboxStatus.PENDING
+        assert result[1].pool is None
+        client.close()
+
+    def test_list_with_status_field(self, config, httpx_mock: HTTPXMock):
+        """Test listing sandboxes when backend returns 'status' instead of 'phase'."""
+        httpx_mock.add_response(
+            method="GET",
+            url="https://test.example.com/api/version",
+            json={"version": "0.1.0"},
+        )
+        httpx_mock.add_response(
+            method="GET",
+            url="https://test.example.com/api/namespaces/test-ws/sandboxes",
+            json={
+                "sandboxes": [
+                    {
+                        "name": "sandbox-1",
+                        "namespace": "test-ws",
+                        "status": "Running",
+                    },
+                ],
+                "total": 1,
+            },
+        )
+
+        client = SandboxClient(config)
+        result = client.list()
+
+        assert len(result) == 1
+        assert result[0].status == SandboxStatus.RUNNING
+        client.close()
+
+
 class TestReadFile:
     """Tests for read_file endpoint."""
 

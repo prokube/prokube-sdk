@@ -7,17 +7,10 @@ from typing import TYPE_CHECKING
 
 from prokube.common.compat import check_backend_compatibility
 from prokube.common.http import HttpClient
-from prokube.sandbox.models import (
-    ClaimRequest,
-    CodeResult,
-    CommandResult,
-    CreateRequest,
-    ExecRequest,
-    FileInfo,
-    FileWriteRequest,
-    SandboxInfo,
-    SandboxStatus,
-)
+from prokube.sandbox.models import (ClaimRequest, CodeResult, CommandResult,
+                                    CreateRequest, ExecRequest, FileInfo,
+                                    FileWriteRequest, SandboxInfo,
+                                    SandboxStatus)
 
 if TYPE_CHECKING:
     from prokube.common.config import Config
@@ -118,6 +111,30 @@ class SandboxClient:
             status=_parse_status(status_str, SandboxStatus.PENDING),
             image=image,
         )
+
+    def list(self) -> list[SandboxInfo]:
+        """List all sandboxes in the configured workspace.
+
+        Returns:
+            List of sandbox info objects.
+        """
+        response = self._http.get(
+            f"/api/namespaces/{self.config.workspace}/sandboxes",
+        )
+        sandboxes = response.get("sandboxes", [])
+        return [
+            SandboxInfo(
+                name=s["name"],
+                workspace=self.config.workspace,
+                status=_parse_status(
+                    s.get("status") or s.get("phase"), SandboxStatus.UNKNOWN
+                ),
+                image=s.get("image") or None,
+                pool=s.get("poolName") or s.get("pool"),
+                created_at=s.get("createdAt") or s.get("created_at"),
+            )
+            for s in sandboxes
+        ]
 
     def get(self, name: str) -> SandboxInfo:
         """Get information about a sandbox.
