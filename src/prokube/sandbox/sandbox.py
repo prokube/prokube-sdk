@@ -280,27 +280,32 @@ class Sandbox:
             client.close()
             raise
 
+        # Close the temporary listing client — no longer needed.
+        client.close()
+
         if not infos:
-            client.close()
             return []
 
         # Each Sandbox gets its own client so that kill() on one
-        # does not invalidate the others.
+        # does not invalidate the others. Skip version check since
+        # we already verified compatibility above.
         sandboxes: list[Self] = []
-        for info in infos:
-            sandboxes.append(
-                cls(
-                    name=info.name,
-                    workspace=info.workspace,
-                    client=SandboxClient(config),
-                    status=info.status,
-                    pool=info.pool,
-                    image=info.image,
+        try:
+            for info in infos:
+                sandboxes.append(
+                    cls(
+                        name=info.name,
+                        workspace=info.workspace,
+                        client=SandboxClient(config, check_version=False),
+                        status=info.status,
+                        pool=info.pool,
+                        image=info.image,
+                    )
                 )
-            )
-
-        # Close the temporary listing client
-        client.close()
+        except Exception:
+            for sbx in sandboxes:
+                sbx._client.close()
+            raise
 
         return sandboxes
 
