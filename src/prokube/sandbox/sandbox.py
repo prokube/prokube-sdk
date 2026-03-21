@@ -243,6 +243,73 @@ class Sandbox:
         )
 
     @classmethod
+    def list(
+        cls,
+        *,
+        api_url: str | None = None,
+        workspace: str | None = None,
+        user_id: str | None = None,
+        timeout: int | None = None,
+    ) -> list[Self]:
+        """List all sandboxes in the workspace.
+
+        Args:
+            api_url: API URL (default: from PROKUBE_API_URL env var).
+            workspace: Workspace (default: from PROKUBE_WORKSPACE env var).
+            user_id: User ID (default: from PROKUBE_USER_ID env var).
+            timeout: Request timeout (default: from PROKUBE_TIMEOUT env var).
+
+        Returns:
+            List of ready-to-use Sandbox instances.
+
+        Example:
+            >>> sandboxes = Sandbox.list()
+            >>> for sbx in sandboxes:
+            ...     print(f"{sbx.name}: {sbx.status}")
+        """
+        config = cls._build_config(
+            api_url=api_url,
+            workspace=workspace,
+            user_id=user_id,
+            timeout=timeout,
+        )
+        client = SandboxClient(config)
+        try:
+            infos = client.list()
+        except Exception:
+            client.close()
+            raise
+
+        # Close the temporary listing client — no longer needed.
+        client.close()
+
+        if not infos:
+            return []
+
+        # Each Sandbox gets its own client so that kill() on one
+        # does not invalidate the others. Skip version check since
+        # we already verified compatibility above.
+        sandboxes: list[Self] = []
+        try:
+            for info in infos:
+                sandboxes.append(
+                    cls(
+                        name=info.name,
+                        workspace=info.workspace,
+                        client=SandboxClient(config, check_version=False),
+                        status=info.status,
+                        pool=info.pool,
+                        image=info.image,
+                    )
+                )
+        except Exception:
+            for sbx in sandboxes:
+                sbx._client.close()
+            raise
+
+        return sandboxes
+
+    @classmethod
     def get(
         cls,
         name: str,
