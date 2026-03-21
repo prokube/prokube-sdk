@@ -36,17 +36,7 @@ class TestSandboxList:
 
     def test_list_multiple(self, mock_env, httpx_mock: HTTPXMock):
         """Test listing multiple sandboxes."""
-        # Version check for listing client + one per Sandbox created
-        httpx_mock.add_response(
-            method="GET",
-            url="https://test.example.com/api/version",
-            json={"version": "0.1.0"},
-        )
-        httpx_mock.add_response(
-            method="GET",
-            url="https://test.example.com/api/version",
-            json={"version": "0.1.0"},
-        )
+        # Version check for listing client only (per-sandbox clients skip it)
         httpx_mock.add_response(
             method="GET",
             url="https://test.example.com/api/version",
@@ -90,12 +80,7 @@ class TestSandboxList:
 
     def test_list_single(self, mock_env, httpx_mock: HTTPXMock):
         """Test listing a single sandbox."""
-        # Version check for listing client + one for the Sandbox
-        httpx_mock.add_response(
-            method="GET",
-            url="https://test.example.com/api/version",
-            json={"version": "0.1.0"},
-        )
+        # Version check for listing client only
         httpx_mock.add_response(
             method="GET",
             url="https://test.example.com/api/version",
