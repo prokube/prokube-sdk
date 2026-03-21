@@ -36,6 +36,17 @@ class TestSandboxList:
 
     def test_list_multiple(self, mock_env, httpx_mock: HTTPXMock):
         """Test listing multiple sandboxes."""
+        # Version check for listing client + one per Sandbox created
+        httpx_mock.add_response(
+            method="GET",
+            url="https://test.example.com/api/version",
+            json={"version": "0.1.0"},
+        )
+        httpx_mock.add_response(
+            method="GET",
+            url="https://test.example.com/api/version",
+            json={"version": "0.1.0"},
+        )
         httpx_mock.add_response(
             method="GET",
             url="https://test.example.com/api/version",
@@ -74,10 +85,17 @@ class TestSandboxList:
         assert sandboxes[1].status == "Pending"
 
         # Clean up
-        sandboxes[0]._client.close()
+        for sbx in sandboxes:
+            sbx._client.close()
 
     def test_list_single(self, mock_env, httpx_mock: HTTPXMock):
         """Test listing a single sandbox."""
+        # Version check for listing client + one for the Sandbox
+        httpx_mock.add_response(
+            method="GET",
+            url="https://test.example.com/api/version",
+            json={"version": "0.1.0"},
+        )
         httpx_mock.add_response(
             method="GET",
             url="https://test.example.com/api/version",
