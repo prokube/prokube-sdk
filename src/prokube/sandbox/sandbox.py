@@ -260,8 +260,7 @@ class Sandbox:
             timeout: Request timeout (default: from PROKUBE_TIMEOUT env var).
 
         Returns:
-            List of Sandbox instances (lightweight — connected but not fully
-            initialized with helpers like commands/files).
+            List of ready-to-use Sandbox instances.
 
         Example:
             >>> sandboxes = Sandbox.list()
@@ -281,17 +280,29 @@ class Sandbox:
             client.close()
             raise
 
-        return [
-            cls(
-                name=info.name,
-                workspace=info.workspace,
-                client=client,
-                status=info.status,
-                pool=info.pool,
-                image=info.image,
+        if not infos:
+            client.close()
+            return []
+
+        # Each Sandbox gets its own client so that kill() on one
+        # does not invalidate the others.
+        sandboxes: list[Self] = []
+        for info in infos:
+            sandboxes.append(
+                cls(
+                    name=info.name,
+                    workspace=info.workspace,
+                    client=SandboxClient(config),
+                    status=info.status,
+                    pool=info.pool,
+                    image=info.image,
+                )
             )
-            for info in infos
-        ]
+
+        # Close the temporary listing client
+        client.close()
+
+        return sandboxes
 
     @classmethod
     def get(
