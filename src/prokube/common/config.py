@@ -29,8 +29,8 @@ class Config:
     api_url: str = field(default_factory=lambda: _get_api_url())
     workspace: str = field(default_factory=lambda: _get_workspace())
     user_id: str | None = field(default_factory=lambda: _get_user_id())
-    api_key: str | None = field(default_factory=lambda: _get_api_key(), repr=False)
     timeout: int = field(default_factory=lambda: _get_timeout())
+    api_key: str | None = field(default_factory=lambda: _get_api_key(), repr=False)
 
     def __post_init__(self) -> None:
         """Validate configuration after initialization."""
