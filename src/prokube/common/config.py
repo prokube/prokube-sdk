@@ -16,12 +16,17 @@ class Config:
       Do NOT include "/api" in this URL - use the base UI URL instead.
     - PROKUBE_WORKSPACE: Workspace (Kubernetes namespace)
     - PROKUBE_USER_ID: User ID for authentication
+    - PROKUBE_API_KEY: API key for external access (takes precedence over user_id)
     - PROKUBE_TIMEOUT: Default timeout in seconds (default: 300)
+
+    If both api_key and user_id are set, api_key takes precedence for authentication.
+    At least one of api_key or user_id must be available.
     """
 
     api_url: str = field(default_factory=lambda: _get_api_url())
     workspace: str = field(default_factory=lambda: _get_workspace())
     user_id: str | None = field(default_factory=lambda: _get_user_id())
+    api_key: str | None = field(default_factory=lambda: _get_api_key())
     timeout: int = field(default_factory=lambda: _get_timeout())
 
     def __post_init__(self) -> None:
@@ -38,6 +43,11 @@ class Config:
             )
         # Ensure api_url doesn't have trailing slash
         self.api_url = self.api_url.rstrip("/")
+
+    @property
+    def use_api_key(self) -> bool:
+        """Whether API key authentication is being used."""
+        return bool(self.api_key)
 
 
 def _get_api_url() -> str:
@@ -68,6 +78,11 @@ def _get_user_id() -> str | None:
     if user_id := os.environ.get("KF_USER"):
         return user_id
     return None
+
+
+def _get_api_key() -> str | None:
+    """Get API key from environment."""
+    return os.environ.get("PROKUBE_API_KEY") or None
 
 
 def _get_timeout() -> int:

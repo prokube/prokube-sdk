@@ -55,9 +55,27 @@ class SandboxClient:
         """Close the client."""
         self._http.close()
 
+    def _sandboxes_path(self) -> str:
+        """Get API path for the sandboxes collection."""
+        ws = self.config.workspace
+        if self.config.use_api_key:
+            return f"/sandbox/{ws}/sandboxes"
+        return f"/api/namespaces/{ws}/sandboxes"
+
     def _sandbox_path(self, name: str) -> str:
-        """Get API path for a sandbox."""
-        return f"/api/namespaces/{self.config.workspace}/sandboxes/{name}"
+        """Get API path for a specific sandbox."""
+        return f"{self._sandboxes_path()}/{name}"
+
+    def _sandbox_sub_path(self, name: str, sub: str) -> str:
+        """Get API path for a sandbox sub-resource (exec, files, etc.).
+
+        For external (API key) access, sub-resources hang off
+        /sandbox/{ws}/{name}/{sub} instead of /sandbox/{ws}/sandboxes/{name}/{sub}.
+        """
+        ws = self.config.workspace
+        if self.config.use_api_key:
+            return f"/sandbox/{ws}/{name}/{sub}"
+        return f"/api/namespaces/{ws}/sandboxes/{name}/{sub}"
 
     def claim_from_pool(self, pool: str) -> SandboxInfo:
         """Claim a sandbox from a warm pool.
@@ -70,7 +88,7 @@ class SandboxClient:
         """
         request = ClaimRequest(pool_name=pool)
         response = self._http.post(
-            f"/api/namespaces/{self.config.workspace}/sandboxes/claim",
+            f"{self._sandboxes_path()}/claim",
             json=request.model_dump(by_alias=True),
         )
         # API returns sandboxName for claim endpoint
@@ -100,7 +118,7 @@ class SandboxClient:
 
         request = CreateRequest(image=image, name=name)
         response = self._http.post(
-            f"/api/namespaces/{self.config.workspace}/sandboxes",
+            self._sandboxes_path(),
             json=request.model_dump(),
         )
         # API returns 'phase' instead of 'status' for sandbox phase
@@ -119,7 +137,7 @@ class SandboxClient:
             List of sandbox info objects.
         """
         response = self._http.get(
-            f"/api/namespaces/{self.config.workspace}/sandboxes",
+            self._sandboxes_path(),
         )
         sandboxes = response.get("sandboxes", [])
         return [
@@ -196,7 +214,7 @@ class SandboxClient:
         # Note: exec endpoint uses snake_case (use_jupyter, session_id, reset_session)
         # unlike other endpoints that use camelCase. Do NOT use by_alias=True here.
         response = self._http.post(
-            f"{self._sandbox_path(name)}/exec",
+            self._sandbox_sub_path(name, "exec"),
             json=request.model_dump(exclude_none=True),
         )
         return CodeResult(
@@ -236,7 +254,7 @@ class SandboxClient:
         # Exclude Jupyter-specific fields for shell commands
         # (language field triggers Python interpreter in backend)
         response = self._http.post(
-            f"{self._sandbox_path(name)}/exec",
+            self._sandbox_sub_path(name, "exec"),
             json=request.model_dump(
                 exclude={"language", "session_id", "reset_session"}
             ),
@@ -261,7 +279,7 @@ class SandboxClient:
             content=base64.b64encode(content).decode("ascii"),
         )
         self._http.post(
-            f"{self._sandbox_path(name)}/files",
+            self._sandbox_sub_path(name, "files"),
             json=request.model_dump(),
         )
 
@@ -276,7 +294,7 @@ class SandboxClient:
             File content as bytes.
         """
         return self._http.get_bytes(
-            f"{self._sandbox_path(name)}/files/download",
+            self._sandbox_sub_path(name, "files/download"),
             params={"path": path},
         )
 
@@ -291,7 +309,7 @@ class SandboxClient:
             List of file information.
         """
         response = self._http.get(
-            f"{self._sandbox_path(name)}/files",
+            self._sandbox_sub_path(name, "files"),
             params={"path": path},
         )
         files = response.get("files", [])
