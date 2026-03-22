@@ -28,6 +28,6 @@ def get_auth_headers(config: Config) -> dict[str, str]:
 
     raise AuthenticationError(
         "No api_key or user_id available for authentication. "
-        "Set PROKUBE_API_KEY or PROKUBE_USER_ID environment variable, "
+        "Set PROKUBE_API_KEY, PROKUBE_USER_ID, or KF_USER environment variable, "
         "or pass api_key/user_id parameter to the Sandbox."
     )
