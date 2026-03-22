@@ -12,6 +12,15 @@ from prokube.common.exceptions import AuthenticationError
 from prokube.sandbox import Sandbox
 from prokube.sandbox.client import SandboxClient
 
+_AUTH_ENV_VARS = ("PROKUBE_API_KEY", "PROKUBE_USER_ID", "KF_USER")
+
+
+@pytest.fixture(autouse=True)
+def _clean_auth_env(monkeypatch):
+    """Ensure auth env vars don't leak into tests from the developer's shell."""
+    for var in _AUTH_ENV_VARS:
+        monkeypatch.delenv(var, raising=False)
+
 
 class TestConfigApiKey:
     """Tests for Config with api_key field."""
