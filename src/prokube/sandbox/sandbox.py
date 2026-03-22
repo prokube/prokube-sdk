@@ -200,6 +200,7 @@ class Sandbox:
         api_url: str | None = None,
         workspace: str | None = None,
         user_id: str | None = None,
+        api_key: str | None = None,
         timeout: int | None = None,
     ) -> Self:
         """Claim a sandbox from a warm pool.
@@ -212,6 +213,7 @@ class Sandbox:
             api_url: API URL (default: from PROKUBE_API_URL env var).
             workspace: Workspace (default: from PROKUBE_WORKSPACE env var).
             user_id: User ID (default: from PROKUBE_USER_ID env var).
+            api_key: API key for external access (default: from PROKUBE_API_KEY env var).
             timeout: Request timeout (default: from PROKUBE_TIMEOUT env var).
 
         Returns:
@@ -225,6 +227,7 @@ class Sandbox:
             api_url=api_url,
             workspace=workspace,
             user_id=user_id,
+            api_key=api_key,
             timeout=timeout,
         )
         client = SandboxClient(config)
@@ -249,6 +252,7 @@ class Sandbox:
         api_url: str | None = None,
         workspace: str | None = None,
         user_id: str | None = None,
+        api_key: str | None = None,
         timeout: int | None = None,
     ) -> list[Self]:
         """List all sandboxes in the workspace.
@@ -257,6 +261,7 @@ class Sandbox:
             api_url: API URL (default: from PROKUBE_API_URL env var).
             workspace: Workspace (default: from PROKUBE_WORKSPACE env var).
             user_id: User ID (default: from PROKUBE_USER_ID env var).
+            api_key: API key for external access (default: from PROKUBE_API_KEY env var).
             timeout: Request timeout (default: from PROKUBE_TIMEOUT env var).
 
         Returns:
@@ -271,6 +276,7 @@ class Sandbox:
             api_url=api_url,
             workspace=workspace,
             user_id=user_id,
+            api_key=api_key,
             timeout=timeout,
         )
         client = SandboxClient(config)
@@ -317,6 +323,7 @@ class Sandbox:
         api_url: str | None = None,
         workspace: str | None = None,
         user_id: str | None = None,
+        api_key: str | None = None,
         timeout: int | None = None,
     ) -> Self:
         """Connect to an existing sandbox.
@@ -329,6 +336,7 @@ class Sandbox:
             api_url: API URL (default: from PROKUBE_API_URL env var).
             workspace: Workspace (default: from PROKUBE_WORKSPACE env var).
             user_id: User ID (default: from PROKUBE_USER_ID env var).
+            api_key: API key for external access (default: from PROKUBE_API_KEY env var).
             timeout: Request timeout (default: from PROKUBE_TIMEOUT env var).
 
         Returns:
@@ -342,6 +350,7 @@ class Sandbox:
             api_url=api_url,
             workspace=workspace,
             user_id=user_id,
+            api_key=api_key,
             timeout=timeout,
         )
         client = SandboxClient(config)
@@ -369,6 +378,7 @@ class Sandbox:
         api_url: str | None = None,
         workspace: str | None = None,
         user_id: str | None = None,
+        api_key: str | None = None,
         timeout: int | None = None,
     ) -> Self:
         """Create a new sandbox directly.
@@ -382,6 +392,7 @@ class Sandbox:
             api_url: API URL (default: from PROKUBE_API_URL env var).
             workspace: Workspace (default: from PROKUBE_WORKSPACE env var).
             user_id: User ID (default: from PROKUBE_USER_ID env var).
+            api_key: API key for external access (default: from PROKUBE_API_KEY env var).
             timeout: Request timeout (default: from PROKUBE_TIMEOUT env var).
 
         Returns:
@@ -399,6 +410,7 @@ class Sandbox:
             api_url=api_url,
             workspace=workspace,
             user_id=user_id,
+            api_key=api_key,
             timeout=timeout,
         )
         client = SandboxClient(config)
@@ -421,6 +433,7 @@ class Sandbox:
         api_url: str | None,
         workspace: str | None,
         user_id: str | None,
+        api_key: str | None,
         timeout: int | None,
     ) -> Config:
         """Build configuration from explicit params and environment."""
@@ -431,6 +444,8 @@ class Sandbox:
             kwargs["workspace"] = workspace
         if user_id is not None:
             kwargs["user_id"] = user_id
+        if api_key is not None:
+            kwargs["api_key"] = api_key
         if timeout is not None:
             kwargs["timeout"] = timeout
         return Config(**kwargs)
