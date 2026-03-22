@@ -71,9 +71,11 @@ export PROKUBE_USER_ID=user@example.com  # Required (or KF_USER must be set)
 export PROKUBE_TIMEOUT=300  # Optional, default 300 seconds
 ```
 
-**Note:** `PROKUBE_USER_ID` is required for authentication. If not set, the SDK
-will fall back to `KF_USER` (set by some Kubeflow deployments). If neither is
-available, you must pass `user_id` explicitly when creating a Sandbox.
+**Note:** Either `PROKUBE_API_KEY` or `PROKUBE_USER_ID` is required for authentication.
+If `PROKUBE_API_KEY` is set, it takes precedence over `PROKUBE_USER_ID`. If neither
+API key nor user ID is set, the SDK will fall back to `KF_USER` (set by some Kubeflow
+deployments). If none are available, you must pass `api_key` or `user_id` explicitly
+when creating a Sandbox.
 
 ### Explicit Configuration
 
@@ -87,6 +89,38 @@ sbx = Sandbox.from_pool(
     user_id="user@example.com",
 )
 ```
+
+### External Access (API Key)
+
+For accessing prokube from outside the cluster, use an API key:
+
+```bash
+export PROKUBE_API_URL=https://prokube.ai/pkui
+export PROKUBE_WORKSPACE=my-workspace
+export PROKUBE_API_KEY=your-api-key
+```
+
+```python
+from prokube.sandbox import Sandbox
+
+# API key is picked up from PROKUBE_API_KEY env var
+sbx = Sandbox.from_pool("python-pool")
+
+# Or pass it explicitly
+sbx = Sandbox.from_pool(
+    pool="python-pool",
+    api_url="https://prokube.ai/pkui",
+    workspace="my-workspace",
+    api_key="your-api-key",
+)
+
+result = sbx.run_code("print('Hello from outside the cluster!')")
+print(result.stdout)
+sbx.kill()
+```
+
+When using an API key, the SDK automatically routes requests to the external
+API endpoints and skips the internal version compatibility check.
 
 ## API Reference
 

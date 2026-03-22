@@ -53,9 +53,16 @@ def check_backend_compatibility(client: HttpClient) -> None:
     required version. Does not raise an exception to allow graceful
     degradation.
 
+    Skips the version check when using API key authentication, since
+    external endpoints don't expose /api/version.
+
     Args:
         client: HTTP client to use for version check.
     """
+    # External endpoints (API key auth) don't have /api/version
+    if client.config.use_api_key:
+        return
+
     try:
         response = client.get("/api/version")
         backend_version = response.get("version", "unknown")
