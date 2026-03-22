@@ -69,8 +69,9 @@ class SandboxClient:
     def _sandbox_sub_path(self, name: str, sub: str) -> str:
         """Get API path for a sandbox sub-resource (exec, files, etc.).
 
-        For external (API key) access, sub-resources hang off
-        /sandbox/{ws}/{name}/{sub} instead of /sandbox/{ws}/sandboxes/{name}/{sub}.
+        For external (API key) access, sub-resources use
+        /sandbox/{ws}/{name}/{sub}, while internal (non-API-key) access uses
+        /api/namespaces/{ws}/sandboxes/{name}/{sub}.
         """
         ws = self.config.workspace
         if self.config.use_api_key:
