@@ -103,19 +103,24 @@ export PROKUBE_API_KEY=your-api-key
 from prokube.sandbox import Sandbox
 
 # API key is picked up from PROKUBE_API_KEY env var
-sbx = Sandbox.from_pool("python-pool")
+with Sandbox.from_pool("python-pool") as sbx:
+    result = sbx.run_code("print('Hello from outside the cluster!')")
+    print(result.stdout)
+```
 
-# Or pass it explicitly
-sbx = Sandbox.from_pool(
+Or pass the API key explicitly (no env vars needed):
+
+```python
+from prokube.sandbox import Sandbox
+
+with Sandbox.from_pool(
     pool="python-pool",
     api_url="https://prokube.ai/pkui",
     workspace="my-workspace",
     api_key="your-api-key",
-)
-
-result = sbx.run_code("print('Hello from outside the cluster!')")
-print(result.stdout)
-sbx.kill()
+) as sbx:
+    result = sbx.run_code("print('Hello from outside the cluster!')")
+    print(result.stdout)
 ```
 
 When using an API key, the SDK automatically routes requests to the external
