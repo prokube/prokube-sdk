@@ -71,11 +71,10 @@ export PROKUBE_USER_ID=user@example.com  # Required if no API key (or KF_USER)
 export PROKUBE_TIMEOUT=300  # Optional, default 300 seconds
 ```
 
-**Note:** Either `PROKUBE_API_KEY` or `PROKUBE_USER_ID` is required for authentication.
-If `PROKUBE_API_KEY` is set, it takes precedence over `PROKUBE_USER_ID`. If neither
-API key nor user ID is set, the SDK will fall back to `KF_USER` (set by some Kubeflow
-deployments). If none are available, you must pass `api_key` or `user_id` explicitly
-when creating a Sandbox.
+**Note:** Authentication requires one of: `PROKUBE_API_KEY`, `PROKUBE_USER_ID`, or
+`KF_USER` (precedence in that order). `PROKUBE_API_KEY` enables external access;
+`PROKUBE_USER_ID` and `KF_USER` are for in-cluster usage. If none are set, you must
+pass `api_key` or `user_id` explicitly when creating a Sandbox.
 
 ### Explicit Configuration
 
