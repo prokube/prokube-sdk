@@ -20,7 +20,9 @@ class Config:
     - PROKUBE_TIMEOUT: Default timeout in seconds (default: 300)
 
     If both api_key and user_id are set, api_key takes precedence for authentication.
-    At least one of api_key or user_id must be available.
+    At least one of api_key or user_id must be available when making authenticated
+    requests (for example, when calling get_auth_headers()). This requirement is
+    validated at request time rather than during Config initialization.
     """
 
     api_url: str = field(default_factory=lambda: _get_api_url())
