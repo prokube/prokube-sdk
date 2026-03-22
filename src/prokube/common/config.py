@@ -12,8 +12,9 @@ class Config:
 
     Configuration can be provided explicitly or via environment variables:
     - PROKUBE_API_URL: Base URL for the prokube API (e.g., "https://prokube.ai/pkui").
-      Can include a path prefix; the SDK appends "/api/..." paths to this URL.
-      Do NOT include "/api" in this URL - use the base UI URL instead.
+      Can include a path prefix; the SDK appends "/api/..." (internal) or
+      "/sandbox/..." (external, when using API key auth) paths to this URL.
+      Do NOT include "/api" or "/sandbox" in this URL - use the base UI URL instead.
     - PROKUBE_WORKSPACE: Workspace (Kubernetes namespace)
     - PROKUBE_USER_ID: User ID for authentication
     - PROKUBE_API_KEY: API key for external access (takes precedence over user_id)
@@ -28,7 +29,7 @@ class Config:
     api_url: str = field(default_factory=lambda: _get_api_url())
     workspace: str = field(default_factory=lambda: _get_workspace())
     user_id: str | None = field(default_factory=lambda: _get_user_id())
-    api_key: str | None = field(default_factory=lambda: _get_api_key())
+    api_key: str | None = field(default_factory=lambda: _get_api_key(), repr=False)
     timeout: int = field(default_factory=lambda: _get_timeout())
 
     def __post_init__(self) -> None:
