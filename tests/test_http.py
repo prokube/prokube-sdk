@@ -114,3 +114,81 @@ class TestHttpClient:
 
         request = httpx_mock.get_request()
         assert request.headers["kubeflow-userid"] == "test-user@example.com"
+
+
+class TestGetOrigin:
+    """Tests for HttpClient._get_origin."""
+
+    def test_simple_url(self):
+        assert HttpClient._get_origin("https://example.com") == "https://example.com"
+
+    def test_url_with_path(self):
+        assert (
+            HttpClient._get_origin("https://example.com/pkui")
+            == "https://example.com"
+        )
+
+    def test_url_with_port(self):
+        assert (
+            HttpClient._get_origin("https://example.com:8080/pkui")
+            == "https://example.com:8080"
+        )
+
+    def test_url_with_deep_path(self):
+        assert (
+            HttpClient._get_origin("https://example.com/a/b/c")
+            == "https://example.com"
+        )
+
+
+class TestApiKeyBaseUrl:
+    """Tests that API key auth uses origin-only base URL."""
+
+    def test_api_key_strips_path_prefix(self, httpx_mock: HTTPXMock):
+        """API key client should use origin only, not the /pkui path prefix."""
+        config = Config(
+            api_url="https://test.example.com/pkui",
+            workspace="test-ws",
+            api_key="pk_live_test123",
+        )
+        client = HttpClient(config)
+
+        # External route: /sandbox/test-ws/sandboxes (no /pkui prefix)
+        httpx_mock.add_response(
+            method="GET",
+            url="https://test.example.com/sandbox/test-ws/sandboxes",
+            json={"sandboxes": [], "total": 0},
+        )
+
+        response = client.get("/sandbox/test-ws/sandboxes")
+        assert response == {"sandboxes": [], "total": 0}
+
+        request = httpx_mock.get_request()
+        assert request.headers["x-api-key"] == "pk_live_test123"
+        assert str(request.url) == "https://test.example.com/sandbox/test-ws/sandboxes"
+        client.close()
+
+    def test_internal_uses_full_path(self, httpx_mock: HTTPXMock):
+        """Internal client should preserve the /pkui path prefix."""
+        config = Config(
+            api_url="https://test.example.com/pkui",
+            workspace="test-ws",
+            user_id="test-user@example.com",
+        )
+        client = HttpClient(config)
+
+        httpx_mock.add_response(
+            method="GET",
+            url="https://test.example.com/pkui/api/namespaces/test-ws/sandboxes",
+            json={"sandboxes": [], "total": 0},
+        )
+
+        response = client.get("/api/namespaces/test-ws/sandboxes")
+        assert response == {"sandboxes": [], "total": 0}
+
+        request = httpx_mock.get_request()
+        assert (
+            str(request.url)
+            == "https://test.example.com/pkui/api/namespaces/test-ws/sandboxes"
+        )
+        client.close()

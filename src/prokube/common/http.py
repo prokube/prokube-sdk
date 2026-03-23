@@ -27,9 +27,15 @@ class HttpClient:
     def client(self) -> httpx.Client:
         """Get or create the httpx client."""
         if self._client is None:
-            # Ensure base_url ends with / for proper path joining
-            # This allows API URLs with path prefixes (e.g., https://prokube.ai/pkui/)
-            base_url = self.config.api_url
+            # For API key (external) access, the external routes (/sandbox/*,
+            # /mcp/*) are top-level on the ingress gateway — NOT under the path
+            # prefix (e.g., /pkui). So we strip the path and use only the origin.
+            # For internal access, the full api_url (with prefix) is used since
+            # internal routes live under /pkui/api/...
+            if self.config.use_api_key:
+                base_url = self._get_origin(self.config.api_url)
+            else:
+                base_url = self.config.api_url
             if not base_url.endswith("/"):
                 base_url += "/"
             self._client = httpx.Client(
@@ -38,6 +44,19 @@ class HttpClient:
                 timeout=self.config.timeout,
             )
         return self._client
+
+    @staticmethod
+    def _get_origin(url: str) -> str:
+        """Extract origin (scheme + host + port) from a URL.
+
+        Examples:
+            https://example.com/pkui -> https://example.com
+            https://example.com:8080/pkui -> https://example.com:8080
+        """
+        from urllib.parse import urlparse
+
+        parsed = urlparse(url)
+        return f"{parsed.scheme}://{parsed.netloc}"
 
     def _normalize_path(self, path: str) -> str:
         """Normalize path for httpx URL joining.
