@@ -209,15 +209,15 @@ class TestPathRouting:
         client = SandboxClient(config, check_version=False)
         assert (
             client._sandbox_sub_path("my-sbx", "exec")
-            == "/sandbox/test-ws/my-sbx/exec"
+            == "/sandbox/test-ws/sandboxes/my-sbx/exec"
         )
         assert (
             client._sandbox_sub_path("my-sbx", "files")
-            == "/sandbox/test-ws/my-sbx/files"
+            == "/sandbox/test-ws/sandboxes/my-sbx/files"
         )
         assert (
             client._sandbox_sub_path("my-sbx", "files/download")
-            == "/sandbox/test-ws/my-sbx/files/download"
+            == "/sandbox/test-ws/sandboxes/my-sbx/files/download"
         )
         client.close()
 
@@ -278,7 +278,7 @@ class TestApiKeyEndToEnd:
         )
         httpx_mock.add_response(
             method="POST",
-            url="https://test.example.com/sandbox/test-ws/sandbox-test/exec",
+            url="https://test.example.com/sandbox/test-ws/sandboxes/sandbox-test/exec",
             json={"stdout": "42\n", "stderr": "", "success": True},
         )
 
