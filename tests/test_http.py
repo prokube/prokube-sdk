@@ -140,6 +140,18 @@ class TestGetOrigin:
             == "https://example.com"
         )
 
+    def test_missing_scheme_raises(self):
+        with pytest.raises(ValueError, match="absolute URL including scheme"):
+            HttpClient._get_origin("example.com/pkui")
+
+    def test_non_http_scheme_raises(self):
+        with pytest.raises(ValueError, match="http or https scheme"):
+            HttpClient._get_origin("ftp://example.com/pkui")
+
+    def test_empty_url_raises(self):
+        with pytest.raises(ValueError, match="absolute URL including scheme"):
+            HttpClient._get_origin("")
+
 
 class TestApiKeyBaseUrl:
     """Tests that API key auth uses origin-only base URL."""

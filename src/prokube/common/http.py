@@ -56,6 +56,15 @@ class HttpClient:
         from urllib.parse import urlparse
 
         parsed = urlparse(url)
+        if not parsed.scheme or not parsed.netloc:
+            raise ValueError(
+                f"api_url must be an absolute URL including scheme, e.g. "
+                f"'https://example.com'. Got: {url!r}"
+            )
+        if parsed.scheme not in ("http", "https"):
+            raise ValueError(
+                f"api_url must use http or https scheme. Got: {parsed.scheme!r}"
+            )
         return f"{parsed.scheme}://{parsed.netloc}"
 
     def _normalize_path(self, path: str) -> str:
