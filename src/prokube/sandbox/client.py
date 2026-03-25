@@ -164,10 +164,13 @@ class SandboxClient:
         return SandboxInfo(
             name=response["name"],
             workspace=self.config.workspace,
-            status=_parse_status(response.get("status"), SandboxStatus.UNKNOWN),
+            status=_parse_status(
+                response.get("status") or response.get("phase"),
+                SandboxStatus.UNKNOWN,
+            ),
             image=response.get("image"),
-            pool=response.get("pool"),
-            created_at=response.get("created_at"),
+            pool=response.get("poolName") or response.get("pool"),
+            created_at=response.get("createdAt") or response.get("created_at"),
         )
 
     def delete(self, name: str) -> None:
