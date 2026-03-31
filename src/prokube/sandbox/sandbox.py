@@ -221,8 +221,7 @@ class Sandbox:
         poll_interval = 2
         deadline = time.monotonic() + timeout
         while True:
-            info = self._client.get(self._name)
-            self._status = info.status
+            self.refresh()
             if self._status == SandboxStatus.RUNNING:
                 return
             if self._status in (SandboxStatus.FAILED, SandboxStatus.SUCCEEDED):
