@@ -215,15 +215,20 @@ class HttpClient:
             except Exception:
                 error_detail = response.text
             raise AuthenticationError(
-                f"Authentication failed ({response.status_code}): {error_detail}"
+                f"Authentication failed ({response.status_code}): {error_detail}",
+                status_code=response.status_code,
             )
         if response.status_code == 404:
-            raise NotFoundError(f"Resource not found: {response.url}")
+            raise NotFoundError(
+                f"Resource not found: {response.url}",
+                status_code=404,
+            )
         if response.status_code >= 400:
             try:
                 error_detail = response.json().get("detail", response.text)
             except Exception:
                 error_detail = response.text
             raise ProKubeError(
-                f"API request failed ({response.status_code}): {error_detail}"
+                f"API request failed ({response.status_code}): {error_detail}",
+                status_code=response.status_code,
             )
