@@ -191,6 +191,9 @@ class Sandbox:
         self._check_not_killed()
         self._client.pause(self._name)
         self._status = SandboxStatus.PAUSED
+        # Pausing deletes the underlying pod, so any existing Jupyter session
+        # is no longer valid. Reset so next run_code() starts a fresh kernel.
+        self._code.reset_session()
 
     def resume(self) -> None:
         """Resume a paused sandbox.
@@ -205,6 +208,8 @@ class Sandbox:
         self._check_not_killed()
         self._client.resume(self._name)
         self._status = SandboxStatus.PENDING
+        # New pod means previous Jupyter session is invalid.
+        self._code.reset_session()
 
     def wait_until_ready(self, timeout: int = 120) -> None:
         """Block until sandbox phase is Running. Useful after resume().

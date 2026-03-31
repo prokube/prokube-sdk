@@ -251,7 +251,10 @@ class TestWaitUntilReady:
 
         sbx._client.close()
 
-    def test_wait_until_ready_after_pending(self, mock_env, httpx_mock: HTTPXMock):
+    def test_wait_until_ready_after_pending(
+        self, mock_env, monkeypatch, httpx_mock: HTTPXMock
+    ):
+        monkeypatch.setattr("time.sleep", lambda _: None)
         _mock_version(httpx_mock)
         _mock_claim(httpx_mock)
         # First poll: Pending
@@ -274,7 +277,24 @@ class TestWaitUntilReady:
         sbx._client.close()
 
     @pytest.mark.httpx_mock(can_send_already_matched_responses=True)
-    def test_wait_until_ready_timeout(self, mock_env, httpx_mock: HTTPXMock):
+    def test_wait_until_ready_timeout(
+        self, mock_env, monkeypatch, httpx_mock: HTTPXMock
+    ):
+        # Make time.monotonic() advance past the deadline after first poll
+        call_count = 0
+        real_monotonic = __import__("time").monotonic
+
+        def fake_monotonic():
+            nonlocal call_count
+            call_count += 1
+            if call_count <= 2:
+                return real_monotonic()
+            # After first poll, jump past deadline
+            return real_monotonic() + 1000
+
+        monkeypatch.setattr("time.monotonic", fake_monotonic)
+        monkeypatch.setattr("time.sleep", lambda _: None)
+
         _mock_version(httpx_mock)
         _mock_claim(httpx_mock)
         # Always return Pending
