@@ -271,6 +271,7 @@ class Sandbox:
         cls,
         pool: str,
         *,
+        volume_size: str | None = None,
         api_url: str | None = None,
         workspace: str | None = None,
         user_id: str | None = None,
@@ -284,6 +285,7 @@ class Sandbox:
 
         Args:
             pool: Name of the warm pool.
+            volume_size: PVC volume size (e.g. '20Gi'). If omitted, backend default is used.
             api_url: API URL (default: from PROKUBE_API_URL env var).
             workspace: Workspace (default: from PROKUBE_WORKSPACE env var).
             user_id: User ID (default: from PROKUBE_USER_ID env var).
@@ -306,7 +308,7 @@ class Sandbox:
         )
         client = SandboxClient(config)
         try:
-            info = client.claim_from_pool(pool)
+            info = client.claim_from_pool(pool, volume_size=volume_size)
         except Exception:
             client.close()
             raise
@@ -458,6 +460,7 @@ class Sandbox:
         image: str,
         *,
         name: str | None = None,
+        volume_size: str | None = None,
         api_url: str | None = None,
         workspace: str | None = None,
         user_id: str | None = None,
@@ -472,6 +475,7 @@ class Sandbox:
         Args:
             image: Container image to use.
             name: Optional sandbox name (auto-generated if not provided).
+            volume_size: PVC volume size (e.g. '20Gi'). If omitted, backend default is used.
             api_url: API URL (default: from PROKUBE_API_URL env var).
             workspace: Workspace (default: from PROKUBE_WORKSPACE env var).
             user_id: User ID (default: from PROKUBE_USER_ID env var).
@@ -498,7 +502,7 @@ class Sandbox:
         )
         client = SandboxClient(config)
         try:
-            info = client.create(image=image, name=name)
+            info = client.create(image=image, name=name, volume_size=volume_size)
         except Exception:
             client.close()
             raise
