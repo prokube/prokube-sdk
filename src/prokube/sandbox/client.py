@@ -195,7 +195,7 @@ class SandboxClient:
         try:
             self._http.post(self._sandbox_sub_path(name, "pause"))
         except ProKubeError as e:
-            if "409" in str(e):
+            if e.status_code == 409:
                 raise SandboxError(str(e)) from e
             raise
 
@@ -213,7 +213,7 @@ class SandboxClient:
         try:
             self._http.post(self._sandbox_sub_path(name, "resume"))
         except ProKubeError as e:
-            if "409" in str(e):
+            if e.status_code == 409:
                 raise SandboxError(str(e)) from e
             raise
 

@@ -214,10 +214,13 @@ class Sandbox:
 
         Raises:
             SandboxTimeoutError: If sandbox does not become Running within timeout.
+            SandboxError: If the sandbox enters a terminal state (Failed/Succeeded)
+                while waiting for it to become ready.
         """
         self._check_not_killed()
+        poll_interval = 2
         deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
+        while True:
             info = self._client.get(self._name)
             self._status = info.status
             if self._status == SandboxStatus.RUNNING:
@@ -227,7 +230,10 @@ class Sandbox:
                     f"Sandbox {self._name} entered terminal state "
                     f"{self._status.value!r} while waiting for it to become ready"
                 )
-            time.sleep(2)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(poll_interval, remaining))
         raise SandboxTimeoutError(
             f"Sandbox {self._name} did not become ready within {timeout}s "
             f"(current phase: {self._status.value!r})"
