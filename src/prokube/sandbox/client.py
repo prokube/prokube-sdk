@@ -6,11 +6,19 @@ import base64
 from typing import TYPE_CHECKING
 
 from prokube.common.compat import check_backend_compatibility
+from prokube.common.exceptions import ProKubeError, SandboxError
 from prokube.common.http import HttpClient
-from prokube.sandbox.models import (ClaimRequest, CodeResult, CommandResult,
-                                    CreateRequest, ExecRequest, FileInfo,
-                                    FileWriteRequest, SandboxInfo,
-                                    SandboxStatus)
+from prokube.sandbox.models import (
+    ClaimRequest,
+    CodeResult,
+    CommandResult,
+    CreateRequest,
+    ExecRequest,
+    FileInfo,
+    FileWriteRequest,
+    SandboxInfo,
+    SandboxStatus,
+)
 
 if TYPE_CHECKING:
     from prokube.common.config import Config
@@ -172,6 +180,42 @@ class SandboxClient:
             pool=response.get("poolName") or response.get("pool"),
             created_at=response.get("createdAt") or response.get("created_at"),
         )
+
+    def pause(self, name: str) -> None:
+        """Pause a running sandbox.
+
+        Frees compute resources while preserving /workspace and /home/agent.
+
+        Args:
+            name: Sandbox name.
+
+        Raises:
+            SandboxError: If sandbox is not in Running state (HTTP 409).
+        """
+        try:
+            self._http.post(self._sandbox_sub_path(name, "pause"))
+        except ProKubeError as e:
+            if e.status_code == 409:
+                raise SandboxError(str(e), status_code=409) from e
+            raise
+
+    def resume(self, name: str) -> None:
+        """Resume a paused sandbox.
+
+        A new pod starts with the same PVC mounts at /workspace and /home/agent.
+
+        Args:
+            name: Sandbox name.
+
+        Raises:
+            SandboxError: If sandbox is not in Paused state (HTTP 409).
+        """
+        try:
+            self._http.post(self._sandbox_sub_path(name, "resume"))
+        except ProKubeError as e:
+            if e.status_code == 409:
+                raise SandboxError(str(e), status_code=409) from e
+            raise
 
     def delete(self, name: str) -> None:
         """Delete a sandbox.
