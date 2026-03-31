@@ -225,5 +225,6 @@ class HttpClient:
             except Exception:
                 error_detail = response.text
             raise ProKubeError(
-                f"API request failed ({response.status_code}): {error_detail}"
+                f"API request failed ({response.status_code}): {error_detail}",
+                status_code=response.status_code,
             )
