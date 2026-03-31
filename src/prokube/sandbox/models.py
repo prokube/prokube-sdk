@@ -110,6 +110,11 @@ class ClaimRequest(BaseModel):
     pool_name: str = Field(
         ..., serialization_alias="poolName", description="Name of the warm pool"
     )
+    volume_size: str | None = Field(
+        default=None,
+        serialization_alias="volumeSize",
+        description="PVC volume size (e.g. '20Gi')",
+    )
 
 
 class CreateRequest(BaseModel):
@@ -117,6 +122,11 @@ class CreateRequest(BaseModel):
 
     image: str = Field(..., description="Container image to use")
     name: str | None = Field(default=None, description="Optional sandbox name")
+    volume_size: str | None = Field(
+        default=None,
+        serialization_alias="volumeSize",
+        description="PVC volume size (e.g. '20Gi')",
+    )
 
 
 class FileWriteRequest(BaseModel):
