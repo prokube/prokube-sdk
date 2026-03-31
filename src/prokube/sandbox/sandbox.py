@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import time
 
 if sys.version_info >= (3, 11):
     from typing import Self
@@ -10,7 +11,7 @@ else:
     from typing_extensions import Self
 
 from prokube.common.config import Config
-from prokube.common.exceptions import SandboxError
+from prokube.common.exceptions import SandboxError, SandboxTimeoutError
 from prokube.sandbox.client import SandboxClient
 from prokube.sandbox.code import CodeRunner
 from prokube.sandbox.commands import CommandRunner
@@ -109,6 +110,15 @@ class Sandbox:
         return self._status.value
 
     @property
+    def phase(self) -> str:
+        """Current sandbox phase (Running, Paused, Pending, etc.).
+
+        Refreshes from the API to return the latest phase.
+        """
+        self.refresh()
+        return self._status.value
+
+    @property
     def commands(self) -> CommandRunner:
         """Get the command runner for shell commands."""
         self._check_not_killed()
@@ -168,6 +178,60 @@ class Sandbox:
         Returns None if no code has been executed yet.
         """
         return self._code.session_id
+
+    def pause(self) -> None:
+        """Pause the sandbox. Frees compute resources.
+
+        Preserves: /workspace (working directory) and /home/agent (HOME, pip --user, dotfiles).
+        Lost: running processes, apt-installed system packages, /tmp.
+
+        Raises:
+            SandboxError: If sandbox is not in Running state.
+        """
+        self._check_not_killed()
+        self._client.pause(self._name)
+        self._status = SandboxStatus.PAUSED
+
+    def resume(self) -> None:
+        """Resume a paused sandbox.
+
+        A new pod starts with the same PVC mounts at /workspace and /home/agent.
+        If /home/agent/.sandbox-restore.sh exists, it runs automatically on
+        startup to reinstall system packages.
+
+        Raises:
+            SandboxError: If sandbox is not in Paused state.
+        """
+        self._check_not_killed()
+        self._client.resume(self._name)
+        self._status = SandboxStatus.PENDING
+
+    def wait_until_ready(self, timeout: int = 120) -> None:
+        """Block until sandbox phase is Running. Useful after resume().
+
+        Args:
+            timeout: Maximum seconds to wait (default: 120).
+
+        Raises:
+            SandboxTimeoutError: If sandbox does not become Running within timeout.
+        """
+        self._check_not_killed()
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            info = self._client.get(self._name)
+            self._status = info.status
+            if self._status == SandboxStatus.RUNNING:
+                return
+            if self._status in (SandboxStatus.FAILED, SandboxStatus.SUCCEEDED):
+                raise SandboxError(
+                    f"Sandbox {self._name} entered terminal state "
+                    f"{self._status.value!r} while waiting for it to become ready"
+                )
+            time.sleep(2)
+        raise SandboxTimeoutError(
+            f"Sandbox {self._name} did not become ready within {timeout}s "
+            f"(current phase: {self._status.value!r})"
+        )
 
     def kill(self) -> None:
         """Destroy the sandbox immediately.
@@ -249,6 +313,7 @@ class Sandbox:
     def list(
         cls,
         *,
+        phase: str | None = None,
         api_url: str | None = None,
         workspace: str | None = None,
         user_id: str | None = None,
@@ -258,6 +323,7 @@ class Sandbox:
         """List all sandboxes in the workspace.
 
         Args:
+            phase: Filter by phase (e.g. "Running", "Paused", "Pending").
             api_url: API URL (default: from PROKUBE_API_URL env var).
             workspace: Workspace (default: from PROKUBE_WORKSPACE env var).
             user_id: User ID (default: from PROKUBE_USER_ID env var).
@@ -268,7 +334,7 @@ class Sandbox:
             List of ready-to-use Sandbox instances.
 
         Example:
-            >>> sandboxes = Sandbox.list()
+            >>> sandboxes = Sandbox.list(phase="Paused")
             >>> for sbx in sandboxes:
             ...     print(f"{sbx.name}: {sbx.status}")
         """
@@ -288,6 +354,10 @@ class Sandbox:
 
         # Close the temporary listing client — no longer needed.
         client.close()
+
+        # Filter by phase if requested
+        if phase is not None:
+            infos = [i for i in infos if i.status.value == phase]
 
         if not infos:
             return []
@@ -368,6 +438,9 @@ class Sandbox:
             pool=info.pool,
             image=info.image,
         )
+
+    # Alias: Sandbox.connect() is the same as Sandbox.get()
+    connect = get
 
     @classmethod
     def create(
