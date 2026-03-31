@@ -82,19 +82,22 @@ class SandboxClient:
         """
         return f"{self._sandbox_path(name)}/{sub}"
 
-    def claim_from_pool(self, pool: str) -> SandboxInfo:
+    def claim_from_pool(
+        self, pool: str, volume_size: str | None = None
+    ) -> SandboxInfo:
         """Claim a sandbox from a warm pool.
 
         Args:
             pool: Name of the warm pool.
+            volume_size: PVC volume size (e.g. '20Gi').
 
         Returns:
             Information about the claimed sandbox.
         """
-        request = ClaimRequest(pool_name=pool)
+        request = ClaimRequest(pool_name=pool, volume_size=volume_size)
         response = self._http.post(
             f"{self._sandboxes_path()}/claim",
-            json=request.model_dump(by_alias=True),
+            json=request.model_dump(by_alias=True, exclude_none=True),
         )
         # API returns sandboxName for claim endpoint
         sandbox_name = response.get("sandboxName") or response["name"]
@@ -105,12 +108,18 @@ class SandboxClient:
             pool=pool,
         )
 
-    def create(self, image: str, name: str | None = None) -> SandboxInfo:
+    def create(
+        self,
+        image: str,
+        name: str | None = None,
+        volume_size: str | None = None,
+    ) -> SandboxInfo:
         """Create a new sandbox.
 
         Args:
             image: Container image to use.
             name: Optional sandbox name (auto-generated if not provided).
+            volume_size: PVC volume size (e.g. '20Gi').
 
         Returns:
             Information about the created sandbox.
@@ -121,10 +130,10 @@ class SandboxClient:
         if name is None:
             name = f"sandbox-{uuid.uuid4().hex[:8]}"
 
-        request = CreateRequest(image=image, name=name)
+        request = CreateRequest(image=image, name=name, volume_size=volume_size)
         response = self._http.post(
             self._sandboxes_path(),
-            json=request.model_dump(),
+            json=request.model_dump(by_alias=True, exclude_none=True),
         )
         # API returns 'phase' instead of 'status' for sandbox phase
         status_str = response.get("status") or response.get("phase")
