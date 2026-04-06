@@ -23,6 +23,7 @@ def config():
         api_url="https://test.example.com",
         workspace="test-ws",
         user_id="test-user@example.com",
+        api_key=None,
     )
 
 
@@ -42,6 +43,7 @@ def mock_env(monkeypatch):
     monkeypatch.setenv("PROKUBE_API_URL", "https://test.example.com")
     monkeypatch.setenv("PROKUBE_WORKSPACE", "test-ws")
     monkeypatch.setenv("PROKUBE_USER_ID", "test-user@example.com")
+    monkeypatch.delenv("PROKUBE_API_KEY", raising=False)
 
 
 POOL_RESPONSE = {
