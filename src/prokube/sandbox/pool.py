@@ -10,6 +10,7 @@ else:
     from typing_extensions import Self
 
 from prokube.common.config import Config
+from prokube.common.exceptions import SandboxError
 from prokube.sandbox.pool_client import PoolClient
 
 
@@ -73,11 +74,17 @@ class SandboxPool:
         self._image = image
         self._cpu = cpu
         self._memory = memory
+        self._deleted = False
 
     @property
     def name(self) -> str:
         """Get the pool name."""
         return self._name
+
+    @property
+    def workspace(self) -> str:
+        """Get the workspace (Kubernetes namespace)."""
+        return self._workspace
 
     @property
     def pool_size(self) -> int:
@@ -109,13 +116,32 @@ class SandboxPool:
         """Get the memory resource request."""
         return self._memory
 
+    def _check_not_deleted(self) -> None:
+        """Raise if pool has been deleted."""
+        if self._deleted:
+            raise SandboxError(f"Pool '{self._name}' has been deleted")
+
     def delete(self) -> None:
         """Delete this pool.
 
         After calling this method, the pool object should not be reused.
+        Calling delete() on an already-deleted pool is a no-op (idempotent).
         """
+        if self._deleted:
+            return
         self._client.delete_pool(self._name)
+        self._deleted = True
         self._client.close()
+
+    def refresh(self) -> None:
+        """Refresh pool information from the API."""
+        self._check_not_deleted()
+        info = self._client.get_pool(self._name)
+        self._replicas = info.replicas
+        self._ready_replicas = info.ready_replicas
+        self._image = info.image
+        self._cpu = info.cpu
+        self._memory = info.memory
 
     @classmethod
     def create(
