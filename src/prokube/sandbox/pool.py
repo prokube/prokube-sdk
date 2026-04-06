@@ -121,6 +121,17 @@ class SandboxPool:
         if self._deleted:
             raise SandboxError(f"Pool '{self._name}' has been deleted")
 
+    def close(self) -> None:
+        """Close the underlying HTTP client without deleting the pool."""
+        self._client.close()
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> bool:
+        self.close()
+        return False
+
     def delete(self) -> None:
         """Delete this pool.
 
