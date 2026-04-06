@@ -119,29 +119,6 @@ class CreateRequest(BaseModel):
     name: str | None = Field(default=None, description="Optional sandbox name")
 
 
-class PoolInfo(BaseModel):
-    """Information about a sandbox pool."""
-
-    name: str = Field(..., description="Name of the pool")
-    workspace: str = Field(..., description="Workspace (Kubernetes namespace)")
-    replicas: int = Field(default=0, description="Desired pool size")
-    ready_replicas: int = Field(default=0, description="Number of ready replicas")
-    image: str | None = Field(default=None, description="Container image")
-    cpu: str | None = Field(default=None, description="CPU resource request")
-    memory: str | None = Field(default=None, description="Memory resource request")
-
-
-class CreatePoolRequest(BaseModel):
-    """Request to create a sandbox pool."""
-
-    name: str = Field(..., description="Pool name")
-    image: str = Field(..., description="Container image to use")
-    pool_size: int = Field(
-        ..., serialization_alias="poolSize", description="Number of warm sandboxes"
-    )
-    cpu: str = Field(..., description="CPU resource request")
-    memory: str = Field(..., description="Memory resource request")
-
 
 class FileWriteRequest(BaseModel):
     """Request to write a file to sandbox."""
