@@ -468,6 +468,109 @@ class TestSandboxPoolRefresh:
         pool._client.close()
 
 
+class TestSandboxPoolApiKeyRouting:
+    """Tests for SandboxPool CRUD operations via the API key path."""
+
+    def test_create_uses_api_key_path(self, httpx_mock: HTTPXMock):
+        httpx_mock.add_response(
+            method="POST",
+            url="https://test.example.com/sandbox/ws/sandbox-pools",
+            json=POOL_RESPONSE,
+        )
+
+        pool = SandboxPool.create(
+            name="python-pool",
+            image="pk-sandbox-base:latest",
+            pool_size=3,
+            cpu="2",
+            memory="4Gi",
+            api_url="https://test.example.com",
+            workspace="ws",
+            api_key="test-key",
+        )
+
+        requests = httpx_mock.get_requests()
+        post_reqs = [r for r in requests if r.method == "POST"]
+        assert len(post_reqs) == 1
+        assert "/sandbox/ws/sandbox-pools" in str(post_reqs[0].url)
+        pool._client.close()
+
+    def test_list_uses_api_key_path(self, httpx_mock: HTTPXMock):
+        httpx_mock.add_response(
+            method="GET",
+            url="https://test.example.com/sandbox/ws/sandbox-pools",
+            json={"pools": [POOL_RESPONSE]},
+        )
+
+        pools = SandboxPool.list(
+            api_url="https://test.example.com",
+            workspace="ws",
+            api_key="test-key",
+        )
+
+        requests = httpx_mock.get_requests()
+        get_reqs = [r for r in requests if r.method == "GET"]
+        assert len(get_reqs) == 1
+        assert "/sandbox/ws/sandbox-pools" in str(get_reqs[0].url)
+        for p in pools:
+            p._client.close()
+
+    def test_get_uses_api_key_path(self, httpx_mock: HTTPXMock):
+        httpx_mock.add_response(
+            method="GET",
+            url="https://test.example.com/sandbox/ws/sandbox-pools/python-pool",
+            json=POOL_RESPONSE,
+        )
+
+        pool = SandboxPool.get(
+            "python-pool",
+            api_url="https://test.example.com",
+            workspace="ws",
+            api_key="test-key",
+        )
+
+        requests = httpx_mock.get_requests()
+        get_reqs = [r for r in requests if r.method == "GET"]
+        assert len(get_reqs) == 1
+        assert "/sandbox/ws/sandbox-pools/python-pool" in str(get_reqs[0].url)
+        pool._client.close()
+
+    def test_delete_uses_api_key_path(self, httpx_mock: HTTPXMock):
+        httpx_mock.add_response(
+            method="GET",
+            url="https://test.example.com/sandbox/ws/sandbox-pools/python-pool",
+            json=POOL_RESPONSE,
+        )
+        httpx_mock.add_response(
+            method="DELETE",
+            url="https://test.example.com/sandbox/ws/sandbox-pools/python-pool",
+            status_code=204,
+        )
+
+        pool = SandboxPool.get(
+            "python-pool",
+            api_url="https://test.example.com",
+            workspace="ws",
+            api_key="test-key",
+        )
+        pool.delete()
+
+        requests = httpx_mock.get_requests()
+        delete_reqs = [r for r in requests if r.method == "DELETE"]
+        assert len(delete_reqs) == 1
+        assert "/sandbox/ws/sandbox-pools/python-pool" in str(delete_reqs[0].url)
+
+
+class TestSandboxPoolImport:
+    """Test that SandboxPool is importable from prokube.sandbox."""
+
+    def test_import_sandbox_pool(self):
+        from prokube.sandbox import SandboxPool as ImportedPool
+
+        assert ImportedPool is not None
+        assert ImportedPool is SandboxPool
+
+
 class TestSandboxPoolRepr:
     """Tests for SandboxPool.__repr__()."""
 

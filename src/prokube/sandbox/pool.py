@@ -263,8 +263,9 @@ class SandboxPool:
             return []
 
         # Each SandboxPool gets its own client so that delete() on one
-        # does not invalidate the others. Skip version check since
-        # we already verified compatibility above.
+        # does not invalidate the others. Skip version checks for these
+        # per-pool clients; compatibility was verified earlier when
+        # applicable, and API key mode intentionally bypasses that check.
         pools: list[Self] = []
         try:
             for info in infos:
