@@ -70,12 +70,13 @@ class PoolClient:
             self._pools_path(),
             json=request.model_dump(by_alias=True, exclude_none=True),
         )
+        status = response.get("status", {})
         return PoolInfo(
             name=response.get("name", name),
             workspace=self.config.workspace,
             replicas=response.get("replicas", response.get("poolSize", pool_size)),
-            ready_replicas=response.get(
-                "readyReplicas", response.get("ready_replicas", 0)
+            ready_replicas=status.get(
+                "warmPods", status.get("availablePods", response.get("readyReplicas", 0))
             ),
             image=response.get("image", image),
             cpu=response.get("cpu", cpu),
@@ -90,20 +91,23 @@ class PoolClient:
         """
         response = self._http.get(self._pools_path())
         pools = response.get("pools", [])
-        return [
-            PoolInfo(
-                name=p["name"],
-                workspace=self.config.workspace,
-                replicas=p.get("replicas", p.get("poolSize", 0)),
-                ready_replicas=p.get(
-                    "readyReplicas", p.get("ready_replicas", 0)
-                ),
-                image=p.get("image"),
-                cpu=p.get("cpu"),
-                memory=p.get("memory"),
+        result = []
+        for p in pools:
+            s = p.get("status", {})
+            result.append(
+                PoolInfo(
+                    name=p["name"],
+                    workspace=self.config.workspace,
+                    replicas=p.get("replicas", p.get("poolSize", 0)),
+                    ready_replicas=s.get(
+                        "warmPods", s.get("availablePods", p.get("readyReplicas", 0))
+                    ),
+                    image=p.get("image"),
+                    cpu=p.get("cpu"),
+                    memory=p.get("memory"),
+                )
             )
-            for p in pools
-        ]
+        return result
 
     def get_pool(self, name: str) -> PoolInfo:
         """Get information about a sandbox pool.
@@ -115,12 +119,13 @@ class PoolClient:
             Information about the pool.
         """
         response = self._http.get(self._pool_path(name))
+        status = response.get("status", {})
         return PoolInfo(
             name=response["name"],
             workspace=self.config.workspace,
             replicas=response.get("replicas", response.get("poolSize", 0)),
-            ready_replicas=response.get(
-                "readyReplicas", response.get("ready_replicas", 0)
+            ready_replicas=status.get(
+                "warmPods", status.get("availablePods", response.get("readyReplicas", 0))
             ),
             image=response.get("image"),
             cpu=response.get("cpu"),
