@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 import sys
 import time
+import uuid
 
 if sys.version_info >= (3, 11):
     from typing import Self
@@ -17,6 +19,8 @@ from prokube.sandbox.code import CodeRunner
 from prokube.sandbox.commands import CommandRunner
 from prokube.sandbox.files import FileManager
 from prokube.sandbox.models import CodeResult, SandboxStatus
+
+logger = logging.getLogger(__name__)
 
 
 class Sandbox:
@@ -228,6 +232,7 @@ class Sandbox:
         while True:
             self.refresh()
             if self._status == SandboxStatus.RUNNING:
+                self._warmup_kernel(deadline)
                 return
             if self._status in (SandboxStatus.FAILED, SandboxStatus.SUCCEEDED):
                 raise SandboxError(
@@ -242,6 +247,62 @@ class Sandbox:
             f"Sandbox {self._name} did not become ready within {timeout}s "
             f"(current phase: {self._status.value!r})"
         )
+
+    def _warmup_kernel(self, deadline: float) -> None:
+        """Probe the Jupyter kernel until it echoes a unique marker back.
+
+        After the pod reaches Running, ipykernel still needs ~1–2s before its
+        first ``execute_request`` produces visible iopub stdout. During that
+        window, execd's ``exec`` sub-resource returns successfully but the
+        stdout never reaches the SSE stream, so the first user ``run_code()``
+        call races the cold kernel pipeline and silently returns empty output.
+
+        This method hides that race by running a tiny ``print(<marker>)``
+        probe in a loop until the stdout matches, proving the kernel pipeline
+        is end-to-end live. The probe is bounded by ``deadline`` (the same
+        deadline used by :meth:`wait_until_ready`), so it can never exceed the
+        caller's overall timeout budget. If the deadline is reached without
+        success, a warning is logged and the method returns without raising —
+        the user may still get useful results, and we don't want to block
+        ``create`` when the workaround is only partially working.
+
+        Notes:
+            * The marker is per-call (``uuid4().hex``) to avoid collisions
+              with any user code that happens to print a similar literal.
+            * The probe must NOT pass ``reset_session=True`` or an explicit
+              ``session_id``; it exercises the same code path the user will.
+
+        Args:
+            deadline: ``time.monotonic()`` value after which the probe gives
+                up and returns without raising.
+        """
+        self._check_not_killed()
+        marker = f"__pk_warmup_{uuid.uuid4().hex}__"
+        code = f'print("{marker}")'
+        attempts = 0
+        while True:
+            remaining = deadline - time.monotonic()
+            # run_code expects an integer second timeout, so we cannot probe
+            # with a sub-second budget. Once less than 1s remains the only
+            # way to stay strictly within wait_until_ready's deadline is to
+            # give up rather than clamp upward and overrun.
+            if remaining < 1:
+                logger.warning(
+                    "Sandbox %s kernel warmup probe did not echo marker "
+                    "within deadline after %d attempt(s); continuing anyway",
+                    self._name,
+                    attempts,
+                )
+                return
+            attempts += 1
+            # Bound the probe HTTP call to the remaining budget so a slow or
+            # hung /exec request can never overrun wait_until_ready's timeout.
+            result = self.run_code(code, timeout=int(remaining))
+            if result.stdout.strip() == marker:
+                return
+            # Loop top will recompute remaining and exit if deadline passed.
+            sleep_for = min(0.5, max(0.0, deadline - time.monotonic()))
+            time.sleep(sleep_for)
 
     def kill(self) -> None:
         """Destroy the sandbox immediately.
