@@ -1,6 +1,9 @@
 """Tests for pause/resume functionality."""
 
+import json
+import re
 
+import httpx
 import pytest
 from pytest_httpx import HTTPXMock
 
@@ -9,6 +12,48 @@ from prokube.common.exceptions import SandboxError, SandboxTimeoutError
 from prokube.sandbox import Sandbox
 from prokube.sandbox.client import SandboxClient, _parse_status
 from prokube.sandbox.models import SandboxStatus
+
+_WARMUP_MARKER_RE = re.compile(r'print\("(__pk_warmup_[0-9a-f]+__)"\)')
+
+
+def _extract_marker(request: httpx.Request) -> str | None:
+    """Extract the warmup marker from an /exec request body, if present."""
+    try:
+        body = json.loads(request.content)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    code = body.get("code", "")
+    match = _WARMUP_MARKER_RE.search(code)
+    return match.group(1) if match else None
+
+
+def _mock_warmup_probe_success(
+    httpx_mock: HTTPXMock, sandbox_name: str = "sandbox-test"
+) -> None:
+    """Mock /exec so the warmup probe echoes its marker back on the first call.
+
+    Used by tests that reach ``wait_until_ready`` success paths and don't
+    otherwise care about the probe; they just need it to no-op quickly.
+    """
+
+    def _callback(request: httpx.Request) -> httpx.Response:
+        marker = _extract_marker(request) or ""
+        return httpx.Response(
+            200,
+            json={
+                "stdout": f"{marker}\n",
+                "stderr": "",
+                "success": True,
+                "execution_time_ms": 1,
+            },
+        )
+
+    httpx_mock.add_callback(
+        _callback,
+        method="POST",
+        url=f"{BASE}/api/namespaces/test-ws/sandboxes/{sandbox_name}/exec",
+        is_reusable=True,
+    )
 
 
 @pytest.fixture
@@ -244,6 +289,8 @@ class TestWaitUntilReady:
             url=f"{BASE}/api/namespaces/test-ws/sandboxes/sandbox-test",
             json={"name": "sandbox-test", "phase": "Running"},
         )
+        # wait_until_ready now runs a warmup probe after pod is Running
+        _mock_warmup_probe_success(httpx_mock)
 
         sbx = Sandbox.from_pool("python-pool")
         sbx.wait_until_ready(timeout=5)
@@ -269,10 +316,176 @@ class TestWaitUntilReady:
             url=f"{BASE}/api/namespaces/test-ws/sandboxes/sandbox-test",
             json={"name": "sandbox-test", "phase": "Running"},
         )
+        # Warmup probe after Running
+        _mock_warmup_probe_success(httpx_mock)
 
         sbx = Sandbox.from_pool("python-pool")
         sbx.wait_until_ready(timeout=10)
         assert sbx.status == "Running"
+
+        sbx._client.close()
+
+    def test_wait_until_ready_warms_kernel_on_cold_start(
+        self, mock_env, monkeypatch, httpx_mock: HTTPXMock
+    ):
+        """First run_code after pod Running returns empty; probe retries until marker."""
+        monkeypatch.setattr("time.sleep", lambda _: None)
+        _mock_version(httpx_mock)
+        _mock_claim(httpx_mock)
+        # First GET: Pending, second GET: Running
+        httpx_mock.add_response(
+            method="GET",
+            url=f"{BASE}/api/namespaces/test-ws/sandboxes/sandbox-test",
+            json={"name": "sandbox-test", "phase": "Pending"},
+        )
+        httpx_mock.add_response(
+            method="GET",
+            url=f"{BASE}/api/namespaces/test-ws/sandboxes/sandbox-test",
+            json={"name": "sandbox-test", "phase": "Running"},
+        )
+
+        # First probe call: empty stdout (cold kernel).
+        # Subsequent probe calls: echo the marker back (warm).
+        call_counter = {"n": 0}
+
+        def _probe_callback(request: httpx.Request) -> httpx.Response:
+            call_counter["n"] += 1
+            marker = _extract_marker(request) or ""
+            if call_counter["n"] == 1:
+                return httpx.Response(
+                    200,
+                    json={
+                        "stdout": "",
+                        "stderr": "",
+                        "success": True,
+                        "execution_time_ms": 1,
+                    },
+                )
+            return httpx.Response(
+                200,
+                json={
+                    "stdout": f"{marker}\n",
+                    "stderr": "",
+                    "success": True,
+                    "execution_time_ms": 1,
+                },
+            )
+
+        httpx_mock.add_callback(
+            _probe_callback,
+            method="POST",
+            url=f"{BASE}/api/namespaces/test-ws/sandboxes/sandbox-test/exec",
+            is_reusable=True,
+        )
+
+        sbx = Sandbox.from_pool("python-pool")
+        sbx.wait_until_ready(timeout=10)
+
+        assert sbx.status == "Running"
+        # Probe should have been called at least twice (one empty, then success)
+        assert call_counter["n"] >= 2
+
+        sbx._client.close()
+
+    def test_wait_until_ready_warm_kernel_no_extra_latency(
+        self, mock_env, httpx_mock: HTTPXMock
+    ):
+        """Warm kernel: the first probe succeeds, so there is exactly one probe call."""
+        _mock_version(httpx_mock)
+        _mock_claim(httpx_mock)
+        httpx_mock.add_response(
+            method="GET",
+            url=f"{BASE}/api/namespaces/test-ws/sandboxes/sandbox-test",
+            json={"name": "sandbox-test", "phase": "Running"},
+        )
+
+        call_counter = {"n": 0}
+
+        def _probe_callback(request: httpx.Request) -> httpx.Response:
+            call_counter["n"] += 1
+            marker = _extract_marker(request) or ""
+            return httpx.Response(
+                200,
+                json={
+                    "stdout": f"{marker}\n",
+                    "stderr": "",
+                    "success": True,
+                    "execution_time_ms": 1,
+                },
+            )
+
+        httpx_mock.add_callback(
+            _probe_callback,
+            method="POST",
+            url=f"{BASE}/api/namespaces/test-ws/sandboxes/sandbox-test/exec",
+            is_reusable=True,
+        )
+
+        sbx = Sandbox.from_pool("python-pool")
+        sbx.wait_until_ready(timeout=10)
+
+        assert sbx.status == "Running"
+        assert call_counter["n"] == 1
+
+        sbx._client.close()
+
+    def test_wait_until_ready_warmup_timeout_does_not_raise(
+        self, mock_env, monkeypatch, httpx_mock: HTTPXMock
+    ):
+        """If the warmup probe never echoes the marker, wait_until_ready logs and returns."""
+        # Make time.monotonic() advance quickly so the deadline trips after a
+        # couple of probe attempts instead of burning real wall-clock time.
+        import time as _time
+
+        real_monotonic = _time.monotonic
+        start = real_monotonic()
+        tick = {"n": 0}
+
+        def fake_monotonic() -> float:
+            # Advance virtual time by 1s on every call after the first few,
+            # so a timeout=2 budget is exhausted after a handful of probes.
+            tick["n"] += 1
+            return start + tick["n"] * 1.0
+
+        monkeypatch.setattr("time.monotonic", fake_monotonic)
+        monkeypatch.setattr("time.sleep", lambda _: None)
+
+        _mock_version(httpx_mock)
+        _mock_claim(httpx_mock)
+        httpx_mock.add_response(
+            method="GET",
+            url=f"{BASE}/api/namespaces/test-ws/sandboxes/sandbox-test",
+            json={"name": "sandbox-test", "phase": "Running"},
+        )
+
+        call_counter = {"n": 0}
+
+        def _probe_callback(request: httpx.Request) -> httpx.Response:
+            call_counter["n"] += 1
+            return httpx.Response(
+                200,
+                json={
+                    "stdout": "",
+                    "stderr": "",
+                    "success": True,
+                    "execution_time_ms": 1,
+                },
+            )
+
+        httpx_mock.add_callback(
+            _probe_callback,
+            method="POST",
+            url=f"{BASE}/api/namespaces/test-ws/sandboxes/sandbox-test/exec",
+            is_reusable=True,
+        )
+
+        sbx = Sandbox.from_pool("python-pool")
+        # Should return (not raise) even though the probe never echoes the marker.
+        sbx.wait_until_ready(timeout=2)
+
+        assert sbx.status == "Running"
+        # Probe should have been attempted at least once.
+        assert call_counter["n"] >= 1
 
         sbx._client.close()
 
