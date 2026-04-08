@@ -174,6 +174,88 @@ class TestSandboxCreate:
 
         sbx._client.close()
 
+    def test_create_sandbox_omits_unset_optional_fields(
+        self, mock_env, httpx_mock: HTTPXMock
+    ):
+        """Unset optional params must not be sent to the backend."""
+        import json
+
+        httpx_mock.add_response(
+            method="GET",
+            url="https://test.example.com/api/version",
+            json={"version": "0.1.0"},
+        )
+        httpx_mock.add_response(
+            method="POST",
+            url="https://test.example.com/api/namespaces/test-ws/sandboxes",
+            json={"name": "sandbox-abc", "status": "Pending"},
+        )
+
+        sbx = Sandbox.create(image="python:3.10", name="sandbox-abc")
+
+        post_req = [r for r in httpx_mock.get_requests() if r.method == "POST"][0]
+        body = json.loads(post_req.content)
+        assert body["image"] == "python:3.10"
+        assert body["name"] == "sandbox-abc"
+        for key in (
+            "cpu",
+            "memory",
+            "allowInternetAccess",
+            "envVars",
+            "secretRefs",
+        ):
+            assert key not in body
+
+        sbx._client.close()
+
+    def test_create_sandbox_with_all_extras(self, mock_env, httpx_mock: HTTPXMock):
+        """cpu/memory/allow_internet_access/env_vars/secret_refs should serialize
+        to camelCase JSON keys on the wire."""
+        import json
+
+        httpx_mock.add_response(
+            method="GET",
+            url="https://test.example.com/api/version",
+            json={"version": "0.1.0"},
+        )
+        httpx_mock.add_response(
+            method="POST",
+            url="https://test.example.com/api/namespaces/test-ws/sandboxes",
+            json={"name": "sandbox-abc", "status": "Pending"},
+        )
+
+        sbx = Sandbox.create(
+            image="python:3.10",
+            name="sandbox-abc",
+            cpu="2",
+            memory="4Gi",
+            allow_internet_access=True,
+            env_vars=[
+                {"name": "FOO", "value": "bar"},
+                {"name": "HELLO", "value": "world"},
+            ],
+            secret_refs=["openai-key", "hf-token"],
+        )
+
+        post_req = [r for r in httpx_mock.get_requests() if r.method == "POST"][0]
+        body = json.loads(post_req.content)
+        assert body["image"] == "python:3.10"
+        assert body["name"] == "sandbox-abc"
+        assert body["cpu"] == "2"
+        assert body["memory"] == "4Gi"
+        assert body["allowInternetAccess"] is True
+        assert body["envVars"] == [
+            {"name": "FOO", "value": "bar"},
+            {"name": "HELLO", "value": "world"},
+        ]
+        assert body["secretRefs"] == ["openai-key", "hf-token"]
+        # snake_case must not leak into the wire format
+        assert "allow_internet_access" not in body
+        assert "env_vars" not in body
+        assert "secret_refs" not in body
+
+        sbx._client.close()
+
 
 class TestSandboxRunCode:
     """Tests for Sandbox.run_code()."""

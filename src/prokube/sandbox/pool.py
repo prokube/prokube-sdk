@@ -163,6 +163,9 @@ class SandboxPool:
         cpu: str,
         memory: str,
         *,
+        allow_internet_access: bool | None = None,
+        env_vars: list[dict[str, str]] | None = None,
+        secret_refs: list[str] | None = None,
         api_url: str | None = None,
         workspace: str | None = None,
         user_id: str | None = None,
@@ -177,6 +180,12 @@ class SandboxPool:
             pool_size: Number of warm sandboxes to maintain.
             cpu: CPU resource request (e.g. '2').
             memory: Memory resource request (e.g. '4Gi').
+            allow_internet_access: Whether sandboxes in the pool may reach the
+                public internet. If None, the backend default is used.
+            env_vars: Environment variables to inject into pool sandboxes. Each
+                entry is a ``{"name": ..., "value": ...}`` dict.
+            secret_refs: Names of workspace secrets to mount into pool
+                sandboxes.
             api_url: API URL (default: from PROKUBE_API_URL env var).
             workspace: Workspace (default: from PROKUBE_WORKSPACE env var).
             user_id: User ID (default: from PROKUBE_USER_ID env var).
@@ -193,6 +202,9 @@ class SandboxPool:
             ...     pool_size=3,
             ...     cpu="2",
             ...     memory="4Gi",
+            ...     allow_internet_access=True,
+            ...     env_vars=[{"name": "FOO", "value": "bar"}],
+            ...     secret_refs=["openai-key"],
             ... )
         """
         config = cls._build_config(
@@ -210,6 +222,9 @@ class SandboxPool:
                 pool_size=pool_size,
                 cpu=cpu,
                 memory=memory,
+                allow_internet_access=allow_internet_access,
+                env_vars=env_vars,
+                secret_refs=secret_refs,
             )
         except Exception:
             client.close()

@@ -112,12 +112,37 @@ class ClaimRequest(BaseModel):
     )
 
 
+class EnvVar(BaseModel):
+    """An environment variable to inject into the sandbox."""
+
+    name: str = Field(..., description="Environment variable name")
+    value: str = Field(..., description="Environment variable value")
+
+
 class CreateRequest(BaseModel):
     """Request to create a new sandbox."""
 
     image: str = Field(..., description="Container image to use")
     name: str | None = Field(default=None, description="Optional sandbox name")
-
+    cpu: str | None = Field(default=None, description="CPU resource request (e.g. '2')")
+    memory: str | None = Field(
+        default=None, description="Memory resource request (e.g. '4Gi')"
+    )
+    allow_internet_access: bool | None = Field(
+        default=None,
+        serialization_alias="allowInternetAccess",
+        description="Whether the sandbox may reach the public internet",
+    )
+    env_vars: list[EnvVar] | None = Field(
+        default=None,
+        serialization_alias="envVars",
+        description="Environment variables to inject into the sandbox",
+    )
+    secret_refs: list[str] | None = Field(
+        default=None,
+        serialization_alias="secretRefs",
+        description="Names of workspace secrets to mount into the sandbox",
+    )
 
 
 class PoolInfo(BaseModel):
@@ -142,6 +167,21 @@ class CreatePoolRequest(BaseModel):
     )
     cpu: str = Field(..., description="CPU resource request")
     memory: str = Field(..., description="Memory resource request")
+    allow_internet_access: bool | None = Field(
+        default=None,
+        serialization_alias="allowInternetAccess",
+        description="Whether sandboxes in the pool may reach the public internet",
+    )
+    env_vars: list[EnvVar] | None = Field(
+        default=None,
+        serialization_alias="envVars",
+        description="Environment variables to inject into pool sandboxes",
+    )
+    secret_refs: list[str] | None = Field(
+        default=None,
+        serialization_alias="secretRefs",
+        description="Names of workspace secrets to mount into pool sandboxes",
+    )
 
 
 class FileWriteRequest(BaseModel):

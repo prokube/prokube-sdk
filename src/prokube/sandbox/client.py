@@ -109,12 +109,25 @@ class SandboxClient:
         self,
         image: str,
         name: str | None = None,
+        cpu: str | None = None,
+        memory: str | None = None,
+        allow_internet_access: bool | None = None,
+        env_vars: list[dict[str, str]] | None = None,
+        secret_refs: list[str] | None = None,
     ) -> SandboxInfo:
         """Create a new sandbox.
 
         Args:
             image: Container image to use.
             name: Optional sandbox name (auto-generated if not provided).
+            cpu: CPU resource request (e.g. '2'). Backend default used if None.
+            memory: Memory resource request (e.g. '4Gi'). Backend default used
+                if None.
+            allow_internet_access: Whether the sandbox may reach the public
+                internet. Backend default used if None.
+            env_vars: Environment variables to inject into the sandbox. Each
+                entry is a ``{"name": ..., "value": ...}`` dict.
+            secret_refs: Names of workspace secrets to mount into the sandbox.
 
         Returns:
             Information about the created sandbox.
@@ -125,7 +138,15 @@ class SandboxClient:
         if name is None:
             name = f"sandbox-{uuid.uuid4().hex[:8]}"
 
-        request = CreateRequest(image=image, name=name)
+        request = CreateRequest(
+            image=image,
+            name=name,
+            cpu=cpu,
+            memory=memory,
+            allow_internet_access=allow_internet_access,
+            env_vars=env_vars,
+            secret_refs=secret_refs,
+        )
         response = self._http.post(
             self._sandboxes_path(),
             json=request.model_dump(by_alias=True, exclude_none=True),

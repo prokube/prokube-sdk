@@ -50,6 +50,9 @@ class PoolClient:
         pool_size: int,
         cpu: str,
         memory: str,
+        allow_internet_access: bool | None = None,
+        env_vars: list[dict[str, str]] | None = None,
+        secret_refs: list[str] | None = None,
     ) -> PoolInfo:
         """Create a new sandbox pool.
 
@@ -59,12 +62,25 @@ class PoolClient:
             pool_size: Number of warm sandboxes to maintain.
             cpu: CPU resource request (e.g. '2').
             memory: Memory resource request (e.g. '4Gi').
+            allow_internet_access: Whether pool sandboxes may reach the public
+                internet. If None, the backend default is used.
+            env_vars: Environment variables to inject into pool sandboxes. Each
+                entry is a ``{"name": ..., "value": ...}`` dict.
+            secret_refs: Names of workspace secrets to mount into pool
+                sandboxes.
 
         Returns:
             Information about the created pool.
         """
         request = CreatePoolRequest(
-            name=name, image=image, pool_size=pool_size, cpu=cpu, memory=memory
+            name=name,
+            image=image,
+            pool_size=pool_size,
+            cpu=cpu,
+            memory=memory,
+            allow_internet_access=allow_internet_access,
+            env_vars=env_vars,
+            secret_refs=secret_refs,
         )
         response = self._http.post(
             self._pools_path(),

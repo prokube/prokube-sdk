@@ -458,6 +458,11 @@ class Sandbox:
         image: str,
         *,
         name: str | None = None,
+        cpu: str | None = None,
+        memory: str | None = None,
+        allow_internet_access: bool | None = None,
+        env_vars: list[dict[str, str]] | None = None,
+        secret_refs: list[str] | None = None,
         api_url: str | None = None,
         workspace: str | None = None,
         user_id: str | None = None,
@@ -472,6 +477,15 @@ class Sandbox:
         Args:
             image: Container image to use.
             name: Optional sandbox name (auto-generated if not provided).
+            cpu: CPU resource request (e.g. '2'). If None, the backend default
+                is used.
+            memory: Memory resource request (e.g. '4Gi'). If None, the backend
+                default is used.
+            allow_internet_access: Whether the sandbox may reach the public
+                internet. If None, the backend default is used.
+            env_vars: Environment variables to inject into the sandbox. Each
+                entry is a ``{"name": ..., "value": ...}`` dict.
+            secret_refs: Names of workspace secrets to mount into the sandbox.
             api_url: API URL (default: from PROKUBE_API_URL env var).
             workspace: Workspace (default: from PROKUBE_WORKSPACE env var).
             user_id: User ID (default: from PROKUBE_USER_ID env var).
@@ -482,7 +496,14 @@ class Sandbox:
             A Sandbox instance (may need time to become ready).
 
         Example:
-            >>> sbx = Sandbox.create(image="pk-sandbox:python-datascience")
+            >>> sbx = Sandbox.create(
+            ...     image="pk-sandbox:python-datascience",
+            ...     cpu="2",
+            ...     memory="4Gi",
+            ...     allow_internet_access=True,
+            ...     env_vars=[{"name": "FOO", "value": "bar"}],
+            ...     secret_refs=["openai-key"],
+            ... )
             >>> # Wait for sandbox to be ready
             >>> while sbx.status == "Pending":
             ...     time.sleep(1)
@@ -498,7 +519,15 @@ class Sandbox:
         )
         client = SandboxClient(config)
         try:
-            info = client.create(image=image, name=name)
+            info = client.create(
+                image=image,
+                name=name,
+                cpu=cpu,
+                memory=memory,
+                allow_internet_access=allow_internet_access,
+                env_vars=env_vars,
+                secret_refs=secret_refs,
+            )
         except Exception:
             client.close()
             raise
