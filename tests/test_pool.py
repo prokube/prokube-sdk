@@ -150,6 +150,137 @@ class TestPoolClientCreate:
         client.close()
 
 
+class TestPoolClientCreateExtras:
+    """Tests for the extra create-time params added for backend parity."""
+
+    def test_create_pool_omits_new_fields_when_unset(
+        self, config, httpx_mock: HTTPXMock
+    ):
+        """Unset optional params should not appear in the request body."""
+        httpx_mock.add_response(
+            method="GET",
+            url="https://test.example.com/api/version",
+            json={"version": "0.1.0"},
+        )
+        httpx_mock.add_response(
+            method="POST",
+            url="https://test.example.com/api/namespaces/test-ws/sandbox-pools",
+            json=POOL_RESPONSE,
+        )
+
+        client = PoolClient(config)
+        client.create_pool(
+            name="python-pool",
+            image="pk-sandbox-base:latest",
+            pool_size=3,
+            cpu="2",
+            memory="4Gi",
+        )
+
+        post_req = [r for r in httpx_mock.get_requests() if r.method == "POST"][0]
+        body = json.loads(post_req.content)
+        assert "allowInternetAccess" not in body
+        assert "envVars" not in body
+        assert "secretRefs" not in body
+        client.close()
+
+    def test_create_pool_sends_new_fields_with_camel_case(
+        self, config, httpx_mock: HTTPXMock
+    ):
+        """allow_internet_access/env_vars/secret_refs should be sent as camelCase."""
+        httpx_mock.add_response(
+            method="GET",
+            url="https://test.example.com/api/version",
+            json={"version": "0.1.0"},
+        )
+        httpx_mock.add_response(
+            method="POST",
+            url="https://test.example.com/api/namespaces/test-ws/sandbox-pools",
+            json=POOL_RESPONSE,
+        )
+
+        client = PoolClient(config)
+        client.create_pool(
+            name="python-pool",
+            image="pk-sandbox-base:latest",
+            pool_size=3,
+            cpu="2",
+            memory="4Gi",
+            allow_internet_access=True,
+            env_vars=[
+                {"name": "FOO", "value": "bar"},
+                {"name": "HELLO", "value": "world"},
+            ],
+            secret_refs=["openai-key", "hf-token"],
+        )
+
+        post_req = [r for r in httpx_mock.get_requests() if r.method == "POST"][0]
+        body = json.loads(post_req.content)
+        assert body["allowInternetAccess"] is True
+        assert body["envVars"] == [
+            {"name": "FOO", "value": "bar"},
+            {"name": "HELLO", "value": "world"},
+        ]
+        assert body["secretRefs"] == ["openai-key", "hf-token"]
+        # snake_case must NOT leak into the wire format
+        assert "allow_internet_access" not in body
+        assert "env_vars" not in body
+        assert "secret_refs" not in body
+        client.close()
+
+
+class TestSandboxPoolCreateExtras:
+    """High-level SandboxPool.create() tests for backend parity params."""
+
+    def test_create_with_extras(self, mock_env, httpx_mock: HTTPXMock):
+        _mock_version(httpx_mock)
+        httpx_mock.add_response(
+            method="POST",
+            url="https://test.example.com/api/namespaces/test-ws/sandbox-pools",
+            json=POOL_RESPONSE,
+        )
+
+        pool = SandboxPool.create(
+            name="python-pool",
+            image="pk-sandbox-base:latest",
+            pool_size=3,
+            cpu="2",
+            memory="4Gi",
+            allow_internet_access=False,
+            env_vars=[{"name": "DEBUG", "value": "1"}],
+            secret_refs=["db-creds"],
+        )
+
+        post_req = [r for r in httpx_mock.get_requests() if r.method == "POST"][0]
+        body = json.loads(post_req.content)
+        assert body["allowInternetAccess"] is False
+        assert body["envVars"] == [{"name": "DEBUG", "value": "1"}]
+        assert body["secretRefs"] == ["db-creds"]
+        pool._client.close()
+
+    def test_create_without_extras_omits_them(self, mock_env, httpx_mock: HTTPXMock):
+        _mock_version(httpx_mock)
+        httpx_mock.add_response(
+            method="POST",
+            url="https://test.example.com/api/namespaces/test-ws/sandbox-pools",
+            json=POOL_RESPONSE,
+        )
+
+        pool = SandboxPool.create(
+            name="python-pool",
+            image="pk-sandbox-base:latest",
+            pool_size=3,
+            cpu="2",
+            memory="4Gi",
+        )
+
+        post_req = [r for r in httpx_mock.get_requests() if r.method == "POST"][0]
+        body = json.loads(post_req.content)
+        for key in ("allowInternetAccess", "envVars", "secretRefs"):
+            assert key not in body
+        pool._client.close()
+
+
 class TestPoolClientList:
     """Tests for PoolClient.list_pools()."""
 
