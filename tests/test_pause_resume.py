@@ -20,7 +20,10 @@ def _extract_marker(request: httpx.Request) -> str | None:
     """Extract the warmup marker from an /exec request body, if present."""
     try:
         body = json.loads(request.content)
-    except json.JSONDecodeError:
+    except ValueError:
+        # ValueError covers both json.JSONDecodeError (bad JSON) and
+        # UnicodeDecodeError (raw bytes that aren't valid UTF-8). Use the
+        # superclass so the helper degrades gracefully for either.
         return None
     code = body.get("code", "")
     match = _WARMUP_MARKER_RE.search(code)
@@ -486,6 +489,65 @@ class TestWaitUntilReady:
         assert sbx.status == "Running"
         # Probe should have been attempted at least once.
         assert call_counter["n"] >= 1
+
+        sbx._client.close()
+
+    def test_wait_until_ready_warmup_caps_per_probe_timeout(
+        self, mock_env, monkeypatch, httpx_mock: HTTPXMock
+    ):
+        """Each warmup probe must be capped at 5s regardless of remaining budget.
+
+        Without the per-probe cap, a single ``run_code`` call against a stuck
+        kernel could block ``wait_until_ready`` for the user's entire timeout
+        (e.g. 300s) and starve the intended retry loop. The probe should send
+        ``timeout=5`` (the cap) to ``/exec`` even when the user passes a much
+        larger ``wait_until_ready(timeout=...)``.
+        """
+        monkeypatch.setattr("time.sleep", lambda _: None)
+
+        _mock_version(httpx_mock)
+        _mock_claim(httpx_mock)
+        httpx_mock.add_response(
+            method="GET",
+            url=f"{BASE}/api/namespaces/test-ws/sandboxes/sandbox-test",
+            json={"name": "sandbox-test", "phase": "Running"},
+        )
+
+        captured_timeouts: list[int] = []
+
+        def _probe_callback(request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.content)
+            captured_timeouts.append(body["timeout"])
+            # Echo the marker so the probe succeeds on the first attempt.
+            marker = _extract_marker(request) or ""
+            return httpx.Response(
+                200,
+                json={
+                    "stdout": f"{marker}\n",
+                    "stderr": "",
+                    "success": True,
+                    "execution_time_ms": 1,
+                },
+            )
+
+        httpx_mock.add_callback(
+            _probe_callback,
+            method="POST",
+            url=f"{BASE}/api/namespaces/test-ws/sandboxes/sandbox-test/exec",
+            is_reusable=True,
+        )
+
+        sbx = Sandbox.from_pool("python-pool")
+        # Pass a generously large overall timeout. The per-probe cap must
+        # still keep individual /exec calls bounded to 5s.
+        sbx.wait_until_ready(timeout=300)
+
+        assert captured_timeouts, "warmup probe should have been called at least once"
+        for sent_timeout in captured_timeouts:
+            assert sent_timeout == 5, (
+                f"probe sent timeout={sent_timeout}, expected cap of 5s "
+                f"regardless of the wait_until_ready budget"
+            )
 
         sbx._client.close()
 
