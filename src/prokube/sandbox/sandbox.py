@@ -279,6 +279,12 @@ class Sandbox:
         self._check_not_killed()
         marker = f"__pk_warmup_{uuid.uuid4().hex}__"
         code = f'print("{marker}")'
+        # Cap the per-probe backend timeout so a single warmup attempt cannot
+        # consume the entire wait_until_ready budget. Without this cap, the
+        # first probe call against a stuck kernel could block the SDK for the
+        # user's full timeout (potentially minutes) and starve the intended
+        # 0.5s retry loop.
+        max_probe_timeout = 5
         attempts = 0
         while True:
             remaining = deadline - time.monotonic()
@@ -295,9 +301,10 @@ class Sandbox:
                 )
                 return
             attempts += 1
-            # Bound the probe HTTP call to the remaining budget so a slow or
-            # hung /exec request can never overrun wait_until_ready's timeout.
-            result = self.run_code(code, timeout=int(remaining))
+            # Cap each probe so retries stay frequent against a stuck kernel,
+            # while still never exceeding the remaining wait_until_ready budget.
+            probe_timeout = min(max_probe_timeout, int(remaining))
+            result = self.run_code(code, timeout=probe_timeout)
             if result.stdout.strip() == marker:
                 return
             # Loop top will recompute remaining and exit if deadline passed.
