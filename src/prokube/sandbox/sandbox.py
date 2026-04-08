@@ -282,7 +282,11 @@ class Sandbox:
         attempts = 0
         while True:
             remaining = deadline - time.monotonic()
-            if remaining <= 0:
+            # run_code expects an integer second timeout, so we cannot probe
+            # with a sub-second budget. Once less than 1s remains the only
+            # way to stay strictly within wait_until_ready's deadline is to
+            # give up rather than clamp upward and overrun.
+            if remaining < 1:
                 logger.warning(
                     "Sandbox %s kernel warmup probe did not echo marker "
                     "within deadline after %d attempt(s); continuing anyway",
@@ -293,21 +297,12 @@ class Sandbox:
             attempts += 1
             # Bound the probe HTTP call to the remaining budget so a slow or
             # hung /exec request can never overrun wait_until_ready's timeout.
-            # run_code expects an int >= 1; clamp to at least 1s.
-            probe_timeout = max(1, int(remaining))
-            result = self.run_code(code, timeout=probe_timeout)
+            result = self.run_code(code, timeout=int(remaining))
             if result.stdout.strip() == marker:
                 return
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                logger.warning(
-                    "Sandbox %s kernel warmup probe did not echo marker "
-                    "within deadline after %d attempt(s); continuing anyway",
-                    self._name,
-                    attempts,
-                )
-                return
-            time.sleep(min(0.5, remaining))
+            # Loop top will recompute remaining and exit if deadline passed.
+            sleep_for = min(0.5, max(0.0, deadline - time.monotonic()))
+            time.sleep(sleep_for)
 
     def kill(self) -> None:
         """Destroy the sandbox immediately.
