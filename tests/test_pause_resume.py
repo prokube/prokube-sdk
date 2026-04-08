@@ -20,7 +20,7 @@ def _extract_marker(request: httpx.Request) -> str | None:
     """Extract the warmup marker from an /exec request body, if present."""
     try:
         body = json.loads(request.content)
-    except (json.JSONDecodeError, ValueError):
+    except json.JSONDecodeError:
         return None
     code = body.get("code", "")
     match = _WARMUP_MARKER_RE.search(code)
