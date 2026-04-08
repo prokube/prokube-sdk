@@ -253,9 +253,9 @@ class Sandbox:
 
         After the pod reaches Running, ipykernel still needs ~1–2s before its
         first ``execute_request`` produces visible iopub stdout. During that
-        window, execd's ``/code`` endpoint returns successfully but the stdout
-        never reaches the SSE stream, so the first user ``run_code()`` call
-        races the cold kernel pipeline and silently returns empty output.
+        window, execd's ``exec`` sub-resource returns successfully but the
+        stdout never reaches the SSE stream, so the first user ``run_code()``
+        call races the cold kernel pipeline and silently returns empty output.
 
         This method hides that race by running a tiny ``print(<marker>)``
         probe in a loop until the stdout matches, proving the kernel pipeline
@@ -281,8 +281,21 @@ class Sandbox:
         code = f'print("{marker}")'
         attempts = 0
         while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                logger.warning(
+                    "Sandbox %s kernel warmup probe did not echo marker "
+                    "within deadline after %d attempt(s); continuing anyway",
+                    self._name,
+                    attempts,
+                )
+                return
             attempts += 1
-            result = self.run_code(code)
+            # Bound the probe HTTP call to the remaining budget so a slow or
+            # hung /exec request can never overrun wait_until_ready's timeout.
+            # run_code expects an int >= 1; clamp to at least 1s.
+            probe_timeout = max(1, int(remaining))
+            result = self.run_code(code, timeout=probe_timeout)
             if result.stdout.strip() == marker:
                 return
             remaining = deadline - time.monotonic()
