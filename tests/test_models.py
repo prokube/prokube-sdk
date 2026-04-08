@@ -180,3 +180,9 @@ class TestRequestModels:
         )
         assert req.path == "/workspace/test.txt"
         assert req.content == "aGVsbG8gd29ybGQ="
+        # The encoding field defaults to "base64" so the backend knows to
+        # decode the content before forwarding to execd. Without this the
+        # backend treats it as text and writes the literal base64 string
+        # to disk (issue #18).
+        assert req.encoding == "base64"
+        assert req.model_dump()["encoding"] == "base64"

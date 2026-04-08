@@ -412,9 +412,20 @@ class TestSandboxFiles:
         sbx.files.write("/workspace/test.txt", "hello world")
 
         # Verify request
+        import base64
+        import json
+
         requests = httpx_mock.get_requests()
         file_request = requests[-1]
         assert "/files" in str(file_request.url)
+
+        # The body must include encoding="base64" so the backend knows to
+        # decode before forwarding to execd; otherwise the literal base64
+        # string ends up on disk (issue #18).
+        body = json.loads(file_request.content)
+        assert body["encoding"] == "base64"
+        assert body["content"] == base64.b64encode(b"hello world").decode("ascii")
+        assert body["path"] == "/workspace/test.txt"
 
         sbx._client.close()
 

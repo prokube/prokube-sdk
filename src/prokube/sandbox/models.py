@@ -149,3 +149,12 @@ class FileWriteRequest(BaseModel):
 
     path: str = Field(..., description="Path where to write the file")
     content: str = Field(..., description="Base64-encoded file content")
+    encoding: str = Field(
+        default="base64",
+        description=(
+            "Content encoding. The SDK always sends base64 because the "
+            "request is JSON and binary content cannot be carried as raw "
+            "bytes. The pkui backend uses this field to decide whether to "
+            "decode the content before forwarding it to execd."
+        ),
+    )
