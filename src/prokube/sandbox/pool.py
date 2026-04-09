@@ -219,9 +219,12 @@ class SandboxPool:
                 If False, return immediately after the pool CR is created.
             ready_timeout: Maximum seconds to wait for the pool to become
                 ready and for the warmup probe to finish. Applied as a single
-                overall budget across both phases. On timeout the method logs
-                a warning and returns the pool anyway — best-effort, matching
-                :meth:`Sandbox.wait_until_ready`.
+                overall budget across both phases. On timeout (or any other
+                failure during warmup) the method logs a warning and returns
+                the pool anyway — the warmup is purely best-effort. Note this
+                is different from :meth:`Sandbox.wait_until_ready`, which
+                *raises* :class:`SandboxTimeoutError` on a pod-not-ready
+                timeout; only its kernel warmup probe phase is best-effort.
             api_url: API URL (default: from PROKUBE_API_URL env var).
             workspace: Workspace (default: from PROKUBE_WORKSPACE env var).
             user_id: User ID (default: from PROKUBE_USER_ID env var).
@@ -286,7 +289,6 @@ class SandboxPool:
 
         if should_warm:
             pool._warm_one_pod(
-                pool_size=pool_size,
                 ready_timeout=ready_timeout,
                 api_url=api_url,
                 workspace=workspace,
@@ -300,7 +302,6 @@ class SandboxPool:
     def _warm_one_pod(
         self,
         *,
-        pool_size: int,
         ready_timeout: int,
         api_url: str | None,
         workspace: str | None,
@@ -310,17 +311,18 @@ class SandboxPool:
     ) -> None:
         """Wait for the pool to be ready, then warm one pod end-to-end.
 
-        Phase 1: poll ``self.refresh()`` until ``ready_replicas >= pool_size``
-        or ``ready_timeout`` is exhausted.
+        Phase 1: poll ``self.refresh()`` until
+        ``ready_replicas >= self._replicas`` (the *actual* desired count from
+        the backend, which may differ from the requested ``pool_size`` if the
+        backend clamps or applies defaults) or ``ready_timeout`` is exhausted.
 
         Phase 2: claim one sandbox from the pool, call ``wait_until_ready``
         on it (which runs the cold-kernel probe), then kill it.
 
         Any failure in either phase is swallowed with a warning — this is a
-        best-effort warmup, exactly like :meth:`Sandbox.wait_until_ready`.
-        The pool CR itself has already been created before this is called,
-        so the caller still gets a usable :class:`SandboxPool` handle even
-        if the warmup cannot complete.
+        best-effort warmup. The pool CR itself has already been created before
+        this is called, so the caller still gets a usable :class:`SandboxPool`
+        handle even if the warmup cannot complete.
         """
         # Local import to avoid a circular import at module load time:
         # sandbox.py imports nothing from pool.py, but pool.py -> sandbox.py
@@ -345,7 +347,11 @@ class SandboxPool:
                         exc,
                     )
                     return
-                if self._ready_replicas >= pool_size:
+                # Compare against the backend-reported desired replica count
+                # (self._replicas), not the requested pool_size argument: if
+                # the backend clamps or applies a default, the request value
+                # may never be reached even though the pool is fully ready.
+                if self._ready_replicas >= self._replicas:
                     break
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
@@ -354,7 +360,7 @@ class SandboxPool:
                         "ready_replicas>=%d within %ds (have %d); "
                         "skipping warmup probe",
                         self._name,
-                        pool_size,
+                        self._replicas,
                         ready_timeout,
                         self._ready_replicas,
                     )
@@ -372,8 +378,13 @@ class SandboxPool:
         # Phase 2: claim + probe + kill one sandbox. Reuse the same connection
         # parameters the pool was created with so the probe hits the same
         # backend / workspace.
+        #
+        # Sandbox.wait_until_ready needs an integer second timeout. If less
+        # than 1 second remains we cannot probe without overrunning the
+        # caller's ready_timeout, so we skip the probe entirely (consistent
+        # with how Sandbox._warmup_kernel handles its own remaining budget).
         remaining = deadline - time.monotonic()
-        if remaining <= 0:
+        if remaining < 1:
             logger.warning(
                 "SandboxPool %s warmup: no time left after readiness poll; "
                 "skipping warmup probe",
@@ -395,8 +406,15 @@ class SandboxPool:
             # is itself best-effort on probe timeout — it logs and returns.
             # Cap its budget by the remaining pool-level deadline so it can
             # never exceed the caller's ready_timeout.
-            probe_budget = max(1, int(deadline - time.monotonic()))
-            sbx.wait_until_ready(timeout=probe_budget)
+            probe_budget = int(deadline - time.monotonic())
+            if probe_budget < 1:
+                logger.warning(
+                    "SandboxPool %s warmup: less than 1s remains before "
+                    "claiming the probe sandbox; skipping warmup probe",
+                    self._name,
+                )
+            else:
+                sbx.wait_until_ready(timeout=probe_budget)
         except Exception as exc:  # noqa: BLE001 - best-effort
             logger.warning(
                 "SandboxPool %s warmup: probe sandbox failed (%s); "
@@ -416,6 +434,14 @@ class SandboxPool:
                         sbx.name,
                         exc,
                     )
+                    # kill() leaves the underlying HTTP client open if the
+                    # delete request fails (kill() only closes the client
+                    # after a successful delete). Close it explicitly here
+                    # to avoid leaking connections in long-lived processes.
+                    try:
+                        sbx._client.close()
+                    except Exception:  # noqa: BLE001
+                        pass
 
     @classmethod
     def list(

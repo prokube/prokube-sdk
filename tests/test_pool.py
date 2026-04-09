@@ -616,11 +616,12 @@ class TestSandboxPoolCreateWarmup:
         pool._client.close()
 
     def test_sandbox_pool_create_warmup_timeout(
-        self, mock_env, monkeypatch, httpx_mock: HTTPXMock
+        self, mock_env, monkeypatch, caplog, httpx_mock: HTTPXMock
     ):
         """Probe timeout must be best-effort: log and return the pool anyway."""
         # Make time.monotonic() advance quickly so the probe deadline trips
         # after a couple of attempts instead of burning real wall-clock time.
+        import logging
         import time as _time
 
         real_monotonic = _time.monotonic
@@ -645,20 +646,32 @@ class TestSandboxPoolCreateWarmup:
 
         # Should NOT raise even though the probe never succeeds. Matches
         # Sandbox.wait_until_ready best-effort semantics.
-        pool = SandboxPool.create(
-            name="python-pool",
-            image="pk-sandbox-base:latest",
-            pool_size=1,
-            cpu="2",
-            memory="4Gi",
-            ready_timeout=30,
-        )
+        with caplog.at_level(logging.WARNING, logger="prokube.sandbox.sandbox"):
+            pool = SandboxPool.create(
+                name="python-pool",
+                image="pk-sandbox-base:latest",
+                pool_size=1,
+                cpu="2",
+                memory="4Gi",
+                ready_timeout=30,
+            )
 
         # The probe must have been attempted at least once before the
         # deadline tripped — this proves we actually ran the warmup probe
         # rather than bailing out early.
         assert counters["exec"] >= 1
         assert pool.name == "python-pool"
+        # Sandbox._warmup_kernel must have logged the "did not echo marker
+        # within deadline" warning. Without this assertion, the test would
+        # silently pass even if the probe magically succeeded.
+        assert any(
+            "warmup probe did not echo marker" in record.message
+            for record in caplog.records
+        ), (
+            "expected Sandbox._warmup_kernel to log a warning when the "
+            "probe deadline is exhausted; saw: "
+            f"{[record.message for record in caplog.records]}"
+        )
         pool._client.close()
 
 
