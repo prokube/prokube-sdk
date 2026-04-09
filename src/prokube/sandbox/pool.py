@@ -180,10 +180,13 @@ class SandboxPool:
     ) -> Self:
         """Create a new sandbox pool.
 
-        By default this blocks until the pool is usable end-to-end: it polls
-        until ``ready_replicas >= pool_size`` and then claims a single sandbox
+        By default this makes a best-effort attempt to wait for the new pool
+        to warm up before returning: it polls ``self.refresh()`` until
+        ``ready_replicas >= self._replicas`` (the backend-reported desired
+        count, which may differ from the requested ``pool_size`` if the
+        backend clamps or applies defaults), then claims a single sandbox
         from the fresh pool, runs the same Jupyter-kernel warmup probe that
-        :meth:`Sandbox.wait_until_ready` uses, and kills it. This eliminates
+        :meth:`Sandbox.wait_until_ready` uses, and kills it. This *mitigates*
         the cold-kernel race where a freshly-created pool's pods are
         physically ``Running`` but their ipykernel is still cold (~1-2s), so
         the very first ``Sandbox.from_pool(...).run_code(...)`` after a fresh
@@ -193,6 +196,11 @@ class SandboxPool:
         the time the probe returns the other pool pods have had a similar
         amount of wall-clock time to warm up naturally. This is "Option A"
         from issue #24 — probabilistically safe and cheap.
+
+        Warmup is best-effort: a readiness or probe timeout, or any other
+        warmup-phase exception, is logged via ``logger.warning`` and the pool
+        is still returned. Errors from the underlying pool create API call
+        itself always propagate.
 
         Opt out with ``wait_until_ready=False`` to preserve the previous
         instant-return behaviour. This is the escape hatch for callers who
@@ -245,7 +253,7 @@ class SandboxPool:
             ...     env_vars=[{"name": "FOO", "value": "bar"}],
             ...     secret_refs=["openai-key"],
             ... )
-            >>> # Pool is guaranteed warm — no cold-kernel race on first claim
+            >>> # Best-effort warmed: most calls won't race the cold kernel
             >>> sbx = Sandbox.from_pool("my-pool")
             >>> sbx.run_code("print('hello')").stdout.strip()  # "hello"
         """
@@ -288,27 +296,11 @@ class SandboxPool:
         )
 
         if should_warm:
-            pool._warm_one_pod(
-                ready_timeout=ready_timeout,
-                api_url=api_url,
-                workspace=workspace,
-                user_id=user_id,
-                api_key=api_key,
-                timeout=timeout,
-            )
+            pool._warm_one_pod(ready_timeout=ready_timeout)
 
         return pool
 
-    def _warm_one_pod(
-        self,
-        *,
-        ready_timeout: int,
-        api_url: str | None,
-        workspace: str | None,
-        user_id: str | None,
-        api_key: str | None,
-        timeout: int | None,
-    ) -> None:
+    def _warm_one_pod(self, *, ready_timeout: int) -> None:
         """Wait for the pool to be ready, then warm one pod end-to-end.
 
         Phase 1: poll ``self.refresh()`` until
@@ -375,46 +367,43 @@ class SandboxPool:
             )
             return
 
-        # Phase 2: claim + probe + kill one sandbox. Reuse the same connection
-        # parameters the pool was created with so the probe hits the same
-        # backend / workspace.
+        # Phase 2: claim + probe + kill one sandbox.
         #
         # Sandbox.wait_until_ready needs an integer second timeout. If less
         # than 1 second remains we cannot probe without overrunning the
         # caller's ready_timeout, so we skip the probe entirely (consistent
-        # with how Sandbox._warmup_kernel handles its own remaining budget).
-        remaining = deadline - time.monotonic()
-        if remaining < 1:
+        # with how Sandbox._warmup_kernel handles its own remaining budget)
+        # AND avoid claiming a sandbox we'd immediately have to kill.
+        probe_budget = int(deadline - time.monotonic())
+        if probe_budget < 1:
             logger.warning(
-                "SandboxPool %s warmup: no time left after readiness poll; "
-                "skipping warmup probe",
+                "SandboxPool %s warmup: less than 1s remains after readiness "
+                "poll; skipping warmup probe (no claim made)",
                 self._name,
             )
             return
+
+        # Reuse the resolved Config from the pool's existing PoolClient so
+        # the probe definitely hits the same backend/workspace/auth as the
+        # pool itself, even if the surrounding env vars have changed since
+        # SandboxPool.create was first called.
+        pool_config = self._client.config
 
         sbx = None
         try:
             sbx = Sandbox.from_pool(
                 self._name,
-                api_url=api_url,
-                workspace=workspace,
-                user_id=user_id,
-                api_key=api_key,
-                timeout=timeout,
+                api_url=pool_config.api_url,
+                workspace=pool_config.workspace,
+                user_id=pool_config.user_id,
+                api_key=pool_config.api_key,
+                timeout=pool_config.timeout,
             )
             # Sandbox.wait_until_ready runs the cold-kernel warmup probe and
             # is itself best-effort on probe timeout — it logs and returns.
             # Cap its budget by the remaining pool-level deadline so it can
             # never exceed the caller's ready_timeout.
-            probe_budget = int(deadline - time.monotonic())
-            if probe_budget < 1:
-                logger.warning(
-                    "SandboxPool %s warmup: less than 1s remains before "
-                    "claiming the probe sandbox; skipping warmup probe",
-                    self._name,
-                )
-            else:
-                sbx.wait_until_ready(timeout=probe_budget)
+            sbx.wait_until_ready(timeout=probe_budget)
         except Exception as exc:  # noqa: BLE001 - best-effort
             logger.warning(
                 "SandboxPool %s warmup: probe sandbox failed (%s); "
