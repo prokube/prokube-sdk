@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import logging
 import sys
+import time
 
 if sys.version_info >= (3, 11):
     from typing import Self
@@ -12,6 +14,8 @@ else:
 from prokube.common.config import Config
 from prokube.common.exceptions import SandboxError
 from prokube.sandbox.pool_client import PoolClient
+
+logger = logging.getLogger(__name__)
 
 
 class SandboxPool:
@@ -166,6 +170,8 @@ class SandboxPool:
         allow_internet_access: bool | None = None,
         env_vars: list[dict[str, str]] | None = None,
         secret_refs: list[str] | None = None,
+        wait_until_ready: bool = True,
+        ready_timeout: int = 300,
         api_url: str | None = None,
         workspace: str | None = None,
         user_id: str | None = None,
@@ -173,6 +179,28 @@ class SandboxPool:
         timeout: int | None = None,
     ) -> Self:
         """Create a new sandbox pool.
+
+        By default this blocks until the pool is usable end-to-end: it polls
+        until ``ready_replicas >= pool_size`` and then claims a single sandbox
+        from the fresh pool, runs the same Jupyter-kernel warmup probe that
+        :meth:`Sandbox.wait_until_ready` uses, and kills it. This eliminates
+        the cold-kernel race where a freshly-created pool's pods are
+        physically ``Running`` but their ipykernel is still cold (~1-2s), so
+        the very first ``Sandbox.from_pool(...).run_code(...)`` after a fresh
+        ``SandboxPool.create(...)`` could race and return empty stdout.
+
+        The single probe's wall-clock is itself the cold-kernel window, so by
+        the time the probe returns the other pool pods have had a similar
+        amount of wall-clock time to warm up naturally. This is "Option A"
+        from issue #24 — probabilistically safe and cheap.
+
+        Opt out with ``wait_until_ready=False`` to preserve the previous
+        instant-return behaviour. This is the escape hatch for callers who
+        explicitly don't want the wait (e.g. tests, or callers that will do
+        their own readiness handling).
+
+        ``Sandbox.from_pool`` is intentionally unchanged by this method — the
+        hot path of claiming from an already-warm pool stays fast.
 
         Args:
             name: Pool name.
@@ -186,6 +214,14 @@ class SandboxPool:
                 entry is a ``{"name": ..., "value": ...}`` dict.
             secret_refs: Names of workspace secrets to mount into pool
                 sandboxes.
+            wait_until_ready: If True (default), block until the pool is ready
+                and warm one pod via the cold-kernel probe before returning.
+                If False, return immediately after the pool CR is created.
+            ready_timeout: Maximum seconds to wait for the pool to become
+                ready and for the warmup probe to finish. Applied as a single
+                overall budget across both phases. On timeout the method logs
+                a warning and returns the pool anyway — best-effort, matching
+                :meth:`Sandbox.wait_until_ready`.
             api_url: API URL (default: from PROKUBE_API_URL env var).
             workspace: Workspace (default: from PROKUBE_WORKSPACE env var).
             user_id: User ID (default: from PROKUBE_USER_ID env var).
@@ -206,7 +242,14 @@ class SandboxPool:
             ...     env_vars=[{"name": "FOO", "value": "bar"}],
             ...     secret_refs=["openai-key"],
             ... )
+            >>> # Pool is guaranteed warm — no cold-kernel race on first claim
+            >>> sbx = Sandbox.from_pool("my-pool")
+            >>> sbx.run_code("print('hello')").stdout.strip()  # "hello"
         """
+        # Local name for the flag so there's no confusion with the similarly
+        # named Sandbox.wait_until_ready method used below.
+        should_warm = wait_until_ready
+
         config = cls._build_config(
             api_url=api_url,
             workspace=workspace,
@@ -230,7 +273,7 @@ class SandboxPool:
             client.close()
             raise
 
-        return cls(
+        pool = cls(
             name=info.name,
             workspace=info.workspace,
             client=client,
@@ -240,6 +283,139 @@ class SandboxPool:
             cpu=info.cpu,
             memory=info.memory,
         )
+
+        if should_warm:
+            pool._warm_one_pod(
+                pool_size=pool_size,
+                ready_timeout=ready_timeout,
+                api_url=api_url,
+                workspace=workspace,
+                user_id=user_id,
+                api_key=api_key,
+                timeout=timeout,
+            )
+
+        return pool
+
+    def _warm_one_pod(
+        self,
+        *,
+        pool_size: int,
+        ready_timeout: int,
+        api_url: str | None,
+        workspace: str | None,
+        user_id: str | None,
+        api_key: str | None,
+        timeout: int | None,
+    ) -> None:
+        """Wait for the pool to be ready, then warm one pod end-to-end.
+
+        Phase 1: poll ``self.refresh()`` until ``ready_replicas >= pool_size``
+        or ``ready_timeout`` is exhausted.
+
+        Phase 2: claim one sandbox from the pool, call ``wait_until_ready``
+        on it (which runs the cold-kernel probe), then kill it.
+
+        Any failure in either phase is swallowed with a warning — this is a
+        best-effort warmup, exactly like :meth:`Sandbox.wait_until_ready`.
+        The pool CR itself has already been created before this is called,
+        so the caller still gets a usable :class:`SandboxPool` handle even
+        if the warmup cannot complete.
+        """
+        # Local import to avoid a circular import at module load time:
+        # sandbox.py imports nothing from pool.py, but pool.py -> sandbox.py
+        # would pull the SandboxClient stack eagerly and complicate test
+        # isolation for pool-only tests. Importing here keeps the hot path
+        # (from_pool) cold-import-free for users who never call create().
+        from prokube.sandbox.sandbox import Sandbox
+
+        deadline = time.monotonic() + ready_timeout
+        poll_interval = 2.0
+
+        # Phase 1: pool readiness.
+        try:
+            while True:
+                try:
+                    self.refresh()
+                except Exception as exc:  # noqa: BLE001 - best-effort
+                    logger.warning(
+                        "SandboxPool %s warmup: refresh failed (%s); "
+                        "skipping warmup probe",
+                        self._name,
+                        exc,
+                    )
+                    return
+                if self._ready_replicas >= pool_size:
+                    break
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    logger.warning(
+                        "SandboxPool %s warmup: pool did not reach "
+                        "ready_replicas>=%d within %ds (have %d); "
+                        "skipping warmup probe",
+                        self._name,
+                        pool_size,
+                        ready_timeout,
+                        self._ready_replicas,
+                    )
+                    return
+                time.sleep(min(poll_interval, remaining))
+        except Exception as exc:  # noqa: BLE001 - best-effort
+            logger.warning(
+                "SandboxPool %s warmup: unexpected error while waiting for "
+                "pool readiness (%s); skipping warmup probe",
+                self._name,
+                exc,
+            )
+            return
+
+        # Phase 2: claim + probe + kill one sandbox. Reuse the same connection
+        # parameters the pool was created with so the probe hits the same
+        # backend / workspace.
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            logger.warning(
+                "SandboxPool %s warmup: no time left after readiness poll; "
+                "skipping warmup probe",
+                self._name,
+            )
+            return
+
+        sbx = None
+        try:
+            sbx = Sandbox.from_pool(
+                self._name,
+                api_url=api_url,
+                workspace=workspace,
+                user_id=user_id,
+                api_key=api_key,
+                timeout=timeout,
+            )
+            # Sandbox.wait_until_ready runs the cold-kernel warmup probe and
+            # is itself best-effort on probe timeout — it logs and returns.
+            # Cap its budget by the remaining pool-level deadline so it can
+            # never exceed the caller's ready_timeout.
+            probe_budget = max(1, int(deadline - time.monotonic()))
+            sbx.wait_until_ready(timeout=probe_budget)
+        except Exception as exc:  # noqa: BLE001 - best-effort
+            logger.warning(
+                "SandboxPool %s warmup: probe sandbox failed (%s); "
+                "pool is returned anyway",
+                self._name,
+                exc,
+            )
+        finally:
+            if sbx is not None:
+                try:
+                    sbx.kill()
+                except Exception as exc:  # noqa: BLE001 - best-effort
+                    logger.warning(
+                        "SandboxPool %s warmup: failed to kill probe "
+                        "sandbox %s (%s); leaking one claim",
+                        self._name,
+                        sbx.name,
+                        exc,
+                    )
 
     @classmethod
     def list(

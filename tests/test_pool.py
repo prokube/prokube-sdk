@@ -1,7 +1,9 @@
 """Tests for PoolClient and SandboxPool."""
 
 import json
+import re
 
+import httpx
 import pytest
 from pytest_httpx import HTTPXMock
 
@@ -9,6 +11,19 @@ from prokube.common.config import Config
 from prokube.common.exceptions import SandboxError
 from prokube.sandbox.pool import SandboxPool
 from prokube.sandbox.pool_client import PoolClient
+
+_WARMUP_MARKER_RE = re.compile(r'print\("(__pk_warmup_[0-9a-f]+__)"\)')
+
+
+def _extract_marker(request: httpx.Request) -> str | None:
+    """Extract the warmup marker from an /exec request body, if present."""
+    try:
+        body = json.loads(request.content)
+    except ValueError:
+        return None
+    code = body.get("code", "")
+    match = _WARMUP_MARKER_RE.search(code)
+    return match.group(1) if match else None
 
 
 # ---------------------------------------------------------------------------
@@ -249,6 +264,7 @@ class TestSandboxPoolCreateExtras:
             allow_internet_access=False,
             env_vars=[{"name": "DEBUG", "value": "1"}],
             secret_refs=["db-creds"],
+            wait_until_ready=False,
         )
 
         post_req = [r for r in httpx_mock.get_requests() if r.method == "POST"][0]
@@ -272,6 +288,7 @@ class TestSandboxPoolCreateExtras:
             pool_size=3,
             cpu="2",
             memory="4Gi",
+            wait_until_ready=False,
         )
 
         post_req = [r for r in httpx_mock.get_requests() if r.method == "POST"][0]
@@ -423,6 +440,7 @@ class TestSandboxPoolCreate:
             pool_size=3,
             cpu="2",
             memory="4Gi",
+            wait_until_ready=False,
         )
 
         assert pool.name == "python-pool"
@@ -430,6 +448,217 @@ class TestSandboxPoolCreate:
         assert pool.pool_size == 3
         assert pool.ready_replicas == 2
         assert pool.image == "pk-sandbox-base:latest"
+        pool._client.close()
+
+
+class TestSandboxPoolCreateWarmup:
+    """Tests for the warm-one-pod behaviour of SandboxPool.create()."""
+
+    # Pool response where the pool is already fully ready on the first refresh.
+    _READY_POOL_RESPONSE = {
+        "name": "python-pool",
+        "replicas": 1,
+        "readyReplicas": 1,
+        "image": "pk-sandbox-base:latest",
+        "cpu": "2",
+        "memory": "4Gi",
+    }
+
+    def _mock_warmup_happy_path(
+        self, httpx_mock: HTTPXMock, probe_marker_echo: bool = True
+    ) -> dict:
+        """Mock the full create -> refresh -> claim -> exec -> delete chain.
+
+        Returns a dict with counters the test can inspect (number of /exec
+        calls made).
+
+        Args:
+            probe_marker_echo: When True the /exec callback echoes the
+                warmup marker back and the probe succeeds on the first try.
+                When False it returns empty stdout so the probe retries
+                until the deadline trips.
+        """
+        # Version check: hit twice (once for the PoolClient, once for the
+        # SandboxClient spun up by Sandbox.from_pool).
+        httpx_mock.add_response(
+            method="GET",
+            url="https://test.example.com/api/version",
+            json={"version": "0.1.0"},
+            is_reusable=True,
+        )
+        # Pool create.
+        httpx_mock.add_response(
+            method="POST",
+            url="https://test.example.com/api/namespaces/test-ws/sandbox-pools",
+            json=self._READY_POOL_RESPONSE,
+        )
+        # Pool refresh — reusable so the polling loop can read it repeatedly.
+        httpx_mock.add_response(
+            method="GET",
+            url="https://test.example.com/api/namespaces/test-ws/sandbox-pools/python-pool",
+            json=self._READY_POOL_RESPONSE,
+            is_reusable=True,
+        )
+        # Claim a sandbox out of the pool.
+        httpx_mock.add_response(
+            method="POST",
+            url="https://test.example.com/api/namespaces/test-ws/sandboxes/claim",
+            json={"name": "sandbox-warmup", "status": "Running"},
+        )
+        # wait_until_ready refreshes the sandbox before running the probe.
+        httpx_mock.add_response(
+            method="GET",
+            url="https://test.example.com/api/namespaces/test-ws/sandboxes/sandbox-warmup",
+            json={"name": "sandbox-warmup", "phase": "Running"},
+            is_reusable=True,
+        )
+
+        counters: dict[str, int] = {"exec": 0}
+
+        def _probe_callback(request: httpx.Request) -> httpx.Response:
+            counters["exec"] += 1
+            marker = _extract_marker(request) or ""
+            stdout = f"{marker}\n" if probe_marker_echo else ""
+            return httpx.Response(
+                200,
+                json={
+                    "stdout": stdout,
+                    "stderr": "",
+                    "success": True,
+                    "execution_time_ms": 1,
+                },
+            )
+
+        httpx_mock.add_callback(
+            _probe_callback,
+            method="POST",
+            url="https://test.example.com/api/namespaces/test-ws/sandboxes/sandbox-warmup/exec",
+            is_reusable=True,
+        )
+        # kill() at the end of the warmup probe.
+        httpx_mock.add_response(
+            method="DELETE",
+            url="https://test.example.com/api/namespaces/test-ws/sandboxes/sandbox-warmup",
+            status_code=204,
+        )
+        return counters
+
+    def test_sandbox_pool_create_warms_pods(
+        self, mock_env, httpx_mock: HTTPXMock
+    ):
+        """Default create should claim+probe+kill one sandbox before returning."""
+        counters = self._mock_warmup_happy_path(httpx_mock)
+
+        pool = SandboxPool.create(
+            name="python-pool",
+            image="pk-sandbox-base:latest",
+            pool_size=1,
+            cpu="2",
+            memory="4Gi",
+        )
+
+        # The probe must have been invoked at least once — this is the whole
+        # point of the warmup, and this is what makes from_pool safe.
+        assert counters["exec"] >= 1, (
+            "SandboxPool.create(wait_until_ready=True) should run the "
+            "warmup probe before returning"
+        )
+
+        # The probe sandbox should have been killed.
+        delete_reqs = [
+            r
+            for r in httpx_mock.get_requests()
+            if r.method == "DELETE" and "sandboxes/sandbox-warmup" in str(r.url)
+        ]
+        assert len(delete_reqs) == 1, (
+            "warmup should kill the probe sandbox exactly once"
+        )
+
+        assert pool.name == "python-pool"
+        pool._client.close()
+
+    def test_sandbox_pool_create_opt_out(
+        self, mock_env, httpx_mock: HTTPXMock
+    ):
+        """wait_until_ready=False must preserve instant-return behaviour."""
+        _mock_version(httpx_mock)
+        httpx_mock.add_response(
+            method="POST",
+            url="https://test.example.com/api/namespaces/test-ws/sandbox-pools",
+            json=POOL_RESPONSE,
+        )
+
+        pool = SandboxPool.create(
+            name="python-pool",
+            image="pk-sandbox-base:latest",
+            pool_size=3,
+            cpu="2",
+            memory="4Gi",
+            wait_until_ready=False,
+        )
+
+        # Absolutely no probe, refresh, claim, or kill calls should have
+        # happened — only the version check and the pool POST.
+        requests = httpx_mock.get_requests()
+        exec_reqs = [r for r in requests if "/exec" in str(r.url)]
+        claim_reqs = [r for r in requests if "/sandboxes/claim" in str(r.url)]
+        refresh_reqs = [
+            r
+            for r in requests
+            if r.method == "GET"
+            and "/sandbox-pools/python-pool" in str(r.url)
+        ]
+        assert exec_reqs == [], "opt-out must not run warmup probe"
+        assert claim_reqs == [], "opt-out must not claim a probe sandbox"
+        assert refresh_reqs == [], "opt-out must not poll pool readiness"
+
+        assert pool.name == "python-pool"
+        pool._client.close()
+
+    def test_sandbox_pool_create_warmup_timeout(
+        self, mock_env, monkeypatch, httpx_mock: HTTPXMock
+    ):
+        """Probe timeout must be best-effort: log and return the pool anyway."""
+        # Make time.monotonic() advance quickly so the probe deadline trips
+        # after a couple of attempts instead of burning real wall-clock time.
+        import time as _time
+
+        real_monotonic = _time.monotonic
+        start = real_monotonic()
+        tick = {"n": 0}
+
+        def fake_monotonic() -> float:
+            # Each call advances virtual time by 1s. The initial budget is
+            # the one we pass in (ready_timeout=30 below), so the probe gets
+            # a handful of attempts before the deadline is exhausted.
+            tick["n"] += 1
+            return start + tick["n"] * 1.0
+
+        monkeypatch.setattr("time.monotonic", fake_monotonic)
+        monkeypatch.setattr("time.sleep", lambda _: None)
+
+        # Probe never echoes the marker, so wait_until_ready will exhaust its
+        # budget and log-and-return.
+        counters = self._mock_warmup_happy_path(
+            httpx_mock, probe_marker_echo=False
+        )
+
+        # Should NOT raise even though the probe never succeeds. Matches
+        # Sandbox.wait_until_ready best-effort semantics.
+        pool = SandboxPool.create(
+            name="python-pool",
+            image="pk-sandbox-base:latest",
+            pool_size=1,
+            cpu="2",
+            memory="4Gi",
+            ready_timeout=30,
+        )
+
+        # The probe must have been attempted at least once before the
+        # deadline tripped — this proves we actually ran the warmup probe
+        # rather than bailing out early.
+        assert counters["exec"] >= 1
+        assert pool.name == "python-pool"
         pool._client.close()
 
 
@@ -620,6 +849,7 @@ class TestSandboxPoolApiKeyRouting:
             api_url="https://test.example.com",
             workspace="ws",
             api_key="test-key",
+            wait_until_ready=False,
         )
 
         requests = httpx_mock.get_requests()
