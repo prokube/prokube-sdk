@@ -229,14 +229,22 @@ class Sandbox:
                 while waiting for it to become ready.
         """
         self._check_not_killed()
-        poll_interval = 2
+        poll_interval = 0.5
         deadline = time.monotonic() + timeout
         while True:
             self.refresh()
             if self._status == SandboxStatus.RUNNING:
                 if self._skip_next_warmup:
-                    self._skip_next_warmup = False
-                    return
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        self._skip_next_warmup = False
+                        return
+                    time.sleep(min(poll_interval, remaining))
+                    self.refresh()
+                    if self._status == SandboxStatus.RUNNING:
+                        self._skip_next_warmup = False
+                        return
+                    continue
                 self._warmup_kernel(deadline)
                 return
             if self._status in (SandboxStatus.FAILED, SandboxStatus.SUCCEEDED):
