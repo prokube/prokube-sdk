@@ -85,6 +85,7 @@ class Sandbox:
         self._pool = pool
         self._image = image
         self._killed = False
+        self._skip_next_warmup = False
 
         # Initialize helpers with killed-state check callback
         self._commands = CommandRunner(client, name, self._check_not_killed)
@@ -210,8 +211,9 @@ class Sandbox:
             SandboxError: If sandbox is not in Paused state.
         """
         self._check_not_killed()
-        self._client.resume(self._name)
-        self._status = SandboxStatus.PENDING
+        info = self._client.resume(self._name)
+        self._status = info.status
+        self._skip_next_warmup = info.resumed_from_pool
         # New pod means previous Jupyter session is invalid.
         self._code.reset_session()
 
@@ -232,6 +234,9 @@ class Sandbox:
         while True:
             self.refresh()
             if self._status == SandboxStatus.RUNNING:
+                if self._skip_next_warmup:
+                    self._skip_next_warmup = False
+                    return
                 self._warmup_kernel(deadline)
                 return
             if self._status in (SandboxStatus.FAILED, SandboxStatus.SUCCEEDED):

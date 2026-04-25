@@ -30,6 +30,10 @@ class SandboxInfo(BaseModel):
     image: str | None = Field(default=None, description="Container image")
     pool: str | None = Field(default=None, description="WarmPool name if claimed")
     created_at: str | None = Field(default=None, description="Creation timestamp")
+    resumed_from_pool: bool = Field(
+        default=False,
+        description="True when a resume response came from a warm-pool swap",
+    )
 
 
 class CommandResult(BaseModel):
