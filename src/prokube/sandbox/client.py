@@ -9,6 +9,9 @@ from prokube.common.compat import check_backend_compatibility
 from prokube.common.exceptions import ProKubeError, SandboxError
 from prokube.common.http import HttpClient
 from prokube.sandbox.models import (
+    BatchFileWriteRequest,
+    BatchFileWriteResponse,
+    BatchFileWriteResult,
     ClaimRequest,
     CodeResult,
     CommandResult,
@@ -350,6 +353,36 @@ class SandboxClient:
         self._http.post(
             self._sandbox_sub_path(name, "files"),
             json=request.model_dump(),
+        )
+
+    def write_files_batch(
+        self, name: str, items: list[FileWriteRequest]
+    ) -> BatchFileWriteResponse:
+        """Write multiple files to a sandbox in one request."""
+        request = BatchFileWriteRequest(items=items)
+        response = self._http.post(
+            self._sandbox_sub_path(name, "files/batch"),
+            json=request.model_dump(),
+        )
+        results = response.get("results", [])
+        return BatchFileWriteResponse(
+            success=response.get("success", False),
+            total=response.get("total", len(results)),
+            success_count=response.get(
+                "successCount", response.get("success_count", 0)
+            ),
+            failure_count=response.get(
+                "failureCount", response.get("failure_count", 0)
+            ),
+            results=[
+                BatchFileWriteResult(
+                    index=item.get("index", 0),
+                    path=item.get("path", ""),
+                    success=item.get("success", False),
+                    error=item.get("error"),
+                )
+                for item in results
+            ],
         )
 
     def read_file(self, name: str, path: str) -> bytes:

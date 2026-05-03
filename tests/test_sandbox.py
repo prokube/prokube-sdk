@@ -1,6 +1,9 @@
 """Tests for Sandbox class."""
 
+import base64
+
 import pytest
+from pydantic import ValidationError
 from pytest_httpx import HTTPXMock
 
 from prokube.sandbox import Sandbox
@@ -508,6 +511,195 @@ class TestSandboxFiles:
         assert body["encoding"] == "base64"
         assert body["content"] == base64.b64encode(b"hello world").decode("ascii")
         assert body["path"] == "/workspace/test.txt"
+
+        sbx._client.close()
+
+    def test_write_batch_files(self, mock_env, httpx_mock: HTTPXMock):
+        """Test writing multiple files with one batch request."""
+        import json
+
+        httpx_mock.add_response(
+            method="GET",
+            url="https://test.example.com/api/version",
+            json={"version": "0.1.0"},
+        )
+        httpx_mock.add_response(
+            method="POST",
+            url="https://test.example.com/api/namespaces/test-ws/sandboxes/claim",
+            json={"name": "sandbox-test", "status": "Running"},
+        )
+        httpx_mock.add_response(
+            method="POST",
+            url="https://test.example.com/api/namespaces/test-ws/sandboxes/sandbox-test/files/batch",
+            json={
+                "success": True,
+                "total": 2,
+                "successCount": 2,
+                "failureCount": 0,
+                "results": [
+                    {
+                        "index": 0,
+                        "path": "/workspace/alpha.txt",
+                        "success": True,
+                    },
+                    {
+                        "index": 1,
+                        "path": "/workspace/beta.bin",
+                        "success": True,
+                    },
+                ],
+            },
+        )
+
+        sbx = Sandbox.from_pool("python-pool")
+        result = sbx.files.write_batch(
+            [
+                ("/workspace/alpha.txt", "alpha"),
+                ("/workspace/beta.bin", b"\x00\xff"),
+            ]
+        )
+
+        assert result.success is True
+        assert result.success_count == 2
+        assert result.failure_count == 0
+        assert [item.path for item in result.results] == [
+            "/workspace/alpha.txt",
+            "/workspace/beta.bin",
+        ]
+
+        requests = httpx_mock.get_requests()
+        file_request = requests[-1]
+        assert "/files/batch" in str(file_request.url)
+
+        body = json.loads(file_request.content)
+        assert len(body["items"]) == 2
+        assert body["items"][0] == {
+            "path": "/workspace/alpha.txt",
+            "content": base64.b64encode(b"alpha").decode("ascii"),
+            "encoding": "base64",
+        }
+        assert body["items"][1] == {
+            "path": "/workspace/beta.bin",
+            "content": base64.b64encode(b"\x00\xff").decode("ascii"),
+            "encoding": "base64",
+        }
+
+        sbx._client.close()
+
+    def test_write_batch_files_external_api_key_path(
+        self, monkeypatch, httpx_mock: HTTPXMock
+    ):
+        """Batch writes use the external sandbox route for API-key auth."""
+        monkeypatch.setenv("PROKUBE_API_URL", "https://test.example.com")
+        monkeypatch.setenv("PROKUBE_WORKSPACE", "test-ws")
+        monkeypatch.delenv("PROKUBE_USER_ID", raising=False)
+        monkeypatch.setenv("PROKUBE_API_KEY", "secret-key")
+
+        httpx_mock.add_response(
+            method="POST",
+            url="https://test.example.com/sandbox/test-ws/sandboxes/claim",
+            json={"name": "sandbox-test", "status": "Running"},
+        )
+        httpx_mock.add_response(
+            method="POST",
+            url="https://test.example.com/sandbox/test-ws/sandboxes/sandbox-test/files/batch",
+            json={
+                "success": True,
+                "total": 1,
+                "successCount": 1,
+                "failureCount": 0,
+                "results": [
+                    {
+                        "index": 0,
+                        "path": "/workspace/alpha.txt",
+                        "success": True,
+                    }
+                ],
+            },
+        )
+
+        sbx = Sandbox.from_pool("python-pool")
+        result = sbx.files.write_batch([("/workspace/alpha.txt", "alpha")])
+
+        assert result.success is True
+        requests = httpx_mock.get_requests()
+        assert str(requests[-1].url) == (
+            "https://test.example.com/sandbox/test-ws/"
+            "sandboxes/sandbox-test/files/batch"
+        )
+
+        sbx._client.close()
+
+    def test_write_batch_files_partial_failure(self, mock_env, httpx_mock: HTTPXMock):
+        """Partial failure responses preserve per-file error details."""
+        httpx_mock.add_response(
+            method="GET",
+            url="https://test.example.com/api/version",
+            json={"version": "0.1.0"},
+        )
+        httpx_mock.add_response(
+            method="POST",
+            url="https://test.example.com/api/namespaces/test-ws/sandboxes/claim",
+            json={"name": "sandbox-test", "status": "Running"},
+        )
+        httpx_mock.add_response(
+            method="POST",
+            url="https://test.example.com/api/namespaces/test-ws/sandboxes/sandbox-test/files/batch",
+            json={
+                "success": False,
+                "total": 2,
+                "successCount": 1,
+                "failureCount": 1,
+                "results": [
+                    {
+                        "index": 0,
+                        "path": "/workspace/alpha.txt",
+                        "success": True,
+                    },
+                    {
+                        "index": 1,
+                        "path": "/workspace/beta.txt",
+                        "success": False,
+                        "error": "Sandbox is not running",
+                    },
+                ],
+            },
+        )
+
+        sbx = Sandbox.from_pool("python-pool")
+        result = sbx.files.write_batch(
+            [
+                ("/workspace/alpha.txt", "alpha"),
+                ("/workspace/beta.txt", "beta"),
+            ]
+        )
+
+        assert result.success is False
+        assert result.failure_count == 1
+        assert result.results[1].error == "Sandbox is not running"
+
+        sbx._client.close()
+
+    def test_write_batch_files_rejects_empty_batches(self, mock_env, httpx_mock: HTTPXMock):
+        """Empty batches are rejected client-side before any file request."""
+        httpx_mock.add_response(
+            method="GET",
+            url="https://test.example.com/api/version",
+            json={"version": "0.1.0"},
+        )
+        httpx_mock.add_response(
+            method="POST",
+            url="https://test.example.com/api/namespaces/test-ws/sandboxes/claim",
+            json={"name": "sandbox-test", "status": "Running"},
+        )
+
+        sbx = Sandbox.from_pool("python-pool")
+
+        with pytest.raises(ValidationError):
+            sbx.files.write_batch([])
+
+        requests = httpx_mock.get_requests()
+        assert all("files/batch" not in str(request.url) for request in requests)
 
         sbx._client.close()
 

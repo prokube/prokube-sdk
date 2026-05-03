@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from enum import Enum
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -189,7 +190,7 @@ class FileWriteRequest(BaseModel):
 
     path: str = Field(..., description="Path where to write the file")
     content: str = Field(..., description="Base64-encoded file content")
-    encoding: str = Field(
+    encoding: Literal["text", "base64"] = Field(
         default="base64",
         description=(
             "Content encoding. The SDK always sends base64 because the "
@@ -197,4 +198,44 @@ class FileWriteRequest(BaseModel):
             "bytes. The pkui backend uses this field to decide whether to "
             "decode the content before forwarding it to execd."
         ),
+    )
+
+
+MAX_BATCH_WRITE_ITEMS = 100
+
+
+class BatchFileWriteRequest(BaseModel):
+    """Request to write multiple files to a sandbox."""
+
+    items: list[FileWriteRequest] = Field(
+        ...,
+        min_length=1,
+        max_length=MAX_BATCH_WRITE_ITEMS,
+        description="Ordered list of file writes to apply",
+    )
+
+
+class BatchFileWriteResult(BaseModel):
+    """Per-file result entry for a batch sandbox upload."""
+
+    index: int = Field(..., description="Zero-based item index in the request")
+    path: str = Field(..., description="File path that was processed")
+    success: bool = Field(..., description="Whether the file write succeeded")
+    error: str | None = Field(
+        default=None,
+        description="Failure detail when the file write did not succeed",
+    )
+
+
+class BatchFileWriteResponse(BaseModel):
+    """Summary response for a batch sandbox upload."""
+
+    success: bool = Field(..., description="True when all requested writes succeeded")
+    total: int = Field(..., description="Total number of file writes requested")
+    success_count: int = Field(
+        ..., description="Number of successful file writes"
+    )
+    failure_count: int = Field(..., description="Number of failed file writes")
+    results: list[BatchFileWriteResult] = Field(
+        default_factory=list, description="Per-file results in request order"
     )

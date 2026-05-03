@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Callable
+import base64
+from collections.abc import Callable, Sequence
+from typing import TYPE_CHECKING
 
-from prokube.sandbox.models import FileInfo
+from prokube.sandbox.models import BatchFileWriteResponse, FileInfo, FileWriteRequest
 
 if TYPE_CHECKING:
     from prokube.sandbox.client import SandboxClient
@@ -81,6 +83,35 @@ class FileManager:
         return self._client.read_file(
             name=self._sandbox_name,
             path=path,
+        )
+
+    def write_batch(
+        self, items: Sequence[tuple[str, bytes | str]]
+    ) -> BatchFileWriteResponse:
+        """Upload multiple files to the sandbox in request order.
+
+        Args:
+            items: Ordered sequence of ``(path, content)`` pairs. String
+                content is encoded as UTF-8 before upload.
+        """
+        if self._check_killed:
+            self._check_killed()
+
+        requests: list[FileWriteRequest] = []
+        for path, content in items:
+            if isinstance(content, str):
+                content = content.encode("utf-8")
+            requests.append(
+                FileWriteRequest(
+                    path=path,
+                    content=base64.b64encode(content).decode("ascii"),
+                    encoding="base64",
+                )
+            )
+
+        return self._client.write_files_batch(
+            name=self._sandbox_name,
+            items=requests,
         )
 
     def list(self, path: str = "/workspace") -> list[FileInfo]:
