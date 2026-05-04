@@ -5,7 +5,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class SandboxStatus(str, Enum):
@@ -239,3 +239,11 @@ class BatchFileWriteResponse(BaseModel):
     results: list[BatchFileWriteResult] = Field(
         default_factory=list, description="Per-file results in request order"
     )
+
+    @field_validator("results")
+    @classmethod
+    def sort_results_by_index(
+        cls, results: list[BatchFileWriteResult]
+    ) -> list[BatchFileWriteResult]:
+        """Normalize per-file results back to request order."""
+        return sorted(results, key=lambda item: item.index)

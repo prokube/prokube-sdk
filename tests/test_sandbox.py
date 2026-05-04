@@ -1,6 +1,11 @@
 """Tests for Sandbox class."""
 
 import base64
+import os
+import subprocess
+import sys
+import textwrap
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
@@ -680,6 +685,60 @@ class TestSandboxFiles:
 
         sbx._client.close()
 
+    def test_write_batch_files_sorts_results_by_index(self):
+        """Returned results are normalized back to request order by index."""
+        script = textwrap.dedent(
+            """
+            from prokube.common.config import Config
+            from prokube.sandbox.client import SandboxClient
+            from prokube.sandbox.models import FileWriteRequest
+
+            client = SandboxClient(
+                Config(
+                    api_url="https://test.example.com",
+                    workspace="test-ws",
+                    user_id="test-user@example.com",
+                ),
+                check_version=False,
+            )
+            client._http.post = lambda *args, **kwargs: {
+                "success": True,
+                "total": 2,
+                "results": [
+                    {"index": 1, "path": "/workspace/beta.txt", "success": True},
+                    {"index": 0, "path": "/workspace/alpha.txt", "success": True},
+                ],
+            }
+
+            result = client.write_files_batch(
+                "sandbox-test",
+                [FileWriteRequest(path="/workspace/alpha.txt", content="YWxwaGE=")],
+            )
+            print([item.index for item in result.results])
+            print([item.path for item in result.results])
+            print(result.success_count)
+            print(result.failure_count)
+            """
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            check=True,
+            env={
+                **os.environ,
+                "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src"),
+            },
+        )
+
+        output = result.stdout.strip().splitlines()
+        assert output == [
+            "[0, 1]",
+            "['/workspace/alpha.txt', '/workspace/beta.txt']",
+            "2",
+            "0",
+        ]
+
     def test_write_batch_files_rejects_empty_batches(self, mock_env, httpx_mock: HTTPXMock):
         """Empty batches are rejected client-side before any file request."""
         httpx_mock.add_response(
@@ -697,6 +756,33 @@ class TestSandboxFiles:
 
         with pytest.raises(ValidationError):
             sbx.files.write_batch([])
+
+        requests = httpx_mock.get_requests()
+        assert all("files/batch" not in str(request.url) for request in requests)
+
+        sbx._client.close()
+
+    def test_write_batch_files_rejects_too_many_items(
+        self, mock_env, httpx_mock: HTTPXMock
+    ):
+        """Oversized batches are rejected before content is encoded or sent."""
+        httpx_mock.add_response(
+            method="GET",
+            url="https://test.example.com/api/version",
+            json={"version": "0.1.0"},
+        )
+        httpx_mock.add_response(
+            method="POST",
+            url="https://test.example.com/api/namespaces/test-ws/sandboxes/claim",
+            json={"name": "sandbox-test", "status": "Running"},
+        )
+
+        sbx = Sandbox.from_pool("python-pool")
+
+        with pytest.raises(ValueError, match="at most 100 items"):
+            sbx.files.write_batch(
+                [(f"/workspace/file-{idx}.txt", "x") for idx in range(101)]
+            )
 
         requests = httpx_mock.get_requests()
         assert all("files/batch" not in str(request.url) for request in requests)

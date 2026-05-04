@@ -6,7 +6,12 @@ import base64
 from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING
 
-from prokube.sandbox.models import BatchFileWriteResponse, FileInfo, FileWriteRequest
+from prokube.sandbox.models import (
+    MAX_BATCH_WRITE_ITEMS,
+    BatchFileWriteResponse,
+    FileInfo,
+    FileWriteRequest,
+)
 
 if TYPE_CHECKING:
     from prokube.sandbox.client import SandboxClient
@@ -96,6 +101,11 @@ class FileManager:
         """
         if self._check_killed:
             self._check_killed()
+
+        if len(items) > MAX_BATCH_WRITE_ITEMS:
+            raise ValueError(
+                f"Batch write supports at most {MAX_BATCH_WRITE_ITEMS} items"
+            )
 
         requests: list[FileWriteRequest] = []
         for path, content in items:

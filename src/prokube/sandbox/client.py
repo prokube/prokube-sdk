@@ -364,16 +364,21 @@ class SandboxClient:
             self._sandbox_sub_path(name, "files/batch"),
             json=request.model_dump(),
         )
-        results = response.get("results", [])
+        raw_results = response.get("results", [])
+        results = sorted(raw_results, key=lambda item: item.get("index", 0))
+        success_count = response.get("successCount", response.get("success_count"))
+        failure_count = response.get("failureCount", response.get("failure_count"))
+
+        if success_count is None:
+            success_count = sum(1 for item in results if item.get("success", False))
+        if failure_count is None:
+            failure_count = len(results) - success_count
+
         return BatchFileWriteResponse(
             success=response.get("success", False),
             total=response.get("total", len(results)),
-            success_count=response.get(
-                "successCount", response.get("success_count", 0)
-            ),
-            failure_count=response.get(
-                "failureCount", response.get("failure_count", 0)
-            ),
+            success_count=success_count,
+            failure_count=failure_count,
             results=[
                 BatchFileWriteResult(
                     index=item.get("index", 0),
