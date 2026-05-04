@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import base64
 from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING
 
@@ -10,7 +9,6 @@ from prokube.sandbox.models import (
     MAX_BATCH_WRITE_ITEMS,
     BatchFileWriteResponse,
     FileInfo,
-    FileWriteRequest,
 )
 
 if TYPE_CHECKING:
@@ -102,26 +100,23 @@ class FileManager:
         if self._check_killed:
             self._check_killed()
 
+        if not items:
+            raise ValueError("Batch write requires at least 1 item")
+
         if len(items) > MAX_BATCH_WRITE_ITEMS:
             raise ValueError(
                 f"Batch write supports at most {MAX_BATCH_WRITE_ITEMS} items"
             )
 
-        requests: list[FileWriteRequest] = []
+        normalized_items: list[tuple[str, bytes]] = []
         for path, content in items:
             if isinstance(content, str):
                 content = content.encode("utf-8")
-            requests.append(
-                FileWriteRequest(
-                    path=path,
-                    content=base64.b64encode(content).decode("ascii"),
-                    encoding="base64",
-                )
-            )
+            normalized_items.append((path, content))
 
         return self._client.write_files_batch(
             name=self._sandbox_name,
-            items=requests,
+            items=normalized_items,
         )
 
     def list(self, path: str = "/workspace") -> list[FileInfo]:

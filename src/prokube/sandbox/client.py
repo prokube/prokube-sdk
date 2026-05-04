@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 from prokube.common.compat import check_backend_compatibility
@@ -356,10 +357,19 @@ class SandboxClient:
         )
 
     def write_files_batch(
-        self, name: str, items: list[FileWriteRequest]
+        self, name: str, items: Sequence[tuple[str, bytes]]
     ) -> BatchFileWriteResponse:
         """Write multiple files to a sandbox in one request."""
-        request = BatchFileWriteRequest(items=items)
+        request = BatchFileWriteRequest(
+            items=[
+                FileWriteRequest(
+                    path=path,
+                    content=base64.b64encode(content).decode("ascii"),
+                    encoding="base64",
+                )
+                for path, content in items
+            ]
+        )
         response = self._http.post(
             self._sandbox_sub_path(name, "files/batch"),
             json=request.model_dump(),

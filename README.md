@@ -193,6 +193,13 @@ class FileManager:
     def write_batch(self, items: list[tuple[str, bytes | str]]) -> BatchFileWriteResponse:
         """Best-effort batch upload with per-file results."""
 
+    def read(self, path: str) -> bytes:
+        """Download file from sandbox."""
+
+    def list(self, path: str = "/workspace") -> list[FileInfo]:
+        """List files in directory."""
+
+
 class BatchFileWriteResponse(BaseModel):
     success: bool           # True only if every file write succeeded
     total: int              # Total requested file writes
@@ -200,17 +207,12 @@ class BatchFileWriteResponse(BaseModel):
     failure_count: int      # Number of failed writes
     results: list[BatchFileWriteResult]
 
+
 class BatchFileWriteResult(BaseModel):
     index: int              # Original request position
     path: str               # Sandbox path for this entry
     success: bool           # Whether this file write succeeded
     error: str | None       # Failure detail for best-effort partial failures
-     
-    def read(self, path: str) -> bytes:
-        """Download file from sandbox."""
-    
-    def list(self, path: str = "/workspace") -> list[FileInfo]:
-        """List files in directory."""
 ```
 
 ### CodeResult
