@@ -79,8 +79,12 @@ def _parse_batch_file_write_response(
     if failure_count is None:
         failure_count = len(results) - success_count
 
+    success = response.get("success")
+    if not isinstance(success, bool):
+        raise ValueError("Batch file write response must include a boolean success")
+
     return BatchFileWriteResponse(
-        success=bool(response.get("success", False)),
+        success=success,
         total=int(response.get("total", len(results))),
         success_count=int(success_count),
         failure_count=int(failure_count),
@@ -97,7 +101,7 @@ def _require_batch_result_str(item: dict[str, object], field: str) -> str:
 
 def _require_batch_result_int(item: dict[str, object], field: str) -> int:
     value = item.get(field)
-    if not isinstance(value, int):
+    if isinstance(value, bool) or not isinstance(value, int):
         raise ValueError(f"Batch file write response item is missing {field}")
     return value
 
@@ -437,8 +441,16 @@ class SandboxClient:
                 self._sandbox_sub_path(name, "files/batch"),
                 json=request.model_dump(),
             )
-        except NotFoundError:
-            raise
+        except NotFoundError as e:
+            try:
+                self.get(name)
+            except NotFoundError:
+                raise
+            raise SandboxError(
+                "Batch file writes require a backend that supports the "
+                "sandbox /files/batch endpoint",
+                status_code=e.status_code,
+            ) from e
         except ProKubeError as e:
             if e.status_code == 405:
                 raise SandboxError(

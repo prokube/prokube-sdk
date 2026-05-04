@@ -695,8 +695,13 @@ class TestSandboxFiles:
         httpx_mock.add_response(
             method="POST",
             url="https://test.example.com/api/namespaces/test-ws/sandboxes/sandbox-test/files/batch",
-            status_code=405,
-            json={"detail": "Method Not Allowed"},
+            status_code=404,
+            json={"detail": "Not Found"},
+        )
+        httpx_mock.add_response(
+            method="GET",
+            url="https://test.example.com/api/namespaces/test-ws/sandboxes/sandbox-test",
+            json={"name": "sandbox-test", "status": "Running"},
         )
 
         sbx = Sandbox.from_pool("python-pool")

@@ -271,3 +271,25 @@ class TestBatchFileWriteResponseParsing:
                     "results": ["not-an-object"],
                 }
             )
+
+    def test_parse_batch_response_rejects_non_boolean_success(self):
+        with pytest.raises(ValueError, match="boolean success"):
+            _parse_batch_file_write_response(
+                {
+                    "success": "false",
+                    "results": [
+                        {"index": 0, "path": "/workspace/a.txt", "success": True}
+                    ],
+                }
+            )
+
+    def test_parse_batch_response_rejects_boolean_index(self):
+        with pytest.raises(ValueError, match="missing index"):
+            _parse_batch_file_write_response(
+                {
+                    "success": True,
+                    "results": [
+                        {"index": True, "path": "/workspace/a.txt", "success": True}
+                    ],
+                }
+            )
