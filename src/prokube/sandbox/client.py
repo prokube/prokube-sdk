@@ -71,6 +71,14 @@ def _parse_batch_file_write_response(
         )
 
     results.sort(key=lambda item: item.index)
+    seen_indexes: set[int] = set()
+    for item in results:
+        if item.index < 0:
+            raise ValueError("Batch file write response index must be non-negative")
+        if item.index in seen_indexes:
+            raise ValueError("Batch file write response indexes must be unique")
+        seen_indexes.add(item.index)
+
     success_count = response.get("successCount", response.get("success_count"))
     failure_count = response.get("failureCount", response.get("failure_count"))
 

@@ -293,3 +293,26 @@ class TestBatchFileWriteResponseParsing:
                     ],
                 }
             )
+
+    def test_parse_batch_response_rejects_negative_index(self):
+        with pytest.raises(ValueError, match="non-negative"):
+            _parse_batch_file_write_response(
+                {
+                    "success": True,
+                    "results": [
+                        {"index": -1, "path": "/workspace/a.txt", "success": True}
+                    ],
+                }
+            )
+
+    def test_parse_batch_response_rejects_duplicate_indexes(self):
+        with pytest.raises(ValueError, match="unique"):
+            _parse_batch_file_write_response(
+                {
+                    "success": True,
+                    "results": [
+                        {"index": 0, "path": "/workspace/a.txt", "success": True},
+                        {"index": 0, "path": "/workspace/b.txt", "success": False},
+                    ],
+                }
+            )
