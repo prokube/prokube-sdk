@@ -47,6 +47,43 @@ def _parse_status(status_str: str | None, default: SandboxStatus) -> SandboxStat
         return SandboxStatus.UNKNOWN
 
 
+def _parse_batch_file_write_response(
+    response: dict[str, object],
+) -> BatchFileWriteResponse:
+    """Normalize the batch file write response contract."""
+    raw_results = response.get("results", [])
+    if not isinstance(raw_results, list):
+        raise ValueError("Batch file write response must include a results list")
+
+    results = sorted(
+        [item for item in raw_results if isinstance(item, dict)],
+        key=lambda item: item.get("index", 0),
+    )
+    success_count = response.get("successCount", response.get("success_count"))
+    failure_count = response.get("failureCount", response.get("failure_count"))
+
+    if success_count is None:
+        success_count = sum(1 for item in results if item.get("success", False))
+    if failure_count is None:
+        failure_count = len(results) - success_count
+
+    return BatchFileWriteResponse(
+        success=bool(response.get("success", False)),
+        total=int(response.get("total", len(results))),
+        success_count=int(success_count),
+        failure_count=int(failure_count),
+        results=[
+            BatchFileWriteResult(
+                index=item.get("index", 0),
+                path=item.get("path", ""),
+                success=item.get("success", False),
+                error=item.get("error"),
+            )
+            for item in results
+        ],
+    )
+
+
 class SandboxClient:
     """Client for sandbox API operations."""
 
@@ -374,31 +411,7 @@ class SandboxClient:
             self._sandbox_sub_path(name, "files/batch"),
             json=request.model_dump(),
         )
-        raw_results = response.get("results", [])
-        results = sorted(raw_results, key=lambda item: item.get("index", 0))
-        success_count = response.get("successCount", response.get("success_count"))
-        failure_count = response.get("failureCount", response.get("failure_count"))
-
-        if success_count is None:
-            success_count = sum(1 for item in results if item.get("success", False))
-        if failure_count is None:
-            failure_count = len(results) - success_count
-
-        return BatchFileWriteResponse(
-            success=response.get("success", False),
-            total=response.get("total", len(results)),
-            success_count=success_count,
-            failure_count=failure_count,
-            results=[
-                BatchFileWriteResult(
-                    index=item.get("index", 0),
-                    path=item.get("path", ""),
-                    success=item.get("success", False),
-                    error=item.get("error"),
-                )
-                for item in results
-            ],
-        )
+        return _parse_batch_file_write_response(response)
 
     def read_file(self, name: str, path: str) -> bytes:
         """Read a file from sandbox.

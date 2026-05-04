@@ -3,7 +3,6 @@
 import base64
 
 import pytest
-from pydantic import ValidationError
 from pytest_httpx import HTTPXMock
 
 from prokube.sandbox import Sandbox
@@ -695,7 +694,7 @@ class TestSandboxFiles:
 
         sbx = Sandbox.from_pool("python-pool")
 
-        with pytest.raises(ValidationError):
+        with pytest.raises(ValueError, match="at least 1 item"):
             sbx.files.write_batch([])
 
         requests = httpx_mock.get_requests()

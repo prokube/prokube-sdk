@@ -96,6 +96,11 @@ class FileManager:
         Args:
             items: Ordered sequence of ``(path, content)`` pairs. String
                 content is encoded as UTF-8 before upload.
+
+        Returns:
+            A ``BatchFileWriteResponse`` with per-file success/error details.
+            Batch writes are best-effort, so partial failures are reported in
+            the response instead of raising after the request starts.
         """
         if self._check_killed:
             self._check_killed()
