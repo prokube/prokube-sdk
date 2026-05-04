@@ -5,6 +5,7 @@ import base64
 import pytest
 from pytest_httpx import HTTPXMock
 
+from prokube.common.exceptions import SandboxError
 from prokube.sandbox import Sandbox
 
 
@@ -676,6 +677,32 @@ class TestSandboxFiles:
         assert result.success is False
         assert result.failure_count == 1
         assert result.results[1].error == "Sandbox is not running"
+
+        sbx._client.close()
+
+    def test_write_batch_files_unsupported_backend(self, mock_env, httpx_mock: HTTPXMock):
+        """Older backends surface a clear error for missing batch route."""
+        httpx_mock.add_response(
+            method="GET",
+            url="https://test.example.com/api/version",
+            json={"version": "0.1.0"},
+        )
+        httpx_mock.add_response(
+            method="POST",
+            url="https://test.example.com/api/namespaces/test-ws/sandboxes/claim",
+            json={"name": "sandbox-test", "status": "Running"},
+        )
+        httpx_mock.add_response(
+            method="POST",
+            url="https://test.example.com/api/namespaces/test-ws/sandboxes/sandbox-test/files/batch",
+            status_code=404,
+            json={"detail": "Not Found"},
+        )
+
+        sbx = Sandbox.from_pool("python-pool")
+
+        with pytest.raises(SandboxError, match="require a backend"):
+            sbx.files.write_batch([("/workspace/alpha.txt", "alpha")])
 
         sbx._client.close()
 

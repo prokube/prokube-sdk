@@ -262,3 +262,12 @@ class TestBatchFileWriteResponseParsing:
                     "results": [{"index": 0, "success": True}],
                 }
             )
+
+    def test_parse_batch_response_rejects_non_object_entries(self):
+        with pytest.raises(ValueError, match="must be an object"):
+            _parse_batch_file_write_response(
+                {
+                    "success": True,
+                    "results": ["not-an-object"],
+                }
+            )
