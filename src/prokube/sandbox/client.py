@@ -55,10 +55,13 @@ def _parse_batch_file_write_response(
     if not isinstance(raw_results, list):
         raise ValueError("Batch file write response must include a results list")
 
-    results = sorted(
-        [item for item in raw_results if isinstance(item, dict)],
-        key=lambda item: item.get("index", 0),
-    )
+    for index, item in enumerate(raw_results):
+        if not isinstance(item, dict):
+            raise ValueError(
+                f"Batch file write response item {index} must be an object"
+            )
+
+    results = sorted(raw_results, key=lambda item: item.get("index", 0))
     success_count = response.get("successCount", response.get("success_count"))
     failure_count = response.get("failureCount", response.get("failure_count"))
 
@@ -74,14 +77,35 @@ def _parse_batch_file_write_response(
         failure_count=int(failure_count),
         results=[
             BatchFileWriteResult(
-                index=item.get("index", 0),
-                path=item.get("path", ""),
-                success=item.get("success", False),
+                index=_require_batch_result_int(item, "index"),
+                path=_require_batch_result_str(item, "path"),
+                success=_require_batch_result_bool(item, "success"),
                 error=item.get("error"),
             )
             for item in results
         ],
     )
+
+
+def _require_batch_result_str(item: dict[str, object], field: str) -> str:
+    value = item.get(field)
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"Batch file write response item is missing {field}")
+    return value
+
+
+def _require_batch_result_int(item: dict[str, object], field: str) -> int:
+    value = item.get(field)
+    if not isinstance(value, int):
+        raise ValueError(f"Batch file write response item is missing {field}")
+    return value
+
+
+def _require_batch_result_bool(item: dict[str, object], field: str) -> bool:
+    value = item.get(field)
+    if not isinstance(value, bool):
+        raise ValueError(f"Batch file write response item is missing {field}")
+    return value
 
 
 class SandboxClient:
@@ -407,10 +431,19 @@ class SandboxClient:
                 for path, content in items
             ]
         )
-        response = self._http.post(
-            self._sandbox_sub_path(name, "files/batch"),
-            json=request.model_dump(),
-        )
+        try:
+            response = self._http.post(
+                self._sandbox_sub_path(name, "files/batch"),
+                json=request.model_dump(),
+            )
+        except ProKubeError as e:
+            if e.status_code in (404, 405):
+                raise SandboxError(
+                    "Batch file writes require a backend that supports the "
+                    "sandbox /files/batch endpoint",
+                    status_code=e.status_code,
+                ) from e
+            raise
         return _parse_batch_file_write_response(response)
 
     def read_file(self, name: str, path: str) -> bytes:

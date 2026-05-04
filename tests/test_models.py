@@ -1,5 +1,7 @@
 """Tests for Pydantic models."""
 
+import pytest
+
 from prokube.sandbox.client import _parse_batch_file_write_response
 from prokube.sandbox.models import (
     BatchFileWriteResponse,
@@ -251,3 +253,12 @@ class TestBatchFileWriteResponseParsing:
         assert response.success_count == 1
         assert response.failure_count == 1
         assert response.results[1].error == "disk full"
+
+    def test_parse_batch_response_rejects_missing_required_fields(self):
+        with pytest.raises(ValueError, match="missing path"):
+            _parse_batch_file_write_response(
+                {
+                    "success": True,
+                    "results": [{"index": 0, "success": True}],
+                }
+            )

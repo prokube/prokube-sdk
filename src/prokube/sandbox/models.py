@@ -189,14 +189,15 @@ class FileWriteRequest(BaseModel):
     """Request to write a file to sandbox."""
 
     path: str = Field(..., description="Path where to write the file")
-    content: str = Field(..., description="Base64-encoded file content")
+    content: str = Field(
+        ..., description="File content encoded according to the encoding field"
+    )
     encoding: Literal["text", "base64"] = Field(
         default="base64",
         description=(
-            "Content encoding. The SDK always sends base64 because the "
-            "request is JSON and binary content cannot be carried as raw "
-            "bytes. The pkui backend uses this field to decide whether to "
-            "decode the content before forwarding it to execd."
+            "Content encoding. Use 'text' for plain UTF-8 strings or "
+            "'base64' for binary-safe payloads. The SDK's high-level file "
+            "helpers send base64 when uploading bytes."
         ),
     )
 
