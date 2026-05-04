@@ -197,7 +197,7 @@ class FileWriteRequest(BaseModel):
         description=(
             "Content encoding. Use 'text' for plain UTF-8 strings or "
             "'base64' for binary-safe payloads. The SDK's high-level file "
-            "helpers send base64 when uploading bytes."
+            "helpers send base64 for both text and binary uploads."
         ),
     )
 
