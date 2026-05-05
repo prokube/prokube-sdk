@@ -1,6 +1,10 @@
 """Tests for Pydantic models."""
 
+import pytest
+
+from prokube.sandbox.client import _parse_batch_file_write_response
 from prokube.sandbox.models import (
+    BatchFileWriteResponse,
     ClaimRequest,
     CodeResult,
     CommandResult,
@@ -186,3 +190,129 @@ class TestRequestModels:
         # to disk (issue #18).
         assert req.encoding == "base64"
         assert req.model_dump()["encoding"] == "base64"
+
+    def test_batch_file_write_response_preserves_result_fields(self):
+        """Batch response model keeps the per-file payload intact."""
+        response = BatchFileWriteResponse(
+            success=False,
+            total=2,
+            success_count=1,
+            failure_count=1,
+            results=[
+                {"index": 1, "path": "/workspace/b.txt", "success": False},
+                {"index": 0, "path": "/workspace/a.txt", "success": True},
+            ],
+        )
+
+        assert [item.index for item in response.results] == [1, 0]
+        assert response.results[1].path == "/workspace/a.txt"
+
+
+class TestBatchFileWriteResponseParsing:
+    """Tests for batch write response normalization helpers."""
+
+    def test_parse_batch_response_sorts_results_by_index(self):
+        response = _parse_batch_file_write_response(
+            {
+                "success": True,
+                "total": 2,
+                "results": [
+                    {"index": 1, "path": "/workspace/b.txt", "success": True},
+                    {"index": 0, "path": "/workspace/a.txt", "success": True},
+                ],
+            }
+        )
+
+        assert [item.index for item in response.results] == [0, 1]
+        assert [item.path for item in response.results] == [
+            "/workspace/a.txt",
+            "/workspace/b.txt",
+        ]
+        assert response.success_count == 2
+        assert response.failure_count == 0
+
+    def test_parse_batch_response_supports_legacy_counts(self):
+        response = _parse_batch_file_write_response(
+            {
+                "success": False,
+                "total": 2,
+                "success_count": 1,
+                "failure_count": 1,
+                "results": [
+                    {"index": 0, "path": "/workspace/a.txt", "success": True},
+                    {
+                        "index": 1,
+                        "path": "/workspace/b.txt",
+                        "success": False,
+                        "error": "disk full",
+                    },
+                ],
+            }
+        )
+
+        assert response.success_count == 1
+        assert response.failure_count == 1
+        assert response.results[1].error == "disk full"
+
+    def test_parse_batch_response_rejects_missing_required_fields(self):
+        with pytest.raises(ValueError, match="missing path"):
+            _parse_batch_file_write_response(
+                {
+                    "success": True,
+                    "results": [{"index": 0, "success": True}],
+                }
+            )
+
+    def test_parse_batch_response_rejects_non_object_entries(self):
+        with pytest.raises(ValueError, match="must be an object"):
+            _parse_batch_file_write_response(
+                {
+                    "success": True,
+                    "results": ["not-an-object"],
+                }
+            )
+
+    def test_parse_batch_response_rejects_non_boolean_success(self):
+        with pytest.raises(ValueError, match="boolean success"):
+            _parse_batch_file_write_response(
+                {
+                    "success": "false",
+                    "results": [
+                        {"index": 0, "path": "/workspace/a.txt", "success": True}
+                    ],
+                }
+            )
+
+    def test_parse_batch_response_rejects_boolean_index(self):
+        with pytest.raises(ValueError, match="missing index"):
+            _parse_batch_file_write_response(
+                {
+                    "success": True,
+                    "results": [
+                        {"index": True, "path": "/workspace/a.txt", "success": True}
+                    ],
+                }
+            )
+
+    def test_parse_batch_response_rejects_negative_index(self):
+        with pytest.raises(ValueError, match="non-negative"):
+            _parse_batch_file_write_response(
+                {
+                    "success": True,
+                    "results": [
+                        {"index": -1, "path": "/workspace/a.txt", "success": True}
+                    ],
+                }
+            )
+
+    def test_parse_batch_response_rejects_duplicate_indexes(self):
+        with pytest.raises(ValueError, match="unique"):
+            _parse_batch_file_write_response(
+                {
+                    "success": True,
+                    "results": [
+                        {"index": 0, "path": "/workspace/a.txt", "success": True},
+                        {"index": 0, "path": "/workspace/b.txt", "success": False},
+                    ],
+                }
+            )

@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Callable
+from collections.abc import Callable, Sequence
+from typing import TYPE_CHECKING
 
-from prokube.sandbox.models import FileInfo
+from prokube.sandbox.models import (
+    MAX_BATCH_WRITE_ITEMS,
+    BatchFileWriteResponse,
+    FileInfo,
+)
 
 if TYPE_CHECKING:
     from prokube.sandbox.client import SandboxClient
@@ -81,6 +86,42 @@ class FileManager:
         return self._client.read_file(
             name=self._sandbox_name,
             path=path,
+        )
+
+    def write_batch(
+        self, items: Sequence[tuple[str, bytes | str]]
+    ) -> BatchFileWriteResponse:
+        """Upload multiple files to the sandbox in request order.
+
+        Args:
+            items: Ordered sequence of ``(path, content)`` pairs. String
+                content is encoded as UTF-8 before upload.
+
+        Returns:
+            A ``BatchFileWriteResponse`` with per-file success/error details.
+            Batch writes are best-effort, so partial failures are reported in
+            the response instead of raising after the request starts.
+        """
+        if self._check_killed:
+            self._check_killed()
+
+        if not items:
+            raise ValueError("Batch write requires at least 1 item")
+
+        if len(items) > MAX_BATCH_WRITE_ITEMS:
+            raise ValueError(
+                f"Batch write supports at most {MAX_BATCH_WRITE_ITEMS} items"
+            )
+
+        normalized_items: list[tuple[str, bytes]] = []
+        for path, content in items:
+            if isinstance(content, str):
+                content = content.encode("utf-8")
+            normalized_items.append((path, content))
+
+        return self._client.write_files_batch(
+            name=self._sandbox_name,
+            items=normalized_items,
         )
 
     def list(self, path: str = "/workspace") -> list[FileInfo]:

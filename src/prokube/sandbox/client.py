@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import base64
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 from prokube.common.compat import check_backend_compatibility
-from prokube.common.exceptions import ProKubeError, SandboxError
+from prokube.common.exceptions import NotFoundError, ProKubeError, SandboxError
 from prokube.common.http import HttpClient
 from prokube.sandbox.models import (
+    BatchFileWriteRequest,
+    BatchFileWriteResponse,
+    BatchFileWriteResult,
     ClaimRequest,
     CodeResult,
     CommandResult,
@@ -41,6 +45,80 @@ def _parse_status(status_str: str | None, default: SandboxStatus) -> SandboxStat
         return SandboxStatus(status_str)
     except ValueError:
         return SandboxStatus.UNKNOWN
+
+
+def _parse_batch_file_write_response(
+    response: dict[str, object],
+) -> BatchFileWriteResponse:
+    """Normalize the batch file write response contract."""
+    raw_results = response.get("results")
+    if not isinstance(raw_results, list):
+        raise ValueError("Batch file write response must include a results list")
+
+    results: list[BatchFileWriteResult] = []
+    for index, item in enumerate(raw_results):
+        if not isinstance(item, dict):
+            raise ValueError(
+                f"Batch file write response item {index} must be an object"
+            )
+        results.append(
+            BatchFileWriteResult(
+                index=_require_batch_result_int(item, "index"),
+                path=_require_batch_result_str(item, "path"),
+                success=_require_batch_result_bool(item, "success"),
+                error=item.get("error"),
+            )
+        )
+
+    results.sort(key=lambda item: item.index)
+    seen_indexes: set[int] = set()
+    for item in results:
+        if item.index < 0:
+            raise ValueError("Batch file write response index must be non-negative")
+        if item.index in seen_indexes:
+            raise ValueError("Batch file write response indexes must be unique")
+        seen_indexes.add(item.index)
+
+    success_count = response.get("successCount", response.get("success_count"))
+    failure_count = response.get("failureCount", response.get("failure_count"))
+
+    if success_count is None:
+        success_count = sum(1 for item in results if item.success)
+    if failure_count is None:
+        failure_count = len(results) - success_count
+
+    success = response.get("success")
+    if not isinstance(success, bool):
+        raise ValueError("Batch file write response must include a boolean success")
+
+    return BatchFileWriteResponse(
+        success=success,
+        total=int(response.get("total", len(results))),
+        success_count=int(success_count),
+        failure_count=int(failure_count),
+        results=results,
+    )
+
+
+def _require_batch_result_str(item: dict[str, object], field: str) -> str:
+    value = item.get(field)
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"Batch file write response item is missing {field}")
+    return value
+
+
+def _require_batch_result_int(item: dict[str, object], field: str) -> int:
+    value = item.get(field)
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"Batch file write response item is missing {field}")
+    return value
+
+
+def _require_batch_result_bool(item: dict[str, object], field: str) -> bool:
+    value = item.get(field)
+    if not isinstance(value, bool):
+        raise ValueError(f"Batch file write response item is missing {field}")
+    return value
 
 
 class SandboxClient:
@@ -351,6 +429,45 @@ class SandboxClient:
             self._sandbox_sub_path(name, "files"),
             json=request.model_dump(),
         )
+
+    def write_files_batch(
+        self, name: str, items: Sequence[tuple[str, bytes]]
+    ) -> BatchFileWriteResponse:
+        """Write multiple files to a sandbox in one request."""
+        request = BatchFileWriteRequest(
+            items=[
+                FileWriteRequest(
+                    path=path,
+                    content=base64.b64encode(content).decode("ascii"),
+                    encoding="base64",
+                )
+                for path, content in items
+            ]
+        )
+        try:
+            response = self._http.post(
+                self._sandbox_sub_path(name, "files/batch"),
+                json=request.model_dump(),
+            )
+        except NotFoundError as e:
+            try:
+                self.get(name)
+            except NotFoundError:
+                raise
+            raise SandboxError(
+                "Batch file writes require a backend that supports the "
+                "sandbox /files/batch endpoint",
+                status_code=e.status_code,
+            ) from e
+        except ProKubeError as e:
+            if e.status_code == 405:
+                raise SandboxError(
+                    "Batch file writes require a backend that supports the "
+                    "sandbox /files/batch endpoint",
+                    status_code=e.status_code,
+                ) from e
+            raise
+        return _parse_batch_file_write_response(response)
 
     def read_file(self, name: str, path: str) -> bytes:
         """Read a file from sandbox.

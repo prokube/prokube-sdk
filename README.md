@@ -40,6 +40,11 @@ print(result.exit_code)
 
 # File operations
 sbx.files.write("/workspace/data.csv", b"col1,col2\n1,2\n3,4")
+batch_result = sbx.files.write_batch([
+    ("/workspace/app.py", "print('hello')"),
+    ("/workspace/data.bin", b"\x00\x01"),
+])
+assert batch_result.success
 content = sbx.files.read("/workspace/output.txt")
 files = sbx.files.list("/workspace")
 
@@ -184,12 +189,30 @@ class CommandResult(BaseModel):  # Pydantic model
 class FileManager:
     def write(self, path: str, content: bytes | str) -> None:
         """Upload file to sandbox."""
-    
+
+    def write_batch(self, items: list[tuple[str, bytes | str]]) -> BatchFileWriteResponse:
+        """Best-effort batch upload with per-file results."""
+
     def read(self, path: str) -> bytes:
         """Download file from sandbox."""
-    
+
     def list(self, path: str = "/workspace") -> list[FileInfo]:
         """List files in directory."""
+
+
+class BatchFileWriteResponse(BaseModel):
+    success: bool           # True only if every file write succeeded
+    total: int              # Total requested file writes
+    success_count: int      # Number of successful writes
+    failure_count: int      # Number of failed writes
+    results: list[BatchFileWriteResult]
+
+
+class BatchFileWriteResult(BaseModel):
+    index: int              # Original request position
+    path: str               # Sandbox path for this entry
+    success: bool           # Whether this file write succeeded
+    error: str | None       # Failure detail for best-effort partial failures
 ```
 
 ### CodeResult
