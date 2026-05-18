@@ -110,6 +110,7 @@ class CodeRunner:
         The next run_code() call will restart the kernel and clear all
         variables and imports from previous executions.
         """
+        self._session_id = None
         self._reset_on_next_exec = True
 
     @property
