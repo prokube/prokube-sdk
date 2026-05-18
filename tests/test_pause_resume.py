@@ -353,6 +353,10 @@ class TestWaitUntilReady:
 
         def _probe_callback(request: httpx.Request) -> httpx.Response:
             call_counter["n"] += 1
+            body = json.loads(request.content)
+            if call_counter["n"] > 1:
+                assert "session_id" not in body
+                assert body.get("reset_session") is True
             marker = _extract_marker(request) or ""
             if call_counter["n"] == 1:
                 return httpx.Response(

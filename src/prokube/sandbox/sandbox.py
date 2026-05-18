@@ -269,8 +269,10 @@ class Sandbox:
         Notes:
             * The marker is per-call (``uuid4().hex``) to avoid collisions
               with any user code that happens to print a similar literal.
-            * The probe must NOT pass ``reset_session=True`` or an explicit
-              ``session_id``; it exercises the same code path the user will.
+            * If a probe returns successfully but without the marker, discard
+              that session before retrying. Otherwise a cold/stale Jupyter
+              session can be reused forever and every probe keeps returning
+              empty stdout.
 
         Args:
             deadline: ``time.monotonic()`` value after which the probe gives
@@ -307,6 +309,7 @@ class Sandbox:
             result = self.run_code(code, timeout=probe_timeout)
             if result.stdout.strip() == marker:
                 return
+            self._code.reset_session()
             # Loop top will recompute remaining and exit if deadline passed.
             sleep_for = min(0.5, max(0.0, deadline - time.monotonic()))
             time.sleep(sleep_for)
