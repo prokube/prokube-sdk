@@ -147,7 +147,7 @@ def _is_timeout_execution_response(response: dict[str, object]) -> bool:
 
 def _is_timeout_stderr(value: str) -> bool:
     return bool(
-        re.search(r"^\s*\[?timeout\b", value, re.I)
+        re.search(r"^\s*(?:\[timeout:|timeout:)", value, re.I)
         or re.search(r"\b(?:execution|command|code)\s+timed\s+out\b", value, re.I)
     )
 
@@ -403,8 +403,8 @@ class SandboxClient:
             execution_time_ms=response.get(
                 "durationMs", response.get("execution_time_ms", 0)
             ),
-            error_name=response.get("errorName", response.get("error_name")),
-            error_value=response.get("errorValue", response.get("error_value")),
+            error_name=response.get("errorName") or response.get("error_name"),
+            error_value=response.get("errorValue") or response.get("error_value"),
             traceback=response.get("traceback"),
             session_id=response.get("session_id"),
         )
