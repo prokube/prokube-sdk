@@ -242,13 +242,14 @@ class SandboxClient:
                 raise SandboxError(str(e), status_code=409) from e
             raise
 
+        status_str = response.get("phase") or response.get("status")
+        if isinstance(status_str, str) and status_str.lower() == "ok":
+            status_str = None
+
         return SandboxInfo(
             name=response.get("name", name),
             workspace=self.config.workspace,
-            status=_parse_status(
-                response.get("status") or response.get("phase"),
-                SandboxStatus.PENDING,
-            ),
+            status=_parse_status(status_str, SandboxStatus.PENDING),
             image=response.get("image"),
             pool=response.get("poolName") or response.get("pool"),
             created_at=response.get("createdAt") or response.get("created_at"),
