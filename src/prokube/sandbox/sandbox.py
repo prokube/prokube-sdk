@@ -245,16 +245,8 @@ class Sandbox:
             self.refresh()
             if self._status == SandboxStatus.RUNNING:
                 if self._skip_next_warmup:
-                    remaining = deadline - time.monotonic()
-                    if remaining <= 0:
-                        self._skip_next_warmup = False
-                        return
-                    time.sleep(min(poll_interval, remaining))
-                    self.refresh()
-                    if self._status == SandboxStatus.RUNNING:
-                        self._skip_next_warmup = False
-                        return
-                    continue
+                    self._skip_next_warmup = False
+                    return
                 self._warmup_kernel(deadline)
                 return
             if self._status in (SandboxStatus.FAILED, SandboxStatus.SUCCEEDED):

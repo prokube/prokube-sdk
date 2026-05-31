@@ -318,11 +318,6 @@ class TestSandboxResume:
             url=f"{BASE}/api/namespaces/test-ws/sandboxes/sandbox-test",
             json={"name": "sandbox-test", "phase": "Running"},
         )
-        httpx_mock.add_response(
-            method="GET",
-            url=f"{BASE}/api/namespaces/test-ws/sandboxes/sandbox-test",
-            json={"name": "sandbox-test", "phase": "Running"},
-        )
 
         sbx = Sandbox.from_pool("python-pool")
         sbx.pause()
@@ -343,7 +338,7 @@ class TestSandboxResume:
             if r.method == "POST"
             and str(r.url).endswith("/sandboxes/sandbox-test/exec")
         ]
-        assert len(get_requests) == 2
+        assert len(get_requests) == 1
         assert not exec_requests
 
         sbx._client.close()
