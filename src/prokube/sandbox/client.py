@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import re
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
@@ -119,6 +120,36 @@ def _require_batch_result_bool(item: dict[str, object], field: str) -> bool:
     if not isinstance(value, bool):
         raise ValueError(f"Batch file write response item is missing {field}")
     return value
+
+
+def _is_timeout_execution_response(response: dict[str, object]) -> bool:
+    error_names = (response.get("error_name"), response.get("errorName"))
+    if any(
+        isinstance(value, str) and re.search(r"timeout", value, re.I)
+        for value in error_names
+    ):
+        return True
+
+    structured_values = (
+        response.get("error_value"),
+        response.get("errorValue"),
+        response.get("detail"),
+    )
+    if any(
+        isinstance(value, str) and re.search(r"\btime(?:d)?\s*out\b", value, re.I)
+        for value in structured_values
+    ):
+        return True
+
+    stderr = response.get("stderr")
+    return isinstance(stderr, str) and _is_timeout_stderr(stderr)
+
+
+def _is_timeout_stderr(value: str) -> bool:
+    return bool(
+        re.search(r"^\s*\[?timeout\b", value, re.I)
+        or re.search(r"\b(?:execution|command|code)\s+timed\s+out\b", value, re.I)
+    )
 
 
 class SandboxClient:
@@ -364,15 +395,16 @@ class SandboxClient:
             self._sandbox_sub_path(name, "exec"),
             json=request.model_dump(exclude_none=True),
         )
+        timed_out = _is_timeout_execution_response(response)
         return CodeResult(
             stdout=response.get("stdout", ""),
             stderr=response.get("stderr", ""),
-            success=response.get("success", False),
+            success=response.get("success", False) and not timed_out,
             execution_time_ms=response.get(
                 "durationMs", response.get("execution_time_ms", 0)
             ),
-            error_name=response.get("error_name"),
-            error_value=response.get("error_value"),
+            error_name=response.get("errorName", response.get("error_name")),
+            error_value=response.get("errorValue", response.get("error_value")),
             traceback=response.get("traceback"),
             session_id=response.get("session_id"),
         )
@@ -406,10 +438,12 @@ class SandboxClient:
                 exclude={"language", "session_id", "reset_session"}
             ),
         )
+        timed_out = _is_timeout_execution_response(response)
+        exit_code = response.get("exitCode", response.get("exit_code", -1))
         return CommandResult(
             stdout=response.get("stdout", ""),
             stderr=response.get("stderr", ""),
-            exit_code=response.get("exitCode", response.get("exit_code", -1)),
+            exit_code=-1 if timed_out else exit_code,
             duration_ms=response.get("durationMs", response.get("duration_ms", 0)),
         )
 
