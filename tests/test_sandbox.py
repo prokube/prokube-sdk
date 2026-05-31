@@ -407,9 +407,9 @@ class TestSandboxRunCode:
         sbx.run_code("x = 42")
         assert sbx.session_id == "session-abc123"
 
-        # Reset session - sets flag for next exec, session_id stays until then
+        # Reset session - clears stale client-side session and sets flag for next exec
         sbx.reset_session()
-        assert sbx.session_id == "session-abc123"
+        assert sbx.session_id is None
 
         # Next run_code should include reset_session=true in request
         sbx.run_code("y = 1")
@@ -423,6 +423,7 @@ class TestSandboxRunCode:
 
         second_body = json.loads(second_exec_body)
         assert second_body.get("reset_session") is True
+        assert "session_id" not in second_body
 
         # After successful call, flag should be cleared
         assert sbx.session_id == "session-new456"
