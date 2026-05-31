@@ -150,16 +150,52 @@ class TestClientResume:
         httpx_mock.add_response(
             method="POST",
             url=f"{BASE}/api/namespaces/test-ws/sandboxes/my-sandbox/resume",
-            json={"status": "ok"},
+            json={"name": "my-sandbox", "phase": "Pending", "resumedFromPool": False},
         )
 
         client = SandboxClient(config)
-        client.resume("my-sandbox")
+        info = client.resume("my-sandbox")
 
         requests = httpx_mock.get_requests()
         resume_req = [r for r in requests if "/resume" in str(r.url)]
         assert len(resume_req) == 1
         assert resume_req[0].method == "POST"
+        assert info.name == "my-sandbox"
+        assert info.status == SandboxStatus.PENDING
+        assert info.resumed_from_pool is False
+        client.close()
+
+    def test_resume_legacy_ok_status_defaults_to_pending(
+        self, config, httpx_mock: HTTPXMock
+    ):
+        _mock_version(httpx_mock)
+        httpx_mock.add_response(
+            method="POST",
+            url=f"{BASE}/api/namespaces/test-ws/sandboxes/my-sandbox/resume",
+            json={"status": "ok"},
+        )
+
+        client = SandboxClient(config)
+        info = client.resume("my-sandbox")
+
+        assert info.name == "my-sandbox"
+        assert info.status == SandboxStatus.PENDING
+        assert info.resumed_from_pool is False
+        client.close()
+
+    def test_resume_parses_pool_resume_hint(self, config, httpx_mock: HTTPXMock):
+        _mock_version(httpx_mock)
+        httpx_mock.add_response(
+            method="POST",
+            url=f"{BASE}/api/namespaces/test-ws/sandboxes/my-sandbox/resume",
+            json={"name": "my-sandbox", "phase": "Running", "resumedFromPool": True},
+        )
+
+        client = SandboxClient(config)
+        info = client.resume("my-sandbox")
+
+        assert info.status == SandboxStatus.RUNNING
+        assert info.resumed_from_pool is True
         client.close()
 
     def test_resume_conflict_raises_sandbox_error(self, config, httpx_mock: HTTPXMock):
@@ -249,7 +285,7 @@ class TestSandboxResume:
         httpx_mock.add_response(
             method="POST",
             url=f"{BASE}/api/namespaces/test-ws/sandboxes/sandbox-test/resume",
-            json={"status": "ok"},
+            json={"name": "sandbox-test", "phase": "Pending", "resumedFromPool": False},
         )
 
         sbx = Sandbox.from_pool("python-pool")
@@ -258,6 +294,52 @@ class TestSandboxResume:
 
         sbx.resume()
         assert sbx.status == "Pending"
+
+        sbx._client.close()
+
+    def test_resume_from_pool_skips_wait_warmup(
+        self, mock_env, monkeypatch, httpx_mock: HTTPXMock
+    ):
+        monkeypatch.setattr("time.sleep", lambda _: None)
+        _mock_version(httpx_mock)
+        _mock_claim(httpx_mock)
+        httpx_mock.add_response(
+            method="POST",
+            url=f"{BASE}/api/namespaces/test-ws/sandboxes/sandbox-test/pause",
+            json={"status": "ok"},
+        )
+        httpx_mock.add_response(
+            method="POST",
+            url=f"{BASE}/api/namespaces/test-ws/sandboxes/sandbox-test/resume",
+            json={"name": "sandbox-test", "phase": "Running", "resumedFromPool": True},
+        )
+        httpx_mock.add_response(
+            method="GET",
+            url=f"{BASE}/api/namespaces/test-ws/sandboxes/sandbox-test",
+            json={"name": "sandbox-test", "phase": "Running"},
+        )
+
+        sbx = Sandbox.from_pool("python-pool")
+        sbx.pause()
+        sbx.resume()
+
+        assert sbx.status == "Running"
+        sbx.wait_until_ready(timeout=5)
+
+        requests = httpx_mock.get_requests()
+        get_requests = [
+            r
+            for r in requests
+            if r.method == "GET" and "/sandboxes/sandbox-test" in str(r.url)
+        ]
+        exec_requests = [
+            r
+            for r in requests
+            if r.method == "POST"
+            and str(r.url).endswith("/sandboxes/sandbox-test/exec")
+        ]
+        assert len(get_requests) == 1
+        assert not exec_requests
 
         sbx._client.close()
 
@@ -326,6 +408,42 @@ class TestWaitUntilReady:
         sbx.wait_until_ready(timeout=10)
         assert sbx.status == "Running"
 
+        sbx._client.close()
+
+    def test_wait_until_ready_pool_resume_requires_confirmed_running(
+        self, mock_env, monkeypatch, httpx_mock: HTTPXMock
+    ):
+        monkeypatch.setattr("time.sleep", lambda _: None)
+        _mock_version(httpx_mock)
+        _mock_claim(httpx_mock)
+        httpx_mock.add_response(
+            method="POST",
+            url=f"{BASE}/api/namespaces/test-ws/sandboxes/sandbox-test/pause",
+            json={"status": "ok"},
+        )
+        httpx_mock.add_response(
+            method="POST",
+            url=f"{BASE}/api/namespaces/test-ws/sandboxes/sandbox-test/resume",
+            json={"name": "sandbox-test", "phase": "Paused", "resumedFromPool": True},
+        )
+        httpx_mock.add_response(
+            method="GET",
+            url=f"{BASE}/api/namespaces/test-ws/sandboxes/sandbox-test",
+            json={"name": "sandbox-test", "phase": "Running"},
+        )
+
+        sbx = Sandbox.from_pool("python-pool")
+        sbx.pause()
+        sbx.resume()
+        sbx.wait_until_ready(timeout=10)
+
+        requests = httpx_mock.get_requests()
+        get_requests = [
+            r
+            for r in requests
+            if r.method == "GET" and "/sandboxes/sandbox-test" in str(r.url)
+        ]
+        assert len(get_requests) == 1
         sbx._client.close()
 
     def test_wait_until_ready_warms_kernel_on_cold_start(

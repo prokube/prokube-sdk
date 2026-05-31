@@ -302,7 +302,7 @@ class SandboxClient:
                 raise SandboxError(str(e), status_code=409) from e
             raise
 
-    def resume(self, name: str) -> None:
+    def resume(self, name: str) -> SandboxInfo:
         """Resume a paused sandbox.
 
         A new pod starts with the same PVC mounts at /workspace and /home/agent.
@@ -314,11 +314,25 @@ class SandboxClient:
             SandboxError: If sandbox is not in Paused state (HTTP 409).
         """
         try:
-            self._http.post(self._sandbox_sub_path(name, "resume"))
+            response = self._http.post(self._sandbox_sub_path(name, "resume"))
         except ProKubeError as e:
             if e.status_code == 409:
                 raise SandboxError(str(e), status_code=409) from e
             raise
+
+        status_str = response.get("phase") or response.get("status")
+        if isinstance(status_str, str) and status_str.lower() == "ok":
+            status_str = None
+
+        return SandboxInfo(
+            name=response.get("name", name),
+            workspace=self.config.workspace,
+            status=_parse_status(status_str, SandboxStatus.PENDING),
+            image=response.get("image"),
+            pool=response.get("poolName") or response.get("pool"),
+            created_at=response.get("createdAt") or response.get("created_at"),
+            resumed_from_pool=response.get("resumedFromPool", False),
+        )
 
     def delete(self, name: str) -> None:
         """Delete a sandbox.
