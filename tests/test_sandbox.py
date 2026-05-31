@@ -298,6 +298,111 @@ class TestSandboxRunCode:
 
         sbx._client.close()
 
+    def test_run_code_timeout_stderr_maps_to_failure(
+        self, mock_env, httpx_mock: HTTPXMock
+    ):
+        """Timeout-shaped code responses are failures even with success=true."""
+        httpx_mock.add_response(
+            method="GET",
+            url="https://test.example.com/api/version",
+            json={"version": "0.1.0"},
+        )
+        httpx_mock.add_response(
+            method="POST",
+            url="https://test.example.com/api/namespaces/test-ws/sandboxes/claim",
+            json={"name": "sandbox-test", "status": "Running"},
+        )
+        httpx_mock.add_response(
+            method="POST",
+            url="https://test.example.com/api/namespaces/test-ws/sandboxes/sandbox-test/exec",
+            json={
+                "stdout": "",
+                "stderr": "Execution timed out after 5 seconds",
+                "success": True,
+                "durationMs": 5000,
+            },
+        )
+
+        sbx = Sandbox.from_pool("python-pool")
+        result = sbx.run_code("while True: pass")
+
+        assert result.success is False
+        assert "timed out" in result.stderr
+        assert result.execution_time_ms == 5000
+
+        sbx._client.close()
+
+    def test_run_code_timeout_error_name_maps_to_failure(
+        self, mock_env, httpx_mock: HTTPXMock
+    ):
+        """Structured timeout fields make code execution unsuccessful."""
+        httpx_mock.add_response(
+            method="GET",
+            url="https://test.example.com/api/version",
+            json={"version": "0.1.0"},
+        )
+        httpx_mock.add_response(
+            method="POST",
+            url="https://test.example.com/api/namespaces/test-ws/sandboxes/claim",
+            json={"name": "sandbox-test", "status": "Running"},
+        )
+        httpx_mock.add_response(
+            method="POST",
+            url="https://test.example.com/api/namespaces/test-ws/sandboxes/sandbox-test/exec",
+            json={
+                "stdout": "",
+                "stderr": "",
+                "success": True,
+                "errorName": "TimeoutError",
+                "errorValue": "Code execution timed out",
+            },
+        )
+
+        sbx = Sandbox.from_pool("python-pool")
+        result = sbx.run_code("while True: pass")
+
+        assert result.success is False
+        assert result.error_name == "TimeoutError"
+        assert result.error_value == "Code execution timed out"
+
+        sbx._client.close()
+
+    def test_run_code_empty_camel_error_fields_fall_back_to_snake_case(
+        self, mock_env, httpx_mock: HTTPXMock
+    ):
+        """Empty camelCase error fields do not hide populated snake_case fields."""
+        httpx_mock.add_response(
+            method="GET",
+            url="https://test.example.com/api/version",
+            json={"version": "0.1.0"},
+        )
+        httpx_mock.add_response(
+            method="POST",
+            url="https://test.example.com/api/namespaces/test-ws/sandboxes/claim",
+            json={"name": "sandbox-test", "status": "Running"},
+        )
+        httpx_mock.add_response(
+            method="POST",
+            url="https://test.example.com/api/namespaces/test-ws/sandboxes/sandbox-test/exec",
+            json={
+                "stdout": "",
+                "stderr": "",
+                "success": False,
+                "errorName": "",
+                "error_name": "ValueError",
+                "errorValue": None,
+                "error_value": "invalid value",
+            },
+        )
+
+        sbx = Sandbox.from_pool("python-pool")
+        result = sbx.run_code("raise ValueError('invalid value')")
+
+        assert result.error_name == "ValueError"
+        assert result.error_value == "invalid value"
+
+        sbx._client.close()
+
     def test_run_code_maintains_session(self, mock_env, httpx_mock: HTTPXMock):
         """Test that session_id is maintained across run_code calls."""
         # Mock version check
@@ -466,6 +571,142 @@ class TestSandboxCommands:
         assert result.stdout == "file1.txt\nfile2.txt\n"
         assert result.exit_code == 0
         assert result.success is True
+
+        sbx._client.close()
+
+    def test_run_command_timeout_maps_to_non_zero_exit(
+        self, mock_env, httpx_mock: HTTPXMock
+    ):
+        """Timeout-shaped command responses are not successful exit 0 results."""
+        httpx_mock.add_response(
+            method="GET",
+            url="https://test.example.com/api/version",
+            json={"version": "0.1.0"},
+        )
+        httpx_mock.add_response(
+            method="POST",
+            url="https://test.example.com/api/namespaces/test-ws/sandboxes/claim",
+            json={"name": "sandbox-test", "status": "Running"},
+        )
+        httpx_mock.add_response(
+            method="POST",
+            url="https://test.example.com/api/namespaces/test-ws/sandboxes/sandbox-test/exec",
+            json={
+                "stdout": "",
+                "stderr": "[Timeout: no response after 15s]",
+                "exitCode": 0,
+                "durationMs": 15000,
+            },
+        )
+
+        sbx = Sandbox.from_pool("python-pool")
+        result = sbx.commands.run("sleep 30")
+
+        assert result.exit_code == -1
+        assert result.success is False
+        assert result.stderr == "[Timeout: no response after 15s]"
+
+        sbx._client.close()
+
+    def test_run_command_timeout_error_name_maps_to_non_zero_exit(
+        self, mock_env, httpx_mock: HTTPXMock
+    ):
+        """Structured timeout fields make command execution unsuccessful."""
+        httpx_mock.add_response(
+            method="GET",
+            url="https://test.example.com/api/version",
+            json={"version": "0.1.0"},
+        )
+        httpx_mock.add_response(
+            method="POST",
+            url="https://test.example.com/api/namespaces/test-ws/sandboxes/claim",
+            json={"name": "sandbox-test", "status": "Running"},
+        )
+        httpx_mock.add_response(
+            method="POST",
+            url="https://test.example.com/api/namespaces/test-ws/sandboxes/sandbox-test/exec",
+            json={
+                "stdout": "",
+                "stderr": "",
+                "errorName": "ExecutionTimeout",
+                "exitCode": 0,
+                "durationMs": 15000,
+            },
+        )
+
+        sbx = Sandbox.from_pool("python-pool")
+        result = sbx.commands.run("sleep 30")
+
+        assert result.exit_code == -1
+        assert result.success is False
+
+        sbx._client.close()
+
+    def test_run_command_ordinary_stderr_timeout_text_stays_success(
+        self, mock_env, httpx_mock: HTTPXMock
+    ):
+        """Ordinary stderr mentioning timeout is not treated as a timeout result."""
+        httpx_mock.add_response(
+            method="GET",
+            url="https://test.example.com/api/version",
+            json={"version": "0.1.0"},
+        )
+        httpx_mock.add_response(
+            method="POST",
+            url="https://test.example.com/api/namespaces/test-ws/sandboxes/claim",
+            json={"name": "sandbox-test", "status": "Running"},
+        )
+        httpx_mock.add_response(
+            method="POST",
+            url="https://test.example.com/api/namespaces/test-ws/sandboxes/sandbox-test/exec",
+            json={
+                "stdout": "ok\n",
+                "stderr": "warning: timeout option ignored\n",
+                "exitCode": 0,
+                "durationMs": 10,
+            },
+        )
+
+        sbx = Sandbox.from_pool("python-pool")
+        result = sbx.commands.run("tool --timeout 5")
+
+        assert result.exit_code == 0
+        assert result.success is True
+        assert result.stderr == "warning: timeout option ignored\n"
+
+        sbx._client.close()
+
+    def test_run_command_stderr_starting_with_timeout_word_stays_success(
+        self, mock_env, httpx_mock: HTTPXMock
+    ):
+        """Only backend timeout banners at stderr start are treated as timeouts."""
+        httpx_mock.add_response(
+            method="GET",
+            url="https://test.example.com/api/version",
+            json={"version": "0.1.0"},
+        )
+        httpx_mock.add_response(
+            method="POST",
+            url="https://test.example.com/api/namespaces/test-ws/sandboxes/claim",
+            json={"name": "sandbox-test", "status": "Running"},
+        )
+        httpx_mock.add_response(
+            method="POST",
+            url="https://test.example.com/api/namespaces/test-ws/sandboxes/sandbox-test/exec",
+            json={
+                "stdout": "ok\n",
+                "stderr": "timeout option ignored\n",
+                "exitCode": 0,
+                "durationMs": 10,
+            },
+        )
+
+        sbx = Sandbox.from_pool("python-pool")
+        result = sbx.commands.run("tool --timeout 5")
+
+        assert result.exit_code == 0
+        assert result.success is True
+        assert result.stderr == "timeout option ignored\n"
 
         sbx._client.close()
 
@@ -681,7 +922,9 @@ class TestSandboxFiles:
 
         sbx._client.close()
 
-    def test_write_batch_files_unsupported_backend(self, mock_env, httpx_mock: HTTPXMock):
+    def test_write_batch_files_unsupported_backend(
+        self, mock_env, httpx_mock: HTTPXMock
+    ):
         """Older backends surface a clear error for missing batch route."""
         httpx_mock.add_response(
             method="GET",
@@ -712,7 +955,9 @@ class TestSandboxFiles:
 
         sbx._client.close()
 
-    def test_write_batch_files_rejects_empty_batches(self, mock_env, httpx_mock: HTTPXMock):
+    def test_write_batch_files_rejects_empty_batches(
+        self, mock_env, httpx_mock: HTTPXMock
+    ):
         """Empty batches are rejected client-side before any file request."""
         httpx_mock.add_response(
             method="GET",
