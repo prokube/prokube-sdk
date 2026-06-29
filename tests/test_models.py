@@ -1,6 +1,7 @@
 """Tests for Pydantic models."""
 
 import pytest
+from pydantic import ValidationError
 
 from prokube.sandbox.client import _parse_batch_file_write_response
 from prokube.sandbox.models import (
@@ -8,6 +9,7 @@ from prokube.sandbox.models import (
     ClaimRequest,
     CodeResult,
     CommandResult,
+    CreatePoolRequest,
     CreateRequest,
     ExecRequest,
     FileInfo,
@@ -175,6 +177,11 @@ class TestRequestModels:
             "autoIdleTimeoutSeconds": 900,
         }
 
+    def test_claim_request_rejects_bool_auto_idle_timeout(self):
+        """Auto-idle timeout must be an integer, not a boolean."""
+        with pytest.raises(ValidationError):
+            ClaimRequest(pool_name="python-pool", auto_idle_timeout_seconds=True)
+
     def test_create_request(self):
         """Test CreateRequest."""
         req = CreateRequest(
@@ -185,6 +192,23 @@ class TestRequestModels:
         assert req.image == "python:3.10"
         assert req.name == "my-sandbox"
         assert req.model_dump(by_alias=True)["autoIdleTimeoutSeconds"] == 1800
+
+    def test_create_request_rejects_bool_auto_idle_timeout(self):
+        """Auto-idle timeout must be an integer, not a boolean."""
+        with pytest.raises(ValidationError):
+            CreateRequest(image="python:3.10", auto_idle_timeout_seconds=True)
+
+    def test_create_pool_request_rejects_bool_auto_idle_timeout(self):
+        """Auto-idle timeout must be an integer, not a boolean."""
+        with pytest.raises(ValidationError):
+            CreatePoolRequest(
+                name="python-pool",
+                image="python:3.10",
+                pool_size=3,
+                cpu="2",
+                memory="4Gi",
+                auto_idle_timeout_seconds=True,
+            )
 
     def test_file_write_request(self):
         """Test FileWriteRequest."""

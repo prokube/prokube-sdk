@@ -129,6 +129,7 @@ class ClaimRequest(BaseModel):
     )
     auto_idle_timeout_seconds: int | None = Field(
         default=None,
+        strict=True,
         serialization_alias="autoIdleTimeoutSeconds",
         description="Per-claim auto-idle override in seconds",
     )
@@ -157,6 +158,7 @@ class CreateRequest(BaseModel):
     )
     auto_idle_timeout_seconds: int | None = Field(
         default=None,
+        strict=True,
         serialization_alias="autoIdleTimeoutSeconds",
         description="Per-sandbox auto-idle override in seconds",
     )
@@ -205,6 +207,7 @@ class CreatePoolRequest(BaseModel):
     )
     auto_idle_timeout_seconds: int | None = Field(
         default=None,
+        strict=True,
         serialization_alias="autoIdleTimeoutSeconds",
         description="Default auto-idle timeout in seconds for claimed sandboxes",
     )
