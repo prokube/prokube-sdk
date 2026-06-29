@@ -31,6 +31,10 @@ class SandboxInfo(BaseModel):
     image: str | None = Field(default=None, description="Container image")
     pool: str | None = Field(default=None, description="WarmPool name if claimed")
     created_at: str | None = Field(default=None, description="Creation timestamp")
+    auto_idle_timeout_seconds: int | None = Field(
+        default=None,
+        description="Auto-idle timeout override in seconds, when configured",
+    )
     resumed_from_pool: bool = Field(
         default=False,
         description="True when a resume response came from a warm-pool swap",
@@ -115,6 +119,11 @@ class ClaimRequest(BaseModel):
     pool_name: str = Field(
         ..., serialization_alias="poolName", description="Name of the warm pool"
     )
+    auto_idle_timeout_seconds: int | None = Field(
+        default=None,
+        serialization_alias="autoIdleTimeoutSeconds",
+        description="Per-claim auto-idle override in seconds",
+    )
 
 
 class EnvVar(BaseModel):
@@ -138,6 +147,11 @@ class CreateRequest(BaseModel):
         serialization_alias="allowInternetAccess",
         description="Whether the sandbox may reach the public internet",
     )
+    auto_idle_timeout_seconds: int | None = Field(
+        default=None,
+        serialization_alias="autoIdleTimeoutSeconds",
+        description="Per-sandbox auto-idle override in seconds",
+    )
     env_vars: list[EnvVar] | None = Field(
         default=None,
         serialization_alias="envVars",
@@ -160,6 +174,10 @@ class PoolInfo(BaseModel):
     image: str | None = Field(default=None, description="Container image")
     cpu: str | None = Field(default=None, description="CPU resource request")
     memory: str | None = Field(default=None, description="Memory resource request")
+    auto_idle_timeout_seconds: int | None = Field(
+        default=None,
+        description="Default auto-idle timeout in seconds for claimed sandboxes",
+    )
 
 
 class CreatePoolRequest(BaseModel):
@@ -176,6 +194,11 @@ class CreatePoolRequest(BaseModel):
         default=None,
         serialization_alias="allowInternetAccess",
         description="Whether sandboxes in the pool may reach the public internet",
+    )
+    auto_idle_timeout_seconds: int | None = Field(
+        default=None,
+        serialization_alias="autoIdleTimeoutSeconds",
+        description="Default auto-idle timeout in seconds for claimed sandboxes",
     )
     env_vars: list[EnvVar] | None = Field(
         default=None,
@@ -237,9 +260,7 @@ class BatchFileWriteResponse(BaseModel):
 
     success: bool = Field(..., description="True when all requested writes succeeded")
     total: int = Field(..., description="Total number of file writes requested")
-    success_count: int = Field(
-        ..., description="Number of successful file writes"
-    )
+    success_count: int = Field(..., description="Number of successful file writes")
     failure_count: int = Field(..., description="Number of failed file writes")
     results: list[BatchFileWriteResult] = Field(
         default_factory=list, description="Per-file results in request order"

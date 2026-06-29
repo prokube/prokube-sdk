@@ -50,6 +50,7 @@ class SandboxPool:
         image: str | None = None,
         cpu: str | None = None,
         memory: str | None = None,
+        auto_idle_timeout_seconds: int | None = None,
     ) -> None:
         """Initialize a SandboxPool instance.
 
@@ -65,6 +66,7 @@ class SandboxPool:
             image: Container image.
             cpu: CPU resource request.
             memory: Memory resource request.
+            auto_idle_timeout_seconds: Default auto-idle timeout in seconds.
         """
         self._name = name
         self._workspace = workspace
@@ -74,6 +76,7 @@ class SandboxPool:
         self._image = image
         self._cpu = cpu
         self._memory = memory
+        self._auto_idle_timeout_seconds = auto_idle_timeout_seconds
         self._deleted = False
 
     @property
@@ -116,6 +119,11 @@ class SandboxPool:
         """Get the memory resource request."""
         return self._memory
 
+    @property
+    def auto_idle_timeout_seconds(self) -> int | None:
+        """Get the default auto-idle timeout for claimed sandboxes, if known."""
+        return self._auto_idle_timeout_seconds
+
     def _check_not_deleted(self) -> None:
         """Raise if pool has been deleted."""
         if self._deleted:
@@ -153,6 +161,8 @@ class SandboxPool:
         self._image = info.image
         self._cpu = info.cpu
         self._memory = info.memory
+        if info.auto_idle_timeout_seconds is not None:
+            self._auto_idle_timeout_seconds = info.auto_idle_timeout_seconds
 
     @classmethod
     def create(
@@ -164,6 +174,7 @@ class SandboxPool:
         memory: str,
         *,
         allow_internet_access: bool | None = None,
+        auto_idle_timeout_seconds: int | None = None,
         env_vars: list[dict[str, str]] | None = None,
         secret_refs: list[str] | None = None,
         api_url: str | None = None,
@@ -182,6 +193,8 @@ class SandboxPool:
             memory: Memory resource request (e.g. '4Gi').
             allow_internet_access: Whether sandboxes in the pool may reach the
                 public internet. If None, the backend default is used.
+            auto_idle_timeout_seconds: Default auto-idle timeout in seconds for
+                sandboxes claimed from this pool.
             env_vars: Environment variables to inject into pool sandboxes. Each
                 entry is a ``{"name": ..., "value": ...}`` dict.
             secret_refs: Names of workspace secrets to mount into pool
@@ -223,6 +236,7 @@ class SandboxPool:
                 cpu=cpu,
                 memory=memory,
                 allow_internet_access=allow_internet_access,
+                auto_idle_timeout_seconds=auto_idle_timeout_seconds,
                 env_vars=env_vars,
                 secret_refs=secret_refs,
             )
@@ -239,6 +253,11 @@ class SandboxPool:
             image=info.image,
             cpu=info.cpu,
             memory=info.memory,
+            auto_idle_timeout_seconds=(
+                info.auto_idle_timeout_seconds
+                if info.auto_idle_timeout_seconds is not None
+                else auto_idle_timeout_seconds
+            ),
         )
 
     @classmethod
@@ -305,6 +324,7 @@ class SandboxPool:
                         image=info.image,
                         cpu=info.cpu,
                         memory=info.memory,
+                        auto_idle_timeout_seconds=info.auto_idle_timeout_seconds,
                     )
                 )
         except Exception:
@@ -365,6 +385,7 @@ class SandboxPool:
             image=info.image,
             cpu=info.cpu,
             memory=info.memory,
+            auto_idle_timeout_seconds=info.auto_idle_timeout_seconds,
         )
 
     @staticmethod

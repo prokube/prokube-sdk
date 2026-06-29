@@ -3,18 +3,10 @@
 import pytest
 
 from prokube.sandbox.client import _parse_batch_file_write_response
-from prokube.sandbox.models import (
-    BatchFileWriteResponse,
-    ClaimRequest,
-    CodeResult,
-    CommandResult,
-    CreateRequest,
-    ExecRequest,
-    FileInfo,
-    FileWriteRequest,
-    SandboxInfo,
-    SandboxStatus,
-)
+from prokube.sandbox.models import (BatchFileWriteResponse, ClaimRequest,
+                                    CodeResult, CommandResult, CreateRequest,
+                                    ExecRequest, FileInfo, FileWriteRequest,
+                                    SandboxInfo, SandboxStatus)
 
 
 class TestSandboxStatus:
@@ -51,10 +43,12 @@ class TestSandboxInfo:
             image="python:3.10",
             pool="my-pool",
             created_at="2024-01-01T00:00:00Z",
+            auto_idle_timeout_seconds=1800,
         )
         assert info.status == SandboxStatus.RUNNING
         assert info.image == "python:3.10"
         assert info.pool == "my-pool"
+        assert info.auto_idle_timeout_seconds == 1800
 
 
 class TestCommandResult:
@@ -165,16 +159,24 @@ class TestRequestModels:
 
     def test_claim_request(self):
         """Test ClaimRequest."""
-        req = ClaimRequest(pool_name="python-pool")
+        req = ClaimRequest(pool_name="python-pool", auto_idle_timeout_seconds=900)
         assert req.pool_name == "python-pool"
         # Check it serializes with camelCase alias
-        assert req.model_dump(by_alias=True) == {"poolName": "python-pool"}
+        assert req.model_dump(by_alias=True) == {
+            "poolName": "python-pool",
+            "autoIdleTimeoutSeconds": 900,
+        }
 
     def test_create_request(self):
         """Test CreateRequest."""
-        req = CreateRequest(image="python:3.10", name="my-sandbox")
+        req = CreateRequest(
+            image="python:3.10",
+            name="my-sandbox",
+            auto_idle_timeout_seconds=1800,
+        )
         assert req.image == "python:3.10"
         assert req.name == "my-sandbox"
+        assert req.model_dump(by_alias=True)["autoIdleTimeoutSeconds"] == 1800
 
     def test_file_write_request(self):
         """Test FileWriteRequest."""

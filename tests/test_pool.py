@@ -10,7 +10,6 @@ from prokube.common.exceptions import SandboxError
 from prokube.sandbox.pool import SandboxPool
 from prokube.sandbox.pool_client import PoolClient
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -180,6 +179,7 @@ class TestPoolClientCreateExtras:
         post_req = [r for r in httpx_mock.get_requests() if r.method == "POST"][0]
         body = json.loads(post_req.content)
         assert "allowInternetAccess" not in body
+        assert "autoIdleTimeoutSeconds" not in body
         assert "envVars" not in body
         assert "secretRefs" not in body
         client.close()
@@ -207,6 +207,7 @@ class TestPoolClientCreateExtras:
             cpu="2",
             memory="4Gi",
             allow_internet_access=True,
+            auto_idle_timeout_seconds=600,
             env_vars=[
                 {"name": "FOO", "value": "bar"},
                 {"name": "HELLO", "value": "world"},
@@ -217,6 +218,7 @@ class TestPoolClientCreateExtras:
         post_req = [r for r in httpx_mock.get_requests() if r.method == "POST"][0]
         body = json.loads(post_req.content)
         assert body["allowInternetAccess"] is True
+        assert body["autoIdleTimeoutSeconds"] == 600
         assert body["envVars"] == [
             {"name": "FOO", "value": "bar"},
             {"name": "HELLO", "value": "world"},
@@ -224,6 +226,7 @@ class TestPoolClientCreateExtras:
         assert body["secretRefs"] == ["openai-key", "hf-token"]
         # snake_case must NOT leak into the wire format
         assert "allow_internet_access" not in body
+        assert "auto_idle_timeout_seconds" not in body
         assert "env_vars" not in body
         assert "secret_refs" not in body
         client.close()
@@ -247,6 +250,7 @@ class TestSandboxPoolCreateExtras:
             cpu="2",
             memory="4Gi",
             allow_internet_access=False,
+            auto_idle_timeout_seconds=600,
             env_vars=[{"name": "DEBUG", "value": "1"}],
             secret_refs=["db-creds"],
         )
@@ -254,6 +258,7 @@ class TestSandboxPoolCreateExtras:
         post_req = [r for r in httpx_mock.get_requests() if r.method == "POST"][0]
         body = json.loads(post_req.content)
         assert body["allowInternetAccess"] is False
+        assert body["autoIdleTimeoutSeconds"] == 600
         assert body["envVars"] == [{"name": "DEBUG", "value": "1"}]
         assert body["secretRefs"] == ["db-creds"]
         pool._client.close()
@@ -276,7 +281,12 @@ class TestSandboxPoolCreateExtras:
 
         post_req = [r for r in httpx_mock.get_requests() if r.method == "POST"][0]
         body = json.loads(post_req.content)
-        for key in ("allowInternetAccess", "envVars", "secretRefs"):
+        for key in (
+            "allowInternetAccess",
+            "autoIdleTimeoutSeconds",
+            "envVars",
+            "secretRefs",
+        ):
             assert key not in body
         pool._client.close()
 
@@ -319,6 +329,7 @@ class TestPoolClientList:
                         "image": "img-a",
                         "cpu": "1",
                         "memory": "2Gi",
+                        "auto_idle_timeout_seconds": 900,
                     },
                     {
                         "name": "pool-b",
@@ -338,6 +349,7 @@ class TestPoolClientList:
         assert pools[0].name == "pool-a"
         assert pools[0].replicas == 2
         assert pools[0].ready_replicas == 1
+        assert pools[0].auto_idle_timeout_seconds == 900
         assert pools[1].name == "pool-b"
         assert pools[1].replicas == 5
         assert pools[1].ready_replicas == 5
@@ -356,7 +368,7 @@ class TestPoolClientGet:
         httpx_mock.add_response(
             method="GET",
             url="https://test.example.com/api/namespaces/test-ws/sandbox-pools/python-pool",
-            json=POOL_RESPONSE,
+            json={**POOL_RESPONSE, "autoIdleTimeoutSeconds": 1200},
         )
 
         client = PoolClient(config)
@@ -365,6 +377,7 @@ class TestPoolClientGet:
         assert info.replicas == 3
         assert info.ready_replicas == 2
         assert info.workspace == "test-ws"
+        assert info.auto_idle_timeout_seconds == 1200
         client.close()
 
 
@@ -430,6 +443,7 @@ class TestSandboxPoolCreate:
         assert pool.pool_size == 3
         assert pool.ready_replicas == 2
         assert pool.image == "pk-sandbox-base:latest"
+        assert pool.auto_idle_timeout_seconds is None
         pool._client.close()
 
 
@@ -461,6 +475,7 @@ class TestSandboxPoolList:
                         "image": "img-a",
                         "cpu": "1",
                         "memory": "2Gi",
+                        "autoIdleTimeoutSeconds": 900,
                     },
                     {
                         "name": "pool-b",
@@ -478,6 +493,7 @@ class TestSandboxPoolList:
         assert len(pools) == 2
         assert pools[0].name == "pool-a"
         assert pools[0].workspace == "test-ws"
+        assert pools[0].auto_idle_timeout_seconds == 900
         assert pools[1].name == "pool-b"
 
         for p in pools:
@@ -492,13 +508,14 @@ class TestSandboxPoolGet:
         httpx_mock.add_response(
             method="GET",
             url="https://test.example.com/api/namespaces/test-ws/sandbox-pools/python-pool",
-            json=POOL_RESPONSE,
+            json={**POOL_RESPONSE, "auto_idle_timeout_seconds": 1200},
         )
 
         pool = SandboxPool.get("python-pool")
         assert pool.name == "python-pool"
         assert pool.workspace == "test-ws"
         assert pool.pool_size == 3
+        assert pool.auto_idle_timeout_seconds == 1200
         pool._client.close()
 
 
@@ -597,6 +614,27 @@ class TestSandboxPoolRefresh:
 
         pool.refresh()
         assert pool.ready_replicas == 3
+
+        pool._client.close()
+
+    def test_refresh_preserves_known_auto_idle_timeout(
+        self, mock_env, httpx_mock: HTTPXMock
+    ):
+        _mock_version(httpx_mock)
+        httpx_mock.add_response(
+            method="GET",
+            url="https://test.example.com/api/namespaces/test-ws/sandbox-pools/python-pool",
+            json={**POOL_RESPONSE, "autoIdleTimeoutSeconds": 1200},
+        )
+        httpx_mock.add_response(
+            method="GET",
+            url="https://test.example.com/api/namespaces/test-ws/sandbox-pools/python-pool",
+            json=POOL_RESPONSE,
+        )
+
+        pool = SandboxPool.get("python-pool")
+        pool.refresh()
+        assert pool.auto_idle_timeout_seconds == 1200
 
         pool._client.close()
 

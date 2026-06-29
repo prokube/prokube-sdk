@@ -343,6 +343,29 @@ class TestSandboxResume:
 
         sbx._client.close()
 
+    def test_resume_preserves_known_auto_idle_timeout(
+        self, mock_env, httpx_mock: HTTPXMock
+    ):
+        _mock_version(httpx_mock)
+        _mock_claim(httpx_mock)
+        httpx_mock.add_response(
+            method="POST",
+            url=f"{BASE}/api/namespaces/test-ws/sandboxes/sandbox-test/pause",
+            json={"status": "ok"},
+        )
+        httpx_mock.add_response(
+            method="POST",
+            url=f"{BASE}/api/namespaces/test-ws/sandboxes/sandbox-test/resume",
+            json={"name": "sandbox-test", "phase": "Running"},
+        )
+
+        sbx = Sandbox.from_pool("python-pool", auto_idle_timeout_seconds=900)
+        sbx.pause()
+        sbx.resume()
+
+        assert sbx.auto_idle_timeout_seconds == 900
+        sbx._client.close()
+
     def test_resume_non_paused_raises(self, mock_env, httpx_mock: HTTPXMock):
         _mock_version(httpx_mock)
         _mock_claim(httpx_mock)
