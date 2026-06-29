@@ -54,11 +54,10 @@ class PoolClient:
         pool_size: int,
         cpu: str,
         memory: str,
-        *,
         allow_internet_access: bool | None = None,
-        auto_idle_timeout_seconds: int | None = None,
         env_vars: list[dict[str, str]] | None = None,
         secret_refs: list[str] | None = None,
+        auto_idle_timeout_seconds: int | None = None,
     ) -> PoolInfo:
         """Create a new sandbox pool.
 
@@ -70,12 +69,12 @@ class PoolClient:
             memory: Memory resource request (e.g. '4Gi').
             allow_internet_access: Whether pool sandboxes may reach the public
                 internet. If None, the backend default is used.
-            auto_idle_timeout_seconds: Default auto-idle timeout in seconds for
-                sandboxes claimed from this pool.
             env_vars: Environment variables to inject into pool sandboxes. Each
                 entry is a ``{"name": ..., "value": ...}`` dict.
             secret_refs: Names of workspace secrets to mount into pool
                 sandboxes.
+            auto_idle_timeout_seconds: Default auto-idle timeout in seconds for
+                sandboxes claimed from this pool.
 
         Returns:
             Information about the created pool.
