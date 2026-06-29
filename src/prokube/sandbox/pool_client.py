@@ -6,17 +6,14 @@ from typing import TYPE_CHECKING
 
 from prokube.common.compat import check_backend_compatibility
 from prokube.common.http import HttpClient
-from prokube.sandbox.models import CreatePoolRequest, PoolInfo
+from prokube.sandbox.models import (
+    CreatePoolRequest,
+    PoolInfo,
+    parse_auto_idle_timeout,
+)
 
 if TYPE_CHECKING:
     from prokube.common.config import Config
-
-
-def _auto_idle_timeout(response: dict[str, object]) -> int | None:
-    value = response.get(
-        "autoIdleTimeoutSeconds", response.get("auto_idle_timeout_seconds")
-    )
-    return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
 class PoolClient:
@@ -57,6 +54,7 @@ class PoolClient:
         pool_size: int,
         cpu: str,
         memory: str,
+        *,
         allow_internet_access: bool | None = None,
         auto_idle_timeout_seconds: int | None = None,
         env_vars: list[dict[str, str]] | None = None,
@@ -98,7 +96,7 @@ class PoolClient:
             json=request.model_dump(by_alias=True, exclude_none=True),
         )
         status = response.get("status", {})
-        response_auto_idle_timeout = _auto_idle_timeout(response)
+        response_auto_idle_timeout = parse_auto_idle_timeout(response)
         return PoolInfo(
             name=response.get("name", name),
             workspace=self.config.workspace,
@@ -139,7 +137,7 @@ class PoolClient:
                     image=p.get("image"),
                     cpu=p.get("cpu"),
                     memory=p.get("memory"),
-                    auto_idle_timeout_seconds=_auto_idle_timeout(p),
+                    auto_idle_timeout_seconds=parse_auto_idle_timeout(p),
                 )
             )
         return result
@@ -166,7 +164,7 @@ class PoolClient:
             image=response.get("image"),
             cpu=response.get("cpu"),
             memory=response.get("memory"),
-            auto_idle_timeout_seconds=_auto_idle_timeout(response),
+            auto_idle_timeout_seconds=parse_auto_idle_timeout(response),
         )
 
     def delete_pool(self, name: str) -> None:

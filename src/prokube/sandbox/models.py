@@ -8,6 +8,14 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 
+def parse_auto_idle_timeout(response: dict[str, object]) -> int | None:
+    """Parse auto-idle timeout from either backend field alias."""
+    value = response.get(
+        "autoIdleTimeoutSeconds", response.get("auto_idle_timeout_seconds")
+    )
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
 class SandboxStatus(str, Enum):
     """Status of a sandbox."""
 

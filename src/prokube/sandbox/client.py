@@ -10,12 +10,21 @@ from typing import TYPE_CHECKING
 from prokube.common.compat import check_backend_compatibility
 from prokube.common.exceptions import NotFoundError, ProKubeError, SandboxError
 from prokube.common.http import HttpClient
-from prokube.sandbox.models import (BatchFileWriteRequest,
-                                    BatchFileWriteResponse,
-                                    BatchFileWriteResult, ClaimRequest,
-                                    CodeResult, CommandResult, CreateRequest,
-                                    ExecRequest, FileInfo, FileWriteRequest,
-                                    SandboxInfo, SandboxStatus)
+from prokube.sandbox.models import (
+    BatchFileWriteRequest,
+    BatchFileWriteResponse,
+    BatchFileWriteResult,
+    ClaimRequest,
+    CodeResult,
+    CommandResult,
+    CreateRequest,
+    ExecRequest,
+    FileInfo,
+    FileWriteRequest,
+    SandboxInfo,
+    SandboxStatus,
+    parse_auto_idle_timeout,
+)
 
 if TYPE_CHECKING:
     from prokube.common.config import Config
@@ -38,13 +47,6 @@ def _parse_status(status_str: str | None, default: SandboxStatus) -> SandboxStat
         return SandboxStatus(status_str)
     except ValueError:
         return SandboxStatus.UNKNOWN
-
-
-def _auto_idle_timeout(response: dict[str, object]) -> int | None:
-    value = response.get(
-        "autoIdleTimeoutSeconds", response.get("auto_idle_timeout_seconds")
-    )
-    return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
 def _parse_batch_file_write_response(
@@ -212,7 +214,7 @@ class SandboxClient:
         )
         # API returns sandboxName for claim endpoint
         sandbox_name = response.get("sandboxName") or response["name"]
-        response_auto_idle_timeout = _auto_idle_timeout(response)
+        response_auto_idle_timeout = parse_auto_idle_timeout(response)
         return SandboxInfo(
             name=sandbox_name,
             workspace=self.config.workspace,
@@ -276,7 +278,7 @@ class SandboxClient:
         )
         # API returns 'phase' instead of 'status' for sandbox phase
         status_str = response.get("status") or response.get("phase")
-        response_auto_idle_timeout = _auto_idle_timeout(response)
+        response_auto_idle_timeout = parse_auto_idle_timeout(response)
         return SandboxInfo(
             name=response["name"],
             workspace=self.config.workspace,
@@ -309,7 +311,7 @@ class SandboxClient:
                 image=s.get("image") or None,
                 pool=s.get("poolName") or s.get("pool"),
                 created_at=s.get("createdAt") or s.get("created_at"),
-                auto_idle_timeout_seconds=_auto_idle_timeout(s),
+                auto_idle_timeout_seconds=parse_auto_idle_timeout(s),
             )
             for s in sandboxes
         ]
@@ -334,7 +336,7 @@ class SandboxClient:
             image=response.get("image"),
             pool=response.get("poolName") or response.get("pool"),
             created_at=response.get("createdAt") or response.get("created_at"),
-            auto_idle_timeout_seconds=_auto_idle_timeout(response),
+            auto_idle_timeout_seconds=parse_auto_idle_timeout(response),
         )
 
     def pause(self, name: str) -> None:
@@ -384,7 +386,7 @@ class SandboxClient:
             image=response.get("image"),
             pool=response.get("poolName") or response.get("pool"),
             created_at=response.get("createdAt") or response.get("created_at"),
-            auto_idle_timeout_seconds=_auto_idle_timeout(response),
+            auto_idle_timeout_seconds=parse_auto_idle_timeout(response),
             resumed_from_pool=response.get("resumedFromPool", False),
         )
 
