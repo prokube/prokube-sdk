@@ -13,7 +13,7 @@ else:
     from typing_extensions import Self
 
 from prokube.common.config import Config
-from prokube.common.exceptions import SandboxError, SandboxTimeoutError
+from prokube.common.exceptions import ProKubeError, SandboxError, SandboxTimeoutError
 from prokube.sandbox.client import SandboxClient
 from prokube.sandbox.code import CodeRunner
 from prokube.sandbox.commands import CommandRunner
@@ -321,7 +321,15 @@ class Sandbox:
             # Cap each probe so retries stay frequent against a stuck kernel,
             # while still never exceeding the remaining wait_until_ready budget.
             probe_timeout = min(max_probe_timeout, int(remaining))
-            result = self.run_code(code, timeout=probe_timeout)
+            try:
+                result = self.run_code(code, timeout=probe_timeout)
+            except ProKubeError as exc:
+                if exc.status_code != 504:
+                    raise
+                self._code.reset_session()
+                sleep_for = min(0.5, max(0.0, deadline - time.monotonic()))
+                time.sleep(sleep_for)
+                continue
             if result.stdout.strip() == marker:
                 return
             self._code.reset_session()

@@ -637,6 +637,52 @@ class TestWaitUntilReady:
 
         sbx._client.close()
 
+    def test_wait_until_ready_retries_warmup_gateway_timeout(
+        self, mock_env, monkeypatch, httpx_mock: HTTPXMock
+    ):
+        """Transient Agent Gateway 504s during warmup are retried."""
+        monkeypatch.setattr("time.sleep", lambda _: None)
+
+        _mock_version(httpx_mock)
+        _mock_claim(httpx_mock)
+        httpx_mock.add_response(
+            method="GET",
+            url=f"{BASE}/api/namespaces/test-ws/sandboxes/sandbox-test",
+            json={"name": "sandbox-test", "phase": "Running"},
+        )
+
+        call_counter = {"n": 0}
+
+        def _probe_callback(request: httpx.Request) -> httpx.Response:
+            call_counter["n"] += 1
+            if call_counter["n"] == 1:
+                return httpx.Response(504, text="upstream request timeout")
+            marker = _extract_marker(request) or ""
+            return httpx.Response(
+                200,
+                json={
+                    "stdout": f"{marker}\n",
+                    "stderr": "",
+                    "success": True,
+                    "execution_time_ms": 1,
+                },
+            )
+
+        httpx_mock.add_callback(
+            _probe_callback,
+            method="POST",
+            url=f"{BASE}/api/namespaces/test-ws/sandboxes/sandbox-test/exec",
+            is_reusable=True,
+        )
+
+        sbx = Sandbox.from_pool("python-pool")
+        sbx.wait_until_ready(timeout=5)
+
+        assert sbx.status == "Running"
+        assert call_counter["n"] == 2
+
+        sbx._client.close()
+
     def test_wait_until_ready_warmup_caps_per_probe_timeout(
         self, mock_env, monkeypatch, httpx_mock: HTTPXMock
     ):
