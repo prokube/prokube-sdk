@@ -89,6 +89,7 @@ class TestListSandboxes:
                         "phase": "Running",
                         "poolName": "python-pool",
                         "createdAt": "2026-01-01T00:00:00Z",
+                        "auto_idle_timeout_seconds": 900,
                     },
                     {
                         "name": "sandbox-2",
@@ -110,9 +111,35 @@ class TestListSandboxes:
         assert result[0].image == "python:3.10"
         assert result[0].pool == "python-pool"
         assert result[0].created_at == "2026-01-01T00:00:00Z"
+        assert result[0].auto_idle_timeout_seconds == 900
         assert result[1].name == "sandbox-2"
         assert result[1].status == SandboxStatus.PENDING
         assert result[1].pool is None
+        client.close()
+
+    def test_claim_sends_auto_idle_timeout(self, config, httpx_mock: HTTPXMock):
+        """claim_from_pool sends per-claim auto-idle override."""
+        import json
+
+        httpx_mock.add_response(
+            method="GET",
+            url="https://test.example.com/api/version",
+            json={"version": "0.1.0"},
+        )
+        httpx_mock.add_response(
+            method="POST",
+            url="https://test.example.com/api/namespaces/test-ws/sandboxes/claim",
+            json={"name": "sandbox-test", "status": "Running"},
+        )
+
+        client = SandboxClient(config)
+        info = client.claim_from_pool("python-pool", auto_idle_timeout_seconds=900)
+
+        post_req = [r for r in httpx_mock.get_requests() if r.method == "POST"][-1]
+        body = json.loads(post_req.content)
+        assert body["poolName"] == "python-pool"
+        assert body["autoIdleTimeoutSeconds"] == 900
+        assert info.auto_idle_timeout_seconds == 900
         client.close()
 
     def test_list_with_status_field(self, config, httpx_mock: HTTPXMock):

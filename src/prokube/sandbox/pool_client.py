@@ -6,7 +6,11 @@ from typing import TYPE_CHECKING
 
 from prokube.common.compat import check_backend_compatibility
 from prokube.common.http import HttpClient
-from prokube.sandbox.models import CreatePoolRequest, PoolInfo
+from prokube.sandbox.models import (
+    CreatePoolRequest,
+    PoolInfo,
+    parse_auto_idle_timeout,
+)
 
 if TYPE_CHECKING:
     from prokube.common.config import Config
@@ -53,6 +57,7 @@ class PoolClient:
         allow_internet_access: bool | None = None,
         env_vars: list[dict[str, str]] | None = None,
         secret_refs: list[str] | None = None,
+        auto_idle_timeout_seconds: int | None = None,
     ) -> PoolInfo:
         """Create a new sandbox pool.
 
@@ -68,6 +73,8 @@ class PoolClient:
                 entry is a ``{"name": ..., "value": ...}`` dict.
             secret_refs: Names of workspace secrets to mount into pool
                 sandboxes.
+            auto_idle_timeout_seconds: Default auto-idle timeout in seconds for
+                sandboxes claimed from this pool.
 
         Returns:
             Information about the created pool.
@@ -79,6 +86,7 @@ class PoolClient:
             cpu=cpu,
             memory=memory,
             allow_internet_access=allow_internet_access,
+            auto_idle_timeout_seconds=auto_idle_timeout_seconds,
             env_vars=env_vars,
             secret_refs=secret_refs,
         )
@@ -87,16 +95,23 @@ class PoolClient:
             json=request.model_dump(by_alias=True, exclude_none=True),
         )
         status = response.get("status", {})
+        response_auto_idle_timeout = parse_auto_idle_timeout(response)
         return PoolInfo(
             name=response.get("name", name),
             workspace=self.config.workspace,
             replicas=response.get("replicas", response.get("poolSize", pool_size)),
             ready_replicas=status.get(
-                "warmPods", status.get("availablePods", response.get("readyReplicas", 0))
+                "warmPods",
+                status.get("availablePods", response.get("readyReplicas", 0)),
             ),
             image=response.get("image", image),
             cpu=response.get("cpu", cpu),
             memory=response.get("memory", memory),
+            auto_idle_timeout_seconds=(
+                response_auto_idle_timeout
+                if response_auto_idle_timeout is not None
+                else auto_idle_timeout_seconds
+            ),
         )
 
     def list_pools(self) -> list[PoolInfo]:
@@ -121,6 +136,7 @@ class PoolClient:
                     image=p.get("image"),
                     cpu=p.get("cpu"),
                     memory=p.get("memory"),
+                    auto_idle_timeout_seconds=parse_auto_idle_timeout(p),
                 )
             )
         return result
@@ -141,11 +157,13 @@ class PoolClient:
             workspace=self.config.workspace,
             replicas=response.get("replicas", response.get("poolSize", 0)),
             ready_replicas=status.get(
-                "warmPods", status.get("availablePods", response.get("readyReplicas", 0))
+                "warmPods",
+                status.get("availablePods", response.get("readyReplicas", 0)),
             ),
             image=response.get("image"),
             cpu=response.get("cpu"),
             memory=response.get("memory"),
+            auto_idle_timeout_seconds=parse_auto_idle_timeout(response),
         )
 
     def delete_pool(self, name: str) -> None:

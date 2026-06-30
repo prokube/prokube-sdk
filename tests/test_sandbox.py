@@ -151,6 +151,31 @@ class TestSandboxFromPool:
 
         sbx._client.close()
 
+    def test_claim_from_pool_with_auto_idle_timeout(
+        self, mock_env, httpx_mock: HTTPXMock
+    ):
+        """from_pool forwards and stores per-claim auto-idle override."""
+        import json
+
+        httpx_mock.add_response(
+            method="GET",
+            url="https://test.example.com/api/version",
+            json={"version": "0.1.0"},
+        )
+        httpx_mock.add_response(
+            method="POST",
+            url="https://test.example.com/api/namespaces/test-ws/sandboxes/claim",
+            json={"name": "sandbox-abc123", "status": "Running"},
+        )
+
+        sbx = Sandbox.from_pool("python-pool", auto_idle_timeout_seconds=900)
+
+        claim_request = [r for r in httpx_mock.get_requests() if r.method == "POST"][-1]
+        body = json.loads(claim_request.content)
+        assert body["autoIdleTimeoutSeconds"] == 900
+        assert sbx.auto_idle_timeout_seconds == 900
+        sbx._client.close()
+
 
 class TestSandboxCreate:
     """Tests for Sandbox.create()."""
@@ -204,6 +229,7 @@ class TestSandboxCreate:
             "cpu",
             "memory",
             "allowInternetAccess",
+            "autoIdleTimeoutSeconds",
             "envVars",
             "secretRefs",
         ):
@@ -247,6 +273,7 @@ class TestSandboxCreate:
         assert body["cpu"] == "2"
         assert body["memory"] == "4Gi"
         assert body["allowInternetAccess"] is True
+        assert "autoIdleTimeoutSeconds" not in body
         assert body["envVars"] == [
             {"name": "FOO", "value": "bar"},
             {"name": "HELLO", "value": "world"},
@@ -257,6 +284,35 @@ class TestSandboxCreate:
         assert "env_vars" not in body
         assert "secret_refs" not in body
 
+        sbx._client.close()
+
+    def test_create_sandbox_with_auto_idle_timeout(
+        self, mock_env, httpx_mock: HTTPXMock
+    ):
+        """create forwards and stores per-sandbox auto-idle override."""
+        import json
+
+        httpx_mock.add_response(
+            method="GET",
+            url="https://test.example.com/api/version",
+            json={"version": "0.1.0"},
+        )
+        httpx_mock.add_response(
+            method="POST",
+            url="https://test.example.com/api/namespaces/test-ws/sandboxes",
+            json={"name": "sandbox-abc", "status": "Pending"},
+        )
+
+        sbx = Sandbox.create(
+            image="python:3.10",
+            name="sandbox-abc",
+            auto_idle_timeout_seconds=1800,
+        )
+
+        post_req = [r for r in httpx_mock.get_requests() if r.method == "POST"][-1]
+        body = json.loads(post_req.content)
+        assert body["autoIdleTimeoutSeconds"] == 1800
+        assert sbx.auto_idle_timeout_seconds == 1800
         sbx._client.close()
 
 

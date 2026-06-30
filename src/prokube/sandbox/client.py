@@ -23,6 +23,7 @@ from prokube.sandbox.models import (
     FileWriteRequest,
     SandboxInfo,
     SandboxStatus,
+    parse_auto_idle_timeout,
 )
 
 if TYPE_CHECKING:
@@ -191,27 +192,39 @@ class SandboxClient:
         """
         return f"{self._sandbox_path(name)}/{sub}"
 
-    def claim_from_pool(self, pool: str) -> SandboxInfo:
+    def claim_from_pool(
+        self, pool: str, auto_idle_timeout_seconds: int | None = None
+    ) -> SandboxInfo:
         """Claim a sandbox from a warm pool.
 
         Args:
             pool: Name of the warm pool.
+            auto_idle_timeout_seconds: Per-claim auto-idle override in seconds.
 
         Returns:
             Information about the claimed sandbox.
         """
-        request = ClaimRequest(pool_name=pool)
+        request = ClaimRequest(
+            pool_name=pool,
+            auto_idle_timeout_seconds=auto_idle_timeout_seconds,
+        )
         response = self._http.post(
             f"{self._sandboxes_path()}/claim",
             json=request.model_dump(by_alias=True, exclude_none=True),
         )
         # API returns sandboxName for claim endpoint
         sandbox_name = response.get("sandboxName") or response["name"]
+        response_auto_idle_timeout = parse_auto_idle_timeout(response)
         return SandboxInfo(
             name=sandbox_name,
             workspace=self.config.workspace,
             status=_parse_status(response.get("status"), SandboxStatus.RUNNING),
             pool=pool,
+            auto_idle_timeout_seconds=(
+                response_auto_idle_timeout
+                if response_auto_idle_timeout is not None
+                else auto_idle_timeout_seconds
+            ),
         )
 
     def create(
@@ -221,6 +234,7 @@ class SandboxClient:
         cpu: str | None = None,
         memory: str | None = None,
         allow_internet_access: bool | None = None,
+        auto_idle_timeout_seconds: int | None = None,
         env_vars: list[dict[str, str]] | None = None,
         secret_refs: list[str] | None = None,
     ) -> SandboxInfo:
@@ -234,6 +248,7 @@ class SandboxClient:
                 if None.
             allow_internet_access: Whether the sandbox may reach the public
                 internet. Backend default used if None.
+            auto_idle_timeout_seconds: Per-sandbox auto-idle override in seconds.
             env_vars: Environment variables to inject into the sandbox. Each
                 entry is a ``{"name": ..., "value": ...}`` dict.
             secret_refs: Names of workspace secrets to mount into the sandbox.
@@ -253,6 +268,7 @@ class SandboxClient:
             cpu=cpu,
             memory=memory,
             allow_internet_access=allow_internet_access,
+            auto_idle_timeout_seconds=auto_idle_timeout_seconds,
             env_vars=env_vars,
             secret_refs=secret_refs,
         )
@@ -262,11 +278,17 @@ class SandboxClient:
         )
         # API returns 'phase' instead of 'status' for sandbox phase
         status_str = response.get("status") or response.get("phase")
+        response_auto_idle_timeout = parse_auto_idle_timeout(response)
         return SandboxInfo(
             name=response["name"],
             workspace=self.config.workspace,
             status=_parse_status(status_str, SandboxStatus.PENDING),
             image=image,
+            auto_idle_timeout_seconds=(
+                response_auto_idle_timeout
+                if response_auto_idle_timeout is not None
+                else auto_idle_timeout_seconds
+            ),
         )
 
     def list(self) -> list[SandboxInfo]:
@@ -289,6 +311,7 @@ class SandboxClient:
                 image=s.get("image") or None,
                 pool=s.get("poolName") or s.get("pool"),
                 created_at=s.get("createdAt") or s.get("created_at"),
+                auto_idle_timeout_seconds=parse_auto_idle_timeout(s),
             )
             for s in sandboxes
         ]
@@ -313,6 +336,7 @@ class SandboxClient:
             image=response.get("image"),
             pool=response.get("poolName") or response.get("pool"),
             created_at=response.get("createdAt") or response.get("created_at"),
+            auto_idle_timeout_seconds=parse_auto_idle_timeout(response),
         )
 
     def pause(self, name: str) -> None:
@@ -362,6 +386,7 @@ class SandboxClient:
             image=response.get("image"),
             pool=response.get("poolName") or response.get("pool"),
             created_at=response.get("createdAt") or response.get("created_at"),
+            auto_idle_timeout_seconds=parse_auto_idle_timeout(response),
             resumed_from_pool=response.get("resumedFromPool", False),
         )
 

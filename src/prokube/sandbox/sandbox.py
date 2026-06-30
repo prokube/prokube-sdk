@@ -13,7 +13,7 @@ else:
     from typing_extensions import Self
 
 from prokube.common.config import Config
-from prokube.common.exceptions import SandboxError, SandboxTimeoutError
+from prokube.common.exceptions import ProKubeError, SandboxError, SandboxTimeoutError
 from prokube.sandbox.client import SandboxClient
 from prokube.sandbox.code import CodeRunner
 from prokube.sandbox.commands import CommandRunner
@@ -64,6 +64,7 @@ class Sandbox:
         status: SandboxStatus = SandboxStatus.RUNNING,
         pool: str | None = None,
         image: str | None = None,
+        auto_idle_timeout_seconds: int | None = None,
     ) -> None:
         """Initialize a Sandbox instance.
 
@@ -77,6 +78,7 @@ class Sandbox:
             status: Current sandbox status.
             pool: WarmPool name if claimed from pool.
             image: Container image if created directly.
+            auto_idle_timeout_seconds: Auto-idle timeout override in seconds.
         """
         self._name = name
         self._workspace = workspace
@@ -84,6 +86,7 @@ class Sandbox:
         self._status = status
         self._pool = pool
         self._image = image
+        self._auto_idle_timeout_seconds = auto_idle_timeout_seconds
         self._killed = False
         self._skip_next_warmup = False
 
@@ -184,6 +187,11 @@ class Sandbox:
         """
         return self._code.session_id
 
+    @property
+    def auto_idle_timeout_seconds(self) -> int | None:
+        """Get the configured auto-idle timeout override in seconds, if known."""
+        return self._auto_idle_timeout_seconds
+
     def pause(self) -> None:
         """Pause the sandbox. Frees compute resources.
 
@@ -213,6 +221,8 @@ class Sandbox:
         self._check_not_killed()
         info = self._client.resume(self._name)
         self._status = info.status
+        if info.auto_idle_timeout_seconds is not None:
+            self._auto_idle_timeout_seconds = info.auto_idle_timeout_seconds
         self._skip_next_warmup = info.resumed_from_pool
         # New pod means previous Jupyter session is invalid.
         self._code.reset_session()
@@ -311,7 +321,15 @@ class Sandbox:
             # Cap each probe so retries stay frequent against a stuck kernel,
             # while still never exceeding the remaining wait_until_ready budget.
             probe_timeout = min(max_probe_timeout, int(remaining))
-            result = self.run_code(code, timeout=probe_timeout)
+            try:
+                result = self.run_code(code, timeout=probe_timeout)
+            except ProKubeError as exc:
+                if exc.status_code != 504:
+                    raise
+                self._code.reset_session()
+                sleep_for = min(0.5, max(0.0, deadline - time.monotonic()))
+                time.sleep(sleep_for)
+                continue
             if result.stdout.strip() == marker:
                 return
             self._code.reset_session()
@@ -341,6 +359,8 @@ class Sandbox:
         self._check_not_killed()
         info = self._client.get(self._name)
         self._status = info.status
+        if info.auto_idle_timeout_seconds is not None:
+            self._auto_idle_timeout_seconds = info.auto_idle_timeout_seconds
 
     @classmethod
     def from_pool(
@@ -351,6 +371,7 @@ class Sandbox:
         workspace: str | None = None,
         user_id: str | None = None,
         api_key: str | None = None,
+        auto_idle_timeout_seconds: int | None = None,
         timeout: int | None = None,
     ) -> Self:
         """Claim a sandbox from a warm pool.
@@ -364,6 +385,7 @@ class Sandbox:
             workspace: Workspace (default: from PROKUBE_WORKSPACE env var).
             user_id: User ID (default: from PROKUBE_USER_ID env var).
             api_key: API key for external access (default: from PROKUBE_API_KEY env var).
+            auto_idle_timeout_seconds: Per-claim auto-idle override in seconds.
             timeout: Request timeout (default: from PROKUBE_TIMEOUT env var).
 
         Returns:
@@ -382,7 +404,9 @@ class Sandbox:
         )
         client = SandboxClient(config)
         try:
-            info = client.claim_from_pool(pool)
+            info = client.claim_from_pool(
+                pool, auto_idle_timeout_seconds=auto_idle_timeout_seconds
+            )
         except Exception:
             client.close()
             raise
@@ -393,6 +417,11 @@ class Sandbox:
             client=client,
             status=info.status,
             pool=pool,
+            auto_idle_timeout_seconds=(
+                info.auto_idle_timeout_seconds
+                if info.auto_idle_timeout_seconds is not None
+                else auto_idle_timeout_seconds
+            ),
         )
 
     @classmethod
@@ -462,6 +491,7 @@ class Sandbox:
                         status=info.status,
                         pool=info.pool,
                         image=info.image,
+                        auto_idle_timeout_seconds=info.auto_idle_timeout_seconds,
                     )
                 )
         except Exception:
@@ -523,6 +553,7 @@ class Sandbox:
             status=info.status,
             pool=info.pool,
             image=info.image,
+            auto_idle_timeout_seconds=info.auto_idle_timeout_seconds,
         )
 
     # Alias: Sandbox.connect() is the same as Sandbox.get()
@@ -537,6 +568,7 @@ class Sandbox:
         cpu: str | None = None,
         memory: str | None = None,
         allow_internet_access: bool | None = None,
+        auto_idle_timeout_seconds: int | None = None,
         env_vars: list[dict[str, str]] | None = None,
         secret_refs: list[str] | None = None,
         api_url: str | None = None,
@@ -559,6 +591,7 @@ class Sandbox:
                 default is used.
             allow_internet_access: Whether the sandbox may reach the public
                 internet. If None, the backend default is used.
+            auto_idle_timeout_seconds: Per-sandbox auto-idle override in seconds.
             env_vars: Environment variables to inject into the sandbox. Each
                 entry is a ``{"name": ..., "value": ...}`` dict.
             secret_refs: Names of workspace secrets to mount into the sandbox.
@@ -601,6 +634,7 @@ class Sandbox:
                 cpu=cpu,
                 memory=memory,
                 allow_internet_access=allow_internet_access,
+                auto_idle_timeout_seconds=auto_idle_timeout_seconds,
                 env_vars=env_vars,
                 secret_refs=secret_refs,
             )
@@ -614,6 +648,11 @@ class Sandbox:
             client=client,
             status=info.status,
             image=image,
+            auto_idle_timeout_seconds=(
+                info.auto_idle_timeout_seconds
+                if info.auto_idle_timeout_seconds is not None
+                else auto_idle_timeout_seconds
+            ),
         )
 
     @staticmethod
