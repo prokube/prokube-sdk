@@ -178,7 +178,7 @@ class SandboxClient:
         ws = self.config.workspace
         if self.config.use_api_key:
             return f"/sandbox/{ws}/sandboxes"
-        return f"/api/namespaces/{ws}/sandboxes"
+        return f"/_platform/sandbox/{ws}/sandboxes"
 
     def _sandbox_path(self, name: str) -> str:
         """Get API path for a specific sandbox."""
@@ -365,6 +365,9 @@ class SandboxClient:
         Args:
             name: Sandbox name.
 
+        Returns:
+            Updated sandbox information after the resume request.
+
         Raises:
             SandboxError: If sandbox is not in Paused state (HTTP 409).
         """
@@ -379,6 +382,10 @@ class SandboxClient:
         if isinstance(status_str, str) and status_str.lower() == "ok":
             status_str = None
 
+        resumed_from_pool = response.get("resumedFromPool")
+        if resumed_from_pool is None:
+            resumed_from_pool = response.get("resumed_from_pool") or False
+
         return SandboxInfo(
             name=response.get("name", name),
             workspace=self.config.workspace,
@@ -387,7 +394,7 @@ class SandboxClient:
             pool=response.get("poolName") or response.get("pool"),
             created_at=response.get("createdAt") or response.get("created_at"),
             auto_idle_timeout_seconds=parse_auto_idle_timeout(response),
-            resumed_from_pool=response.get("resumedFromPool", False),
+            resumed_from_pool=resumed_from_pool,
         )
 
     def delete(self, name: str) -> None:

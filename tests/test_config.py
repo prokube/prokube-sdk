@@ -61,11 +61,28 @@ class TestConfig:
                 config = Config()
                 assert config.user_id == "kubeflow-user@test.com"
 
-    def test_config_missing_api_url_raises(self):
-        """Test that missing API URL raises ValueError."""
+    def test_config_defaults_to_internal_agent_gateway_url(self):
+        """Test that missing API URL defaults to in-cluster Agent Gateway."""
+        with patch.dict(
+            os.environ, {"KUBERNETES_SERVICE_HOST": "10.152.0.1"}, clear=True
+        ):
+            config = Config(workspace="test-ws")
+            assert (
+                config.api_url
+                == "http://agentgateway-proxy.agentgateway-system.svc.cluster.local"
+            )
+
+    def test_config_missing_api_url_outside_cluster_raises(self):
+        """Outside Kubernetes, missing API URL should fail clearly."""
         with patch.dict(os.environ, {}, clear=True):
             with pytest.raises(ValueError, match="API URL is required"):
                 Config(workspace="test-ws")
+
+    def test_config_with_api_key_requires_api_url(self):
+        """External API key access should fail clearly without an API URL."""
+        with patch.dict(os.environ, {}, clear=True):
+            with pytest.raises(ValueError, match="API URL is required"):
+                Config(workspace="test-ws", api_key="test-key")
 
     def test_config_missing_workspace_raises(self):
         """Test that missing workspace raises ValueError."""

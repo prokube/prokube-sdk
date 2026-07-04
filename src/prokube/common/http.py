@@ -30,8 +30,9 @@ class HttpClient:
             # For API key (external) access, the external routes (/sandbox/*,
             # /mcp/*) are top-level on the ingress gateway — NOT under the path
             # prefix (e.g., /pkui). So we strip the path and use only the origin.
-            # For internal access, the full api_url (with prefix) is used since
-            # internal routes live under /pkui/api/...
+            # For internal access, preserve the configured api_url. By default
+            # this is the in-cluster Agent Gateway service, but callers may
+            # override it with another origin or path prefix.
             if self.config.use_api_key:
                 base_url = self._get_origin(self.config.api_url)
             else:

@@ -12,18 +12,18 @@ class Config:
 
     Configuration can be provided explicitly or via environment variables:
     - PROKUBE_API_URL: Base URL for the prokube API (e.g., "https://prokube.ai/pkui").
-      Can include a path prefix; the SDK appends "/api/..." (internal) or
-      "/sandbox/..." (external, when using API key auth) paths to this URL.
-      Do NOT include "/api" or "/sandbox" in this URL - use the base UI URL instead.
+      External API key access can include a path prefix; the SDK strips it and
+      calls top-level "/sandbox/..." endpoints. In-cluster access defaults to
+      Agent Gateway and calls "/_platform/sandbox/..." endpoints.
+      Do NOT include "/api", "/_platform", or "/sandbox" in this URL.
     - PROKUBE_WORKSPACE: Workspace (Kubernetes namespace)
     - PROKUBE_USER_ID: User ID for authentication
     - PROKUBE_API_KEY: API key for external access (takes precedence over user_id)
     - PROKUBE_TIMEOUT: Default timeout in seconds (default: 300)
 
     If both api_key and user_id are set, api_key takes precedence for authentication.
-    At least one of api_key or user_id must be available when making authenticated
-    requests (for example, when calling get_auth_headers()). This requirement is
-    validated at request time rather than during Config initialization.
+    In-cluster Agent Gateway access does not require credentials. External access
+    requires api_key.
     """
 
     api_url: str = field(default_factory=lambda: _get_api_url())
@@ -34,6 +34,14 @@ class Config:
 
     def __post_init__(self) -> None:
         """Validate configuration after initialization."""
+        if (
+            not self.api_url
+            and not self.use_api_key
+            and os.environ.get("KUBERNETES_SERVICE_HOST")
+        ):
+            self.api_url = (
+                "http://agentgateway-proxy.agentgateway-system.svc.cluster.local"
+            )
         if not self.api_url:
             raise ValueError(
                 "API URL is required. Set PROKUBE_API_URL environment variable "

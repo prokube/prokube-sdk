@@ -124,8 +124,7 @@ class TestGetOrigin:
 
     def test_url_with_path(self):
         assert (
-            HttpClient._get_origin("https://example.com/pkui")
-            == "https://example.com"
+            HttpClient._get_origin("https://example.com/pkui") == "https://example.com"
         )
 
     def test_url_with_port(self):
@@ -136,8 +135,7 @@ class TestGetOrigin:
 
     def test_url_with_deep_path(self):
         assert (
-            HttpClient._get_origin("https://example.com/a/b/c")
-            == "https://example.com"
+            HttpClient._get_origin("https://example.com/a/b/c") == "https://example.com"
         )
 
     def test_missing_scheme_raises(self):
@@ -191,16 +189,16 @@ class TestApiKeyBaseUrl:
 
         httpx_mock.add_response(
             method="GET",
-            url="https://test.example.com/pkui/api/namespaces/test-ws/sandboxes",
+            url="https://test.example.com/pkui/_platform/sandbox/test-ws/sandboxes",
             json={"sandboxes": [], "total": 0},
         )
 
-        response = client.get("/api/namespaces/test-ws/sandboxes")
+        response = client.get("/_platform/sandbox/test-ws/sandboxes")
         assert response == {"sandboxes": [], "total": 0}
 
         request = httpx_mock.get_request()
         assert (
             str(request.url)
-            == "https://test.example.com/pkui/api/namespaces/test-ws/sandboxes"
+            == "https://test.example.com/pkui/_platform/sandbox/test-ws/sandboxes"
         )
         client.close()

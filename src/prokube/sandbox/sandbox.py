@@ -239,7 +239,7 @@ class Sandbox:
                 while waiting for it to become ready.
         """
         self._check_not_killed()
-        poll_interval = 0.5
+        poll_interval = 2
         deadline = time.monotonic() + timeout
         while True:
             self.refresh()
