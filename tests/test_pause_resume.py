@@ -215,6 +215,23 @@ class TestClientResume:
         assert info.resumed_from_pool is True
         client.close()
 
+    def test_resume_coalesces_null_pool_resume_hint(
+        self, config, httpx_mock: HTTPXMock
+    ):
+        _mock_version(httpx_mock)
+        httpx_mock.add_response(
+            method="POST",
+            url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/my-sandbox/resume",
+            json={"name": "my-sandbox", "phase": "Running", "resumedFromPool": None},
+        )
+
+        client = SandboxClient(config)
+        info = client.resume("my-sandbox")
+
+        assert info.status == SandboxStatus.RUNNING
+        assert info.resumed_from_pool is False
+        client.close()
+
     def test_resume_conflict_raises_sandbox_error(self, config, httpx_mock: HTTPXMock):
         _mock_version(httpx_mock)
         httpx_mock.add_response(

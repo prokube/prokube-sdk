@@ -70,6 +70,12 @@ class TestConfig:
                 == "http://agentgateway-proxy.agentgateway-system.svc.cluster.local"
             )
 
+    def test_config_with_api_key_requires_api_url(self):
+        """External API key access should fail clearly without an API URL."""
+        with patch.dict(os.environ, {}, clear=True):
+            with pytest.raises(ValueError, match="API URL is required"):
+                Config(workspace="test-ws", api_key="test-key")
+
     def test_config_missing_workspace_raises(self):
         """Test that missing workspace raises ValueError."""
         with patch.dict(os.environ, {}, clear=True):

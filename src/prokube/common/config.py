@@ -34,6 +34,10 @@ class Config:
 
     def __post_init__(self) -> None:
         """Validate configuration after initialization."""
+        if not self.api_url and not self.use_api_key:
+            self.api_url = (
+                "http://agentgateway-proxy.agentgateway-system.svc.cluster.local"
+            )
         if not self.api_url:
             raise ValueError(
                 "API URL is required. Set PROKUBE_API_URL environment variable "
@@ -55,10 +59,7 @@ class Config:
 
 def _get_api_url() -> str:
     """Get API URL from environment."""
-    return os.environ.get(
-        "PROKUBE_API_URL",
-        "http://agentgateway-proxy.agentgateway-system.svc.cluster.local",
-    )
+    return os.environ.get("PROKUBE_API_URL", "")
 
 
 def _get_workspace() -> str:
