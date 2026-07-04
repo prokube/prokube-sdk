@@ -41,7 +41,7 @@ class PoolClient:
         ws = self.config.workspace
         if self.config.use_api_key:
             return f"/sandbox/{ws}/sandbox-pools"
-        return f"/api/namespaces/{ws}/sandbox-pools"
+        return f"/_platform/sandbox/{ws}/sandbox-pools"
 
     def _pool_path(self, name: str) -> str:
         """Get API path for a specific pool."""

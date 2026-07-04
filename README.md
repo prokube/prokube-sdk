@@ -70,16 +70,35 @@ Configuration can be provided via environment variables or explicitly:
 ### Environment Variables
 
 ```bash
-export PROKUBE_API_URL=https://prokube.ai/pkui  # Can include path prefix
 export PROKUBE_WORKSPACE=my-workspace
-export PROKUBE_USER_ID=user@example.com  # Required if no API key (or KF_USER)
+export PROKUBE_API_URL=https://prokube.ai/pkui  # Required for external access
 export PROKUBE_TIMEOUT=300  # Optional, default 300 seconds
 ```
 
-**Note:** Authentication requires one of: `PROKUBE_API_KEY`, `PROKUBE_USER_ID`, or
-`KF_USER` (precedence in that order). `PROKUBE_API_KEY` enables external access;
-`PROKUBE_USER_ID` and `KF_USER` are for in-cluster usage. If none are set, you must
-pass `api_key` or `user_id` explicitly when creating a Sandbox.
+**Note:** In-cluster Agent Gateway access does not require SDK auth credentials.
+`PROKUBE_API_KEY` enables external access and takes precedence over `PROKUBE_USER_ID`
+or `KF_USER` when present.
+
+### In-Cluster Notebooks
+
+Inside a prokube.ai workspace notebook, only the workspace namespace is required.
+If `PROKUBE_API_URL` is not set, the SDK defaults to the in-cluster Agent Gateway
+service and routes sandbox traffic through `/_platform/sandbox/<workspace>`.
+
+```bash
+export PROKUBE_WORKSPACE=henrik
+```
+
+```python
+from prokube.sandbox import Sandbox
+
+with Sandbox.from_pool("python-pool") as sbx:
+    result = sbx.run_code("print('Hello from inside the workspace!')")
+    print(result.stdout)
+```
+
+This uses:
+`http://agentgateway-proxy.agentgateway-system.svc.cluster.local/_platform/sandbox/henrik/sandboxes/claim`.
 
 ### Explicit Configuration
 

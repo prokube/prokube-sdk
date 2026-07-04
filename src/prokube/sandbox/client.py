@@ -178,7 +178,7 @@ class SandboxClient:
         ws = self.config.workspace
         if self.config.use_api_key:
             return f"/sandbox/{ws}/sandboxes"
-        return f"/api/namespaces/{ws}/sandboxes"
+        return f"/_platform/sandbox/{ws}/sandboxes"
 
     def _sandbox_path(self, name: str) -> str:
         """Get API path for a specific sandbox."""

@@ -54,7 +54,7 @@ def _mock_warmup_probe_success(
     httpx_mock.add_callback(
         _callback,
         method="POST",
-        url=f"{BASE}/api/namespaces/test-ws/sandboxes/{sandbox_name}/exec",
+        url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/{sandbox_name}/exec",
         is_reusable=True,
     )
 
@@ -90,7 +90,7 @@ def _mock_version(httpx_mock: HTTPXMock):
 def _mock_claim(httpx_mock: HTTPXMock, name="sandbox-test", status="Running"):
     httpx_mock.add_response(
         method="POST",
-        url=f"{BASE}/api/namespaces/test-ws/sandboxes/claim",
+        url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/claim",
         json={"name": name, "status": status},
     )
 
@@ -112,7 +112,7 @@ class TestClientPause:
         _mock_version(httpx_mock)
         httpx_mock.add_response(
             method="POST",
-            url=f"{BASE}/api/namespaces/test-ws/sandboxes/my-sandbox/pause",
+            url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/my-sandbox/pause",
             json={"status": "ok"},
         )
 
@@ -129,7 +129,7 @@ class TestClientPause:
         _mock_version(httpx_mock)
         httpx_mock.add_response(
             method="POST",
-            url=f"{BASE}/api/namespaces/test-ws/sandboxes/my-sandbox/pause",
+            url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/my-sandbox/pause",
             status_code=409,
             json={
                 "detail": "Cannot pause sandbox in phase 'Paused'. Only Running sandboxes can be paused."
@@ -149,7 +149,7 @@ class TestClientResume:
         _mock_version(httpx_mock)
         httpx_mock.add_response(
             method="POST",
-            url=f"{BASE}/api/namespaces/test-ws/sandboxes/my-sandbox/resume",
+            url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/my-sandbox/resume",
             json={"name": "my-sandbox", "phase": "Pending", "resumedFromPool": False},
         )
 
@@ -171,7 +171,7 @@ class TestClientResume:
         _mock_version(httpx_mock)
         httpx_mock.add_response(
             method="POST",
-            url=f"{BASE}/api/namespaces/test-ws/sandboxes/my-sandbox/resume",
+            url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/my-sandbox/resume",
             json={"status": "ok"},
         )
 
@@ -187,7 +187,7 @@ class TestClientResume:
         _mock_version(httpx_mock)
         httpx_mock.add_response(
             method="POST",
-            url=f"{BASE}/api/namespaces/test-ws/sandboxes/my-sandbox/resume",
+            url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/my-sandbox/resume",
             json={"name": "my-sandbox", "phase": "Running", "resumedFromPool": True},
         )
 
@@ -202,7 +202,7 @@ class TestClientResume:
         _mock_version(httpx_mock)
         httpx_mock.add_response(
             method="POST",
-            url=f"{BASE}/api/namespaces/test-ws/sandboxes/my-sandbox/resume",
+            url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/my-sandbox/resume",
             status_code=409,
             json={
                 "detail": "Cannot resume sandbox in phase 'Running'. Only Paused sandboxes can be resumed."
@@ -223,7 +223,7 @@ class TestSandboxPause:
         _mock_claim(httpx_mock)
         httpx_mock.add_response(
             method="POST",
-            url=f"{BASE}/api/namespaces/test-ws/sandboxes/sandbox-test/pause",
+            url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/sandbox-test/pause",
             json={"status": "ok"},
         )
 
@@ -240,7 +240,7 @@ class TestSandboxPause:
         _mock_claim(httpx_mock)
         httpx_mock.add_response(
             method="POST",
-            url=f"{BASE}/api/namespaces/test-ws/sandboxes/sandbox-test/pause",
+            url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/sandbox-test/pause",
             status_code=409,
             json={
                 "detail": "Cannot pause sandbox in phase 'Paused'. Only Running sandboxes can be paused."
@@ -258,7 +258,7 @@ class TestSandboxPause:
         _mock_claim(httpx_mock)
         httpx_mock.add_response(
             method="DELETE",
-            url=f"{BASE}/api/namespaces/test-ws/sandboxes/sandbox-test",
+            url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/sandbox-test",
             status_code=204,
         )
 
@@ -278,13 +278,13 @@ class TestSandboxResume:
         # Pause first
         httpx_mock.add_response(
             method="POST",
-            url=f"{BASE}/api/namespaces/test-ws/sandboxes/sandbox-test/pause",
+            url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/sandbox-test/pause",
             json={"status": "ok"},
         )
         # Resume
         httpx_mock.add_response(
             method="POST",
-            url=f"{BASE}/api/namespaces/test-ws/sandboxes/sandbox-test/resume",
+            url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/sandbox-test/resume",
             json={"name": "sandbox-test", "phase": "Pending", "resumedFromPool": False},
         )
 
@@ -305,17 +305,17 @@ class TestSandboxResume:
         _mock_claim(httpx_mock)
         httpx_mock.add_response(
             method="POST",
-            url=f"{BASE}/api/namespaces/test-ws/sandboxes/sandbox-test/pause",
+            url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/sandbox-test/pause",
             json={"status": "ok"},
         )
         httpx_mock.add_response(
             method="POST",
-            url=f"{BASE}/api/namespaces/test-ws/sandboxes/sandbox-test/resume",
+            url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/sandbox-test/resume",
             json={"name": "sandbox-test", "phase": "Running", "resumedFromPool": True},
         )
         httpx_mock.add_response(
             method="GET",
-            url=f"{BASE}/api/namespaces/test-ws/sandboxes/sandbox-test",
+            url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/sandbox-test",
             json={"name": "sandbox-test", "phase": "Running"},
         )
 
@@ -350,12 +350,12 @@ class TestSandboxResume:
         _mock_claim(httpx_mock)
         httpx_mock.add_response(
             method="POST",
-            url=f"{BASE}/api/namespaces/test-ws/sandboxes/sandbox-test/pause",
+            url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/sandbox-test/pause",
             json={"status": "ok"},
         )
         httpx_mock.add_response(
             method="POST",
-            url=f"{BASE}/api/namespaces/test-ws/sandboxes/sandbox-test/resume",
+            url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/sandbox-test/resume",
             json={"name": "sandbox-test", "phase": "Running"},
         )
 
@@ -371,7 +371,7 @@ class TestSandboxResume:
         _mock_claim(httpx_mock)
         httpx_mock.add_response(
             method="POST",
-            url=f"{BASE}/api/namespaces/test-ws/sandboxes/sandbox-test/resume",
+            url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/sandbox-test/resume",
             status_code=409,
             json={
                 "detail": "Cannot resume sandbox in phase 'Running'. Only Paused sandboxes can be resumed."
@@ -394,7 +394,7 @@ class TestWaitUntilReady:
         # GET sandbox returns Running immediately
         httpx_mock.add_response(
             method="GET",
-            url=f"{BASE}/api/namespaces/test-ws/sandboxes/sandbox-test",
+            url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/sandbox-test",
             json={"name": "sandbox-test", "phase": "Running"},
         )
         # wait_until_ready now runs a warmup probe after pod is Running
@@ -415,13 +415,13 @@ class TestWaitUntilReady:
         # First poll: Pending
         httpx_mock.add_response(
             method="GET",
-            url=f"{BASE}/api/namespaces/test-ws/sandboxes/sandbox-test",
+            url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/sandbox-test",
             json={"name": "sandbox-test", "phase": "Pending"},
         )
         # Second poll: Running
         httpx_mock.add_response(
             method="GET",
-            url=f"{BASE}/api/namespaces/test-ws/sandboxes/sandbox-test",
+            url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/sandbox-test",
             json={"name": "sandbox-test", "phase": "Running"},
         )
         # Warmup probe after Running
@@ -441,17 +441,17 @@ class TestWaitUntilReady:
         _mock_claim(httpx_mock)
         httpx_mock.add_response(
             method="POST",
-            url=f"{BASE}/api/namespaces/test-ws/sandboxes/sandbox-test/pause",
+            url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/sandbox-test/pause",
             json={"status": "ok"},
         )
         httpx_mock.add_response(
             method="POST",
-            url=f"{BASE}/api/namespaces/test-ws/sandboxes/sandbox-test/resume",
+            url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/sandbox-test/resume",
             json={"name": "sandbox-test", "phase": "Paused", "resumedFromPool": True},
         )
         httpx_mock.add_response(
             method="GET",
-            url=f"{BASE}/api/namespaces/test-ws/sandboxes/sandbox-test",
+            url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/sandbox-test",
             json={"name": "sandbox-test", "phase": "Running"},
         )
         sbx = Sandbox.from_pool("python-pool")
@@ -478,12 +478,12 @@ class TestWaitUntilReady:
         # First GET: Pending, second GET: Running
         httpx_mock.add_response(
             method="GET",
-            url=f"{BASE}/api/namespaces/test-ws/sandboxes/sandbox-test",
+            url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/sandbox-test",
             json={"name": "sandbox-test", "phase": "Pending"},
         )
         httpx_mock.add_response(
             method="GET",
-            url=f"{BASE}/api/namespaces/test-ws/sandboxes/sandbox-test",
+            url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/sandbox-test",
             json={"name": "sandbox-test", "phase": "Running"},
         )
 
@@ -521,7 +521,7 @@ class TestWaitUntilReady:
         httpx_mock.add_callback(
             _probe_callback,
             method="POST",
-            url=f"{BASE}/api/namespaces/test-ws/sandboxes/sandbox-test/exec",
+            url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/sandbox-test/exec",
             is_reusable=True,
         )
 
@@ -542,7 +542,7 @@ class TestWaitUntilReady:
         _mock_claim(httpx_mock)
         httpx_mock.add_response(
             method="GET",
-            url=f"{BASE}/api/namespaces/test-ws/sandboxes/sandbox-test",
+            url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/sandbox-test",
             json={"name": "sandbox-test", "phase": "Running"},
         )
 
@@ -564,7 +564,7 @@ class TestWaitUntilReady:
         httpx_mock.add_callback(
             _probe_callback,
             method="POST",
-            url=f"{BASE}/api/namespaces/test-ws/sandboxes/sandbox-test/exec",
+            url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/sandbox-test/exec",
             is_reusable=True,
         )
 
@@ -601,7 +601,7 @@ class TestWaitUntilReady:
         _mock_claim(httpx_mock)
         httpx_mock.add_response(
             method="GET",
-            url=f"{BASE}/api/namespaces/test-ws/sandboxes/sandbox-test",
+            url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/sandbox-test",
             json={"name": "sandbox-test", "phase": "Running"},
         )
 
@@ -622,7 +622,7 @@ class TestWaitUntilReady:
         httpx_mock.add_callback(
             _probe_callback,
             method="POST",
-            url=f"{BASE}/api/namespaces/test-ws/sandboxes/sandbox-test/exec",
+            url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/sandbox-test/exec",
             is_reusable=True,
         )
 
@@ -646,7 +646,7 @@ class TestWaitUntilReady:
         _mock_claim(httpx_mock)
         httpx_mock.add_response(
             method="GET",
-            url=f"{BASE}/api/namespaces/test-ws/sandboxes/sandbox-test",
+            url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/sandbox-test",
             json={"name": "sandbox-test", "phase": "Running"},
         )
 
@@ -670,7 +670,7 @@ class TestWaitUntilReady:
         httpx_mock.add_callback(
             _probe_callback,
             method="POST",
-            url=f"{BASE}/api/namespaces/test-ws/sandboxes/sandbox-test/exec",
+            url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/sandbox-test/exec",
             is_reusable=True,
         )
 
@@ -699,7 +699,7 @@ class TestWaitUntilReady:
         _mock_claim(httpx_mock)
         httpx_mock.add_response(
             method="GET",
-            url=f"{BASE}/api/namespaces/test-ws/sandboxes/sandbox-test",
+            url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/sandbox-test",
             json={"name": "sandbox-test", "phase": "Running"},
         )
 
@@ -723,7 +723,7 @@ class TestWaitUntilReady:
         httpx_mock.add_callback(
             _probe_callback,
             method="POST",
-            url=f"{BASE}/api/namespaces/test-ws/sandboxes/sandbox-test/exec",
+            url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/sandbox-test/exec",
             is_reusable=True,
         )
 
@@ -765,7 +765,7 @@ class TestWaitUntilReady:
         # Always return Pending
         httpx_mock.add_response(
             method="GET",
-            url=f"{BASE}/api/namespaces/test-ws/sandboxes/sandbox-test",
+            url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/sandbox-test",
             json={"name": "sandbox-test", "phase": "Pending"},
         )
 
@@ -780,7 +780,7 @@ class TestWaitUntilReady:
         _mock_claim(httpx_mock)
         httpx_mock.add_response(
             method="GET",
-            url=f"{BASE}/api/namespaces/test-ws/sandboxes/sandbox-test",
+            url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/sandbox-test",
             json={"name": "sandbox-test", "phase": "Failed"},
         )
 
@@ -799,7 +799,7 @@ class TestSandboxPhaseProperty:
         _mock_claim(httpx_mock)
         httpx_mock.add_response(
             method="GET",
-            url=f"{BASE}/api/namespaces/test-ws/sandboxes/sandbox-test",
+            url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/sandbox-test",
             json={"name": "sandbox-test", "phase": "Paused"},
         )
 
@@ -813,7 +813,7 @@ class TestSandboxPhaseProperty:
         _mock_claim(httpx_mock)
         httpx_mock.add_response(
             method="GET",
-            url=f"{BASE}/api/namespaces/test-ws/sandboxes/sandbox-test",
+            url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/sandbox-test",
             json={"name": "sandbox-test", "phase": "Running"},
         )
 
@@ -840,7 +840,7 @@ class TestSandboxConnect:
         _mock_version(httpx_mock)
         httpx_mock.add_response(
             method="GET",
-            url=f"{BASE}/api/namespaces/test-ws/sandboxes/my-sandbox",
+            url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/my-sandbox",
             json={"name": "my-sandbox", "phase": "Paused"},
         )
 
@@ -854,7 +854,7 @@ class TestSandboxConnect:
         _mock_version(httpx_mock)
         httpx_mock.add_response(
             method="GET",
-            url=f"{BASE}/api/namespaces/test-ws/sandboxes/my-sandbox",
+            url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/my-sandbox",
             json={"name": "my-sandbox", "phase": "Running"},
         )
 
@@ -872,7 +872,7 @@ class TestListWithPhaseFilter:
         _mock_version(httpx_mock)
         httpx_mock.add_response(
             method="GET",
-            url=f"{BASE}/api/namespaces/test-ws/sandboxes",
+            url=f"{BASE}/_platform/sandbox/test-ws/sandboxes",
             json={
                 "sandboxes": [
                     {"name": "sbx-1", "phase": "Running"},
@@ -898,7 +898,7 @@ class TestListWithPhaseFilter:
         _mock_version(httpx_mock)
         httpx_mock.add_response(
             method="GET",
-            url=f"{BASE}/api/namespaces/test-ws/sandboxes",
+            url=f"{BASE}/_platform/sandbox/test-ws/sandboxes",
             json={
                 "sandboxes": [
                     {"name": "sbx-1", "phase": "Running"},
@@ -914,7 +914,7 @@ class TestListWithPhaseFilter:
         _mock_version(httpx_mock)
         httpx_mock.add_response(
             method="GET",
-            url=f"{BASE}/api/namespaces/test-ws/sandboxes",
+            url=f"{BASE}/_platform/sandbox/test-ws/sandboxes",
             json={
                 "sandboxes": [
                     {"name": "sbx-1", "phase": "Running"},

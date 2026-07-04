@@ -64,7 +64,7 @@ class TestPoolClientPathRouting:
     """Test that PoolClient picks the right URL prefix."""
 
     def test_internal_path(self, config, httpx_mock: HTTPXMock):
-        """Internal (no api_key) should use /api/namespaces/... prefix."""
+        """Internal (no api_key) should use Agent Gateway platform prefix."""
         httpx_mock.add_response(
             method="GET",
             url="https://test.example.com/api/version",
@@ -72,7 +72,7 @@ class TestPoolClientPathRouting:
         )
         httpx_mock.add_response(
             method="GET",
-            url="https://test.example.com/api/namespaces/test-ws/sandbox-pools",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandbox-pools",
             json={"pools": []},
         )
 
@@ -82,7 +82,7 @@ class TestPoolClientPathRouting:
         requests = httpx_mock.get_requests()
         list_req = [r for r in requests if "sandbox-pools" in str(r.url)]
         assert len(list_req) == 1
-        assert "/api/namespaces/test-ws/sandbox-pools" in str(list_req[0].url)
+        assert "/_platform/sandbox/test-ws/sandbox-pools" in str(list_req[0].url)
         client.close()
 
     def test_api_key_path(self, config_api_key, httpx_mock: HTTPXMock):
@@ -116,7 +116,7 @@ class TestPoolClientCreate:
         )
         httpx_mock.add_response(
             method="POST",
-            url="https://test.example.com/api/namespaces/test-ws/sandbox-pools",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandbox-pools",
             json=POOL_RESPONSE,
         )
 
@@ -163,7 +163,7 @@ class TestPoolClientCreateExtras:
         )
         httpx_mock.add_response(
             method="POST",
-            url="https://test.example.com/api/namespaces/test-ws/sandbox-pools",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandbox-pools",
             json=POOL_RESPONSE,
         )
 
@@ -195,7 +195,7 @@ class TestPoolClientCreateExtras:
         )
         httpx_mock.add_response(
             method="POST",
-            url="https://test.example.com/api/namespaces/test-ws/sandbox-pools",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandbox-pools",
             json=POOL_RESPONSE,
         )
 
@@ -239,7 +239,7 @@ class TestSandboxPoolCreateExtras:
         _mock_version(httpx_mock)
         httpx_mock.add_response(
             method="POST",
-            url="https://test.example.com/api/namespaces/test-ws/sandbox-pools",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandbox-pools",
             json=POOL_RESPONSE,
         )
 
@@ -267,7 +267,7 @@ class TestSandboxPoolCreateExtras:
         _mock_version(httpx_mock)
         httpx_mock.add_response(
             method="POST",
-            url="https://test.example.com/api/namespaces/test-ws/sandbox-pools",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandbox-pools",
             json=POOL_RESPONSE,
         )
 
@@ -302,7 +302,7 @@ class TestPoolClientList:
         )
         httpx_mock.add_response(
             method="GET",
-            url="https://test.example.com/api/namespaces/test-ws/sandbox-pools",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandbox-pools",
             json={"pools": []},
         )
 
@@ -319,7 +319,7 @@ class TestPoolClientList:
         )
         httpx_mock.add_response(
             method="GET",
-            url="https://test.example.com/api/namespaces/test-ws/sandbox-pools",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandbox-pools",
             json={
                 "pools": [
                     {
@@ -367,7 +367,7 @@ class TestPoolClientGet:
         )
         httpx_mock.add_response(
             method="GET",
-            url="https://test.example.com/api/namespaces/test-ws/sandbox-pools/python-pool",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandbox-pools/python-pool",
             json={**POOL_RESPONSE, "autoIdleTimeoutSeconds": 1200},
         )
 
@@ -392,7 +392,7 @@ class TestPoolClientDelete:
         )
         httpx_mock.add_response(
             method="DELETE",
-            url="https://test.example.com/api/namespaces/test-ws/sandbox-pools/python-pool",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandbox-pools/python-pool",
             status_code=204,
         )
 
@@ -426,7 +426,7 @@ class TestSandboxPoolCreate:
         _mock_version(httpx_mock)
         httpx_mock.add_response(
             method="POST",
-            url="https://test.example.com/api/namespaces/test-ws/sandbox-pools",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandbox-pools",
             json=POOL_RESPONSE,
         )
 
@@ -454,7 +454,7 @@ class TestSandboxPoolList:
         _mock_version(httpx_mock)
         httpx_mock.add_response(
             method="GET",
-            url="https://test.example.com/api/namespaces/test-ws/sandbox-pools",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandbox-pools",
             json={"pools": []},
         )
 
@@ -465,7 +465,7 @@ class TestSandboxPoolList:
         _mock_version(httpx_mock)
         httpx_mock.add_response(
             method="GET",
-            url="https://test.example.com/api/namespaces/test-ws/sandbox-pools",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandbox-pools",
             json={
                 "pools": [
                     {
@@ -507,7 +507,7 @@ class TestSandboxPoolGet:
         _mock_version(httpx_mock)
         httpx_mock.add_response(
             method="GET",
-            url="https://test.example.com/api/namespaces/test-ws/sandbox-pools/python-pool",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandbox-pools/python-pool",
             json={**POOL_RESPONSE, "auto_idle_timeout_seconds": 1200},
         )
 
@@ -526,12 +526,12 @@ class TestSandboxPoolDelete:
         _mock_version(httpx_mock)
         httpx_mock.add_response(
             method="GET",
-            url="https://test.example.com/api/namespaces/test-ws/sandbox-pools/python-pool",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandbox-pools/python-pool",
             json=POOL_RESPONSE,
         )
         httpx_mock.add_response(
             method="DELETE",
-            url="https://test.example.com/api/namespaces/test-ws/sandbox-pools/python-pool",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandbox-pools/python-pool",
             status_code=204,
         )
 
@@ -547,12 +547,12 @@ class TestSandboxPoolDelete:
         _mock_version(httpx_mock)
         httpx_mock.add_response(
             method="GET",
-            url="https://test.example.com/api/namespaces/test-ws/sandbox-pools/python-pool",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandbox-pools/python-pool",
             json=POOL_RESPONSE,
         )
         httpx_mock.add_response(
             method="DELETE",
-            url="https://test.example.com/api/namespaces/test-ws/sandbox-pools/python-pool",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandbox-pools/python-pool",
             status_code=204,
         )
 
@@ -569,12 +569,12 @@ class TestSandboxPoolDelete:
         _mock_version(httpx_mock)
         httpx_mock.add_response(
             method="GET",
-            url="https://test.example.com/api/namespaces/test-ws/sandbox-pools/python-pool",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandbox-pools/python-pool",
             json=POOL_RESPONSE,
         )
         httpx_mock.add_response(
             method="DELETE",
-            url="https://test.example.com/api/namespaces/test-ws/sandbox-pools/python-pool",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandbox-pools/python-pool",
             status_code=204,
         )
 
@@ -592,13 +592,13 @@ class TestSandboxPoolRefresh:
         _mock_version(httpx_mock)
         httpx_mock.add_response(
             method="GET",
-            url="https://test.example.com/api/namespaces/test-ws/sandbox-pools/python-pool",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandbox-pools/python-pool",
             json=POOL_RESPONSE,
         )
         # Second GET for refresh with updated data
         httpx_mock.add_response(
             method="GET",
-            url="https://test.example.com/api/namespaces/test-ws/sandbox-pools/python-pool",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandbox-pools/python-pool",
             json={
                 "name": "python-pool",
                 "replicas": 3,
@@ -623,12 +623,12 @@ class TestSandboxPoolRefresh:
         _mock_version(httpx_mock)
         httpx_mock.add_response(
             method="GET",
-            url="https://test.example.com/api/namespaces/test-ws/sandbox-pools/python-pool",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandbox-pools/python-pool",
             json={**POOL_RESPONSE, "autoIdleTimeoutSeconds": 1200},
         )
         httpx_mock.add_response(
             method="GET",
-            url="https://test.example.com/api/namespaces/test-ws/sandbox-pools/python-pool",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandbox-pools/python-pool",
             json=POOL_RESPONSE,
         )
 
@@ -749,7 +749,7 @@ class TestSandboxPoolRepr:
         _mock_version(httpx_mock)
         httpx_mock.add_response(
             method="GET",
-            url="https://test.example.com/api/namespaces/test-ws/sandbox-pools/python-pool",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandbox-pools/python-pool",
             json=POOL_RESPONSE,
         )
 

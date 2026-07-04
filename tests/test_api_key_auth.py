@@ -8,7 +8,6 @@ from pytest_httpx import HTTPXMock
 
 from prokube.common.auth import get_auth_headers
 from prokube.common.config import Config
-from prokube.common.exceptions import AuthenticationError
 from prokube.sandbox import Sandbox
 from prokube.sandbox.client import SandboxClient
 
@@ -117,14 +116,13 @@ class TestAuthHeaders:
         headers = get_auth_headers(config)
         assert headers == {"x-api-key": "my-key"}
 
-    def test_no_credentials_raises(self):
-        """Test that missing both api_key and user_id raises."""
+    def test_no_credentials_returns_empty_headers(self):
+        """Test that in-cluster Agent Gateway access can run without SDK auth."""
         config = Config(
             api_url="https://example.com",
             workspace="test-ws",
         )
-        with pytest.raises(AuthenticationError, match="No api_key or user_id"):
-            get_auth_headers(config)
+        assert get_auth_headers(config) == {}
 
 
 class TestPathRouting:
@@ -138,7 +136,7 @@ class TestPathRouting:
             user_id="user@test.com",
         )
         client = SandboxClient(config, check_version=False)
-        assert client._sandboxes_path() == "/api/namespaces/test-ws/sandboxes"
+        assert client._sandboxes_path() == "/_platform/sandbox/test-ws/sandboxes"
         client.close()
 
     def test_external_sandboxes_path(self):
@@ -162,7 +160,7 @@ class TestPathRouting:
         client = SandboxClient(config, check_version=False)
         assert (
             client._sandbox_path("my-sbx")
-            == "/api/namespaces/test-ws/sandboxes/my-sbx"
+            == "/_platform/sandbox/test-ws/sandboxes/my-sbx"
         )
         client.close()
 
@@ -187,15 +185,15 @@ class TestPathRouting:
         client = SandboxClient(config, check_version=False)
         assert (
             client._sandbox_sub_path("my-sbx", "exec")
-            == "/api/namespaces/test-ws/sandboxes/my-sbx/exec"
+            == "/_platform/sandbox/test-ws/sandboxes/my-sbx/exec"
         )
         assert (
             client._sandbox_sub_path("my-sbx", "files")
-            == "/api/namespaces/test-ws/sandboxes/my-sbx/files"
+            == "/_platform/sandbox/test-ws/sandboxes/my-sbx/files"
         )
         assert (
             client._sandbox_sub_path("my-sbx", "files/download")
-            == "/api/namespaces/test-ws/sandboxes/my-sbx/files/download"
+            == "/_platform/sandbox/test-ws/sandboxes/my-sbx/files/download"
         )
         client.close()
 

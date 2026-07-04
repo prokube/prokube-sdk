@@ -60,7 +60,7 @@ class TestListSandboxes:
         )
         httpx_mock.add_response(
             method="GET",
-            url="https://test.example.com/api/namespaces/test-ws/sandboxes",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandboxes",
             json={"sandboxes": [], "total": 0},
         )
 
@@ -79,7 +79,7 @@ class TestListSandboxes:
         )
         httpx_mock.add_response(
             method="GET",
-            url="https://test.example.com/api/namespaces/test-ws/sandboxes",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandboxes",
             json={
                 "sandboxes": [
                     {
@@ -128,7 +128,7 @@ class TestListSandboxes:
         )
         httpx_mock.add_response(
             method="POST",
-            url="https://test.example.com/api/namespaces/test-ws/sandboxes/claim",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandboxes/claim",
             json={"name": "sandbox-test", "status": "Running"},
         )
 
@@ -151,7 +151,7 @@ class TestListSandboxes:
         )
         httpx_mock.add_response(
             method="GET",
-            url="https://test.example.com/api/namespaces/test-ws/sandboxes",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandboxes",
             json={
                 "sandboxes": [
                     {
@@ -186,7 +186,7 @@ class TestReadFile:
         # Mock file download - path is passed as query parameter
         httpx_mock.add_response(
             method="GET",
-            url="https://test.example.com/api/namespaces/test-ws/sandboxes/test-sbx/files/download?path=%2Fworkspace%2Fmy+file.txt",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandboxes/test-sbx/files/download?path=%2Fworkspace%2Fmy+file.txt",
             content=b"content",
         )
 
@@ -207,7 +207,7 @@ class TestReadFile:
         # Mock file download - special chars in query param
         httpx_mock.add_response(
             method="GET",
-            url="https://test.example.com/api/namespaces/test-ws/sandboxes/test-sbx/files/download?path=%2Fworkspace%2Ffile%23%3F.txt",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandboxes/test-sbx/files/download?path=%2Fworkspace%2Ffile%23%3F.txt",
             content=b"content",
         )
 
@@ -232,7 +232,7 @@ class TestUnknownStatusFromBackend:
         # Mock claim with unknown status
         httpx_mock.add_response(
             method="POST",
-            url="https://test.example.com/api/namespaces/test-ws/sandboxes/claim",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandboxes/claim",
             json={"name": "sandbox-test", "status": "SomeNewBackendStatus"},
         )
 

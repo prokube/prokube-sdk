@@ -29,7 +29,7 @@ class TestSandboxList:
         )
         httpx_mock.add_response(
             method="GET",
-            url="https://test.example.com/api/namespaces/test-ws/sandboxes",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandboxes",
             json={"sandboxes": [], "total": 0},
         )
 
@@ -47,7 +47,7 @@ class TestSandboxList:
         )
         httpx_mock.add_response(
             method="GET",
-            url="https://test.example.com/api/namespaces/test-ws/sandboxes",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandboxes",
             json={
                 "sandboxes": [
                     {
@@ -91,7 +91,7 @@ class TestSandboxList:
         )
         httpx_mock.add_response(
             method="GET",
-            url="https://test.example.com/api/namespaces/test-ws/sandboxes",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandboxes",
             json={
                 "sandboxes": [
                     {
@@ -128,7 +128,7 @@ class TestSandboxFromPool:
         # Mock claim request
         httpx_mock.add_response(
             method="POST",
-            url="https://test.example.com/api/namespaces/test-ws/sandboxes/claim",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandboxes/claim",
             json={"name": "sandbox-abc123", "status": "Running"},
         )
 
@@ -164,7 +164,7 @@ class TestSandboxFromPool:
         )
         httpx_mock.add_response(
             method="POST",
-            url="https://test.example.com/api/namespaces/test-ws/sandboxes/claim",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandboxes/claim",
             json={"name": "sandbox-abc123", "status": "Running"},
         )
 
@@ -191,7 +191,7 @@ class TestSandboxCreate:
         # Mock create request
         httpx_mock.add_response(
             method="POST",
-            url="https://test.example.com/api/namespaces/test-ws/sandboxes",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandboxes",
             json={"name": "sandbox-xyz789", "status": "Pending"},
         )
 
@@ -215,7 +215,7 @@ class TestSandboxCreate:
         )
         httpx_mock.add_response(
             method="POST",
-            url="https://test.example.com/api/namespaces/test-ws/sandboxes",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandboxes",
             json={"name": "sandbox-abc", "status": "Pending"},
         )
 
@@ -249,7 +249,7 @@ class TestSandboxCreate:
         )
         httpx_mock.add_response(
             method="POST",
-            url="https://test.example.com/api/namespaces/test-ws/sandboxes",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandboxes",
             json={"name": "sandbox-abc", "status": "Pending"},
         )
 
@@ -299,7 +299,7 @@ class TestSandboxCreate:
         )
         httpx_mock.add_response(
             method="POST",
-            url="https://test.example.com/api/namespaces/test-ws/sandboxes",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandboxes",
             json={"name": "sandbox-abc", "status": "Pending"},
         )
 
@@ -330,13 +330,13 @@ class TestSandboxRunCode:
         # Mock claim
         httpx_mock.add_response(
             method="POST",
-            url="https://test.example.com/api/namespaces/test-ws/sandboxes/claim",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandboxes/claim",
             json={"name": "sandbox-test", "status": "Running"},
         )
         # Mock exec
         httpx_mock.add_response(
             method="POST",
-            url="https://test.example.com/api/namespaces/test-ws/sandboxes/sandbox-test/exec",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandboxes/sandbox-test/exec",
             json={
                 "stdout": "42\n",
                 "stderr": "",
@@ -365,12 +365,12 @@ class TestSandboxRunCode:
         )
         httpx_mock.add_response(
             method="POST",
-            url="https://test.example.com/api/namespaces/test-ws/sandboxes/claim",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandboxes/claim",
             json={"name": "sandbox-test", "status": "Running"},
         )
         httpx_mock.add_response(
             method="POST",
-            url="https://test.example.com/api/namespaces/test-ws/sandboxes/sandbox-test/exec",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandboxes/sandbox-test/exec",
             json={
                 "stdout": "",
                 "stderr": "Execution timed out after 5 seconds",
@@ -399,12 +399,12 @@ class TestSandboxRunCode:
         )
         httpx_mock.add_response(
             method="POST",
-            url="https://test.example.com/api/namespaces/test-ws/sandboxes/claim",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandboxes/claim",
             json={"name": "sandbox-test", "status": "Running"},
         )
         httpx_mock.add_response(
             method="POST",
-            url="https://test.example.com/api/namespaces/test-ws/sandboxes/sandbox-test/exec",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandboxes/sandbox-test/exec",
             json={
                 "stdout": "",
                 "stderr": "",
@@ -434,12 +434,12 @@ class TestSandboxRunCode:
         )
         httpx_mock.add_response(
             method="POST",
-            url="https://test.example.com/api/namespaces/test-ws/sandboxes/claim",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandboxes/claim",
             json={"name": "sandbox-test", "status": "Running"},
         )
         httpx_mock.add_response(
             method="POST",
-            url="https://test.example.com/api/namespaces/test-ws/sandboxes/sandbox-test/exec",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandboxes/sandbox-test/exec",
             json={
                 "stdout": "",
                 "stderr": "",
@@ -470,13 +470,13 @@ class TestSandboxRunCode:
         # Mock claim
         httpx_mock.add_response(
             method="POST",
-            url="https://test.example.com/api/namespaces/test-ws/sandboxes/claim",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandboxes/claim",
             json={"name": "sandbox-test", "status": "Running"},
         )
         # First exec - returns session_id
         httpx_mock.add_response(
             method="POST",
-            url="https://test.example.com/api/namespaces/test-ws/sandboxes/sandbox-test/exec",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandboxes/sandbox-test/exec",
             json={
                 "stdout": "",
                 "stderr": "",
@@ -488,7 +488,7 @@ class TestSandboxRunCode:
         # Second exec - should include session_id in request
         httpx_mock.add_response(
             method="POST",
-            url="https://test.example.com/api/namespaces/test-ws/sandboxes/sandbox-test/exec",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandboxes/sandbox-test/exec",
             json={
                 "stdout": "42\n",
                 "stderr": "",
@@ -538,13 +538,13 @@ class TestSandboxRunCode:
         # Mock claim
         httpx_mock.add_response(
             method="POST",
-            url="https://test.example.com/api/namespaces/test-ws/sandboxes/claim",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandboxes/claim",
             json={"name": "sandbox-test", "status": "Running"},
         )
         # First exec
         httpx_mock.add_response(
             method="POST",
-            url="https://test.example.com/api/namespaces/test-ws/sandboxes/sandbox-test/exec",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandboxes/sandbox-test/exec",
             json={
                 "stdout": "",
                 "stderr": "",
@@ -555,7 +555,7 @@ class TestSandboxRunCode:
         # Second exec (after reset)
         httpx_mock.add_response(
             method="POST",
-            url="https://test.example.com/api/namespaces/test-ws/sandboxes/sandbox-test/exec",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandboxes/sandbox-test/exec",
             json={
                 "stdout": "",
                 "stderr": "",
@@ -606,13 +606,13 @@ class TestSandboxCommands:
         # Mock claim
         httpx_mock.add_response(
             method="POST",
-            url="https://test.example.com/api/namespaces/test-ws/sandboxes/claim",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandboxes/claim",
             json={"name": "sandbox-test", "status": "Running"},
         )
         # Mock exec
         httpx_mock.add_response(
             method="POST",
-            url="https://test.example.com/api/namespaces/test-ws/sandboxes/sandbox-test/exec",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandboxes/sandbox-test/exec",
             json={
                 "stdout": "file1.txt\nfile2.txt\n",
                 "stderr": "",
@@ -641,12 +641,12 @@ class TestSandboxCommands:
         )
         httpx_mock.add_response(
             method="POST",
-            url="https://test.example.com/api/namespaces/test-ws/sandboxes/claim",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandboxes/claim",
             json={"name": "sandbox-test", "status": "Running"},
         )
         httpx_mock.add_response(
             method="POST",
-            url="https://test.example.com/api/namespaces/test-ws/sandboxes/sandbox-test/exec",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandboxes/sandbox-test/exec",
             json={
                 "stdout": "",
                 "stderr": "[Timeout: no response after 15s]",
@@ -675,12 +675,12 @@ class TestSandboxCommands:
         )
         httpx_mock.add_response(
             method="POST",
-            url="https://test.example.com/api/namespaces/test-ws/sandboxes/claim",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandboxes/claim",
             json={"name": "sandbox-test", "status": "Running"},
         )
         httpx_mock.add_response(
             method="POST",
-            url="https://test.example.com/api/namespaces/test-ws/sandboxes/sandbox-test/exec",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandboxes/sandbox-test/exec",
             json={
                 "stdout": "",
                 "stderr": "",
@@ -709,12 +709,12 @@ class TestSandboxCommands:
         )
         httpx_mock.add_response(
             method="POST",
-            url="https://test.example.com/api/namespaces/test-ws/sandboxes/claim",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandboxes/claim",
             json={"name": "sandbox-test", "status": "Running"},
         )
         httpx_mock.add_response(
             method="POST",
-            url="https://test.example.com/api/namespaces/test-ws/sandboxes/sandbox-test/exec",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandboxes/sandbox-test/exec",
             json={
                 "stdout": "ok\n",
                 "stderr": "warning: timeout option ignored\n",
@@ -743,12 +743,12 @@ class TestSandboxCommands:
         )
         httpx_mock.add_response(
             method="POST",
-            url="https://test.example.com/api/namespaces/test-ws/sandboxes/claim",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandboxes/claim",
             json={"name": "sandbox-test", "status": "Running"},
         )
         httpx_mock.add_response(
             method="POST",
-            url="https://test.example.com/api/namespaces/test-ws/sandboxes/sandbox-test/exec",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandboxes/sandbox-test/exec",
             json={
                 "stdout": "ok\n",
                 "stderr": "timeout option ignored\n",
@@ -781,13 +781,13 @@ class TestSandboxFiles:
         # Mock claim
         httpx_mock.add_response(
             method="POST",
-            url="https://test.example.com/api/namespaces/test-ws/sandboxes/claim",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandboxes/claim",
             json={"name": "sandbox-test", "status": "Running"},
         )
         # Mock file write
         httpx_mock.add_response(
             method="POST",
-            url="https://test.example.com/api/namespaces/test-ws/sandboxes/sandbox-test/files",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandboxes/sandbox-test/files",
             json={"success": True},
         )
 
@@ -823,12 +823,12 @@ class TestSandboxFiles:
         )
         httpx_mock.add_response(
             method="POST",
-            url="https://test.example.com/api/namespaces/test-ws/sandboxes/claim",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandboxes/claim",
             json={"name": "sandbox-test", "status": "Running"},
         )
         httpx_mock.add_response(
             method="POST",
-            url="https://test.example.com/api/namespaces/test-ws/sandboxes/sandbox-test/files/batch",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandboxes/sandbox-test/files/batch",
             json={
                 "success": True,
                 "total": 2,
@@ -937,12 +937,12 @@ class TestSandboxFiles:
         )
         httpx_mock.add_response(
             method="POST",
-            url="https://test.example.com/api/namespaces/test-ws/sandboxes/claim",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandboxes/claim",
             json={"name": "sandbox-test", "status": "Running"},
         )
         httpx_mock.add_response(
             method="POST",
-            url="https://test.example.com/api/namespaces/test-ws/sandboxes/sandbox-test/files/batch",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandboxes/sandbox-test/files/batch",
             json={
                 "success": False,
                 "total": 2,
@@ -989,18 +989,18 @@ class TestSandboxFiles:
         )
         httpx_mock.add_response(
             method="POST",
-            url="https://test.example.com/api/namespaces/test-ws/sandboxes/claim",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandboxes/claim",
             json={"name": "sandbox-test", "status": "Running"},
         )
         httpx_mock.add_response(
             method="POST",
-            url="https://test.example.com/api/namespaces/test-ws/sandboxes/sandbox-test/files/batch",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandboxes/sandbox-test/files/batch",
             status_code=404,
             json={"detail": "Not Found"},
         )
         httpx_mock.add_response(
             method="GET",
-            url="https://test.example.com/api/namespaces/test-ws/sandboxes/sandbox-test",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandboxes/sandbox-test",
             json={"name": "sandbox-test", "status": "Running"},
         )
 
@@ -1022,7 +1022,7 @@ class TestSandboxFiles:
         )
         httpx_mock.add_response(
             method="POST",
-            url="https://test.example.com/api/namespaces/test-ws/sandboxes/claim",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandboxes/claim",
             json={"name": "sandbox-test", "status": "Running"},
         )
 
@@ -1047,7 +1047,7 @@ class TestSandboxFiles:
         )
         httpx_mock.add_response(
             method="POST",
-            url="https://test.example.com/api/namespaces/test-ws/sandboxes/claim",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandboxes/claim",
             json={"name": "sandbox-test", "status": "Running"},
         )
 
@@ -1074,13 +1074,13 @@ class TestSandboxFiles:
         # Mock claim
         httpx_mock.add_response(
             method="POST",
-            url="https://test.example.com/api/namespaces/test-ws/sandboxes/claim",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandboxes/claim",
             json={"name": "sandbox-test", "status": "Running"},
         )
         # Mock file read - uses /files/download?path= endpoint
         httpx_mock.add_response(
             method="GET",
-            url="https://test.example.com/api/namespaces/test-ws/sandboxes/sandbox-test/files/download?path=%2Fworkspace%2Ftest.txt",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandboxes/sandbox-test/files/download?path=%2Fworkspace%2Ftest.txt",
             content=b"hello world",
         )
 
@@ -1102,13 +1102,13 @@ class TestSandboxFiles:
         # Mock claim
         httpx_mock.add_response(
             method="POST",
-            url="https://test.example.com/api/namespaces/test-ws/sandboxes/claim",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandboxes/claim",
             json={"name": "sandbox-test", "status": "Running"},
         )
         # Mock file list
         httpx_mock.add_response(
             method="GET",
-            url="https://test.example.com/api/namespaces/test-ws/sandboxes/sandbox-test/files?path=%2Fworkspace",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandboxes/sandbox-test/files?path=%2Fworkspace",
             json={
                 "files": [
                     {"name": "test.txt", "path": "/workspace/test.txt", "size": 11},
@@ -1142,13 +1142,13 @@ class TestSandboxKill:
         # Mock claim
         httpx_mock.add_response(
             method="POST",
-            url="https://test.example.com/api/namespaces/test-ws/sandboxes/claim",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandboxes/claim",
             json={"name": "sandbox-test", "status": "Running"},
         )
         # Mock delete
         httpx_mock.add_response(
             method="DELETE",
-            url="https://test.example.com/api/namespaces/test-ws/sandboxes/sandbox-test",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandboxes/sandbox-test",
             status_code=204,
         )
 
@@ -1172,13 +1172,13 @@ class TestSandboxContextManager:
         # Mock claim
         httpx_mock.add_response(
             method="POST",
-            url="https://test.example.com/api/namespaces/test-ws/sandboxes/claim",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandboxes/claim",
             json={"name": "sandbox-test", "status": "Running"},
         )
         # Mock delete
         httpx_mock.add_response(
             method="DELETE",
-            url="https://test.example.com/api/namespaces/test-ws/sandboxes/sandbox-test",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandboxes/sandbox-test",
             status_code=204,
         )
 
@@ -1205,7 +1205,7 @@ class TestSandboxRepr:
         # Mock claim
         httpx_mock.add_response(
             method="POST",
-            url="https://test.example.com/api/namespaces/test-ws/sandboxes/claim",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandboxes/claim",
             json={"name": "sandbox-test", "status": "Running"},
         )
 
