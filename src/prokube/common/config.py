@@ -34,7 +34,11 @@ class Config:
 
     def __post_init__(self) -> None:
         """Validate configuration after initialization."""
-        if not self.api_url and not self.use_api_key:
+        if (
+            not self.api_url
+            and not self.use_api_key
+            and os.environ.get("KUBERNETES_SERVICE_HOST")
+        ):
             self.api_url = (
                 "http://agentgateway-proxy.agentgateway-system.svc.cluster.local"
             )
