@@ -63,6 +63,44 @@ with Sandbox.from_pool("python-pool") as sbx:
 # Sandbox is automatically cleaned up
 ```
 
+### Sandboxes v2 (Firecracker)
+
+`prokube.sandboxv2.SandboxV2` is a parallel client for Firecracker-backed microVM
+sandboxes. It mirrors the v1 `Sandbox` surface (`run_code` / `commands` / `files` /
+`pause` / `resume` / `kill`), adapted for v2: pick a `runtime_class`
+(`fc-host` — a real microVM, default — or `fc-pod`), sandboxes are addressed by
+`namespace` (the v1 `workspace`), and there is **no warm pool** (`from_pool`
+raises `NotImplementedError`).
+
+```python
+from prokube.sandboxv2 import SandboxV2
+
+# Create a Firecracker microVM (cold start)
+sbx = SandboxV2.create(
+    image="pk-sandbox-base",
+    runtime_class="fc-host",            # or "fc-pod"
+    resources={"vcpus": 2, "mem_mib": 2048},
+    egress=False,                       # default: isolated (no outbound network)
+    namespace="my-namespace",
+)
+sbx.wait_until_ready()                  # polls until phase == "Running"
+
+# Stateful code, shell commands and files work exactly like v1
+print(sbx.run_code("print(2 + 2)").stdout)
+sbx.commands.run("pip install numpy")
+sbx.files.write("/workspace/x.txt", "hello")
+print(sbx.files.read("/workspace/x.txt").decode())
+
+# Pause == native VM snapshot; resume == restore
+sbx.pause()
+sbx.resume()
+
+sbx.kill()
+```
+
+`SandboxV2` reuses the same `x-api-key` auth, HTTP client, and configuration as
+v1, so the environment variables below apply unchanged.
+
 ## Configuration
 
 Configuration can be provided via environment variables or explicitly:
