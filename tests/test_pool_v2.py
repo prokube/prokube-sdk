@@ -1,4 +1,4 @@
-"""Tests for the Sandbox v2 (Firecracker) warm pool (FirecrackerHibernatedPool).
+"""Tests for the Sandbox v2 (Firecracker) warm pool (FirecrackerPool).
 
 All HTTP is mocked (pytest_httpx) — no live cluster required. Mirrors
 test_pool.py and test_sandboxv2.py: covers create/list/get/delete pool and
@@ -39,11 +39,12 @@ def _mock_version(httpx_mock: HTTPXMock) -> None:
     )
 
 
-def _pool_json(name="python-pool", size=3, ready=2):
+def _pool_json(name="python-pool", size=3, ready=2, warm_state="Hibernated"):
     return {
         "name": name,
         "namespace": NS,
         "size": size,
+        "warmState": warm_state,
         "readyMembers": ready,
         "members": [
             {"name": f"{name}-0", "phase": "Hibernated"},
@@ -95,6 +96,8 @@ class TestClientPool:
         body = json.loads(req.content)
         assert body["name"] == "python-pool"
         assert body["size"] == 3
+        # warmState defaults to Hibernated and is serialised camelCase.
+        assert body["warmState"] == "Hibernated"
         # template is nested, camelCase-aliased, None-pruned
         assert body["template"]["runtimeClassName"] == "fc-host"
         assert body["template"]["vcpus"] == 2
@@ -103,6 +106,46 @@ class TestClientPool:
         assert info.size == 3
         assert info.ready_members == 2
         assert info.runtime_class_name == "fc-host"
+        assert info.warm_state == "Hibernated"
+        client.close()
+
+    def test_create_pool_warm_state_running_in_body(
+        self, config, httpx_mock: HTTPXMock
+    ):
+        _mock_version(httpx_mock)
+        httpx_mock.add_response(
+            method="POST",
+            url=POOLS,
+            status_code=201,
+            json=_pool_json(warm_state="Running"),
+        )
+        from prokube.sandboxv2.models import CreateSandboxV2Request
+
+        client = SandboxV2Client(config)
+        template = CreateSandboxV2Request(name="python-pool", image="pk-sandbox-base")
+        info = client.create_pool(
+            name="python-pool", size=3, template=template, warm_state="Running"
+        )
+        req = [r for r in httpx_mock.get_requests() if r.method == "POST"][-1]
+        body = json.loads(req.content)
+        assert body["warmState"] == "Running"
+        assert info.warm_state == "Running"
+        client.close()
+
+    def test_set_pool_warm_state_patches(self, config, httpx_mock: HTTPXMock):
+        _mock_version(httpx_mock)
+        httpx_mock.add_response(
+            method="PATCH",
+            url=f"{POOLS}/python-pool",
+            json=_pool_json(warm_state="Running"),
+        )
+        client = SandboxV2Client(config)
+        info = client.set_pool_warm_state("python-pool", "Running")
+        req = [r for r in httpx_mock.get_requests() if r.method == "PATCH"][-1]
+        assert str(req.url) == f"{POOLS}/python-pool"
+        body = json.loads(req.content)
+        assert body == {"warmState": "Running"}
+        assert info.warm_state == "Running"
         client.close()
 
     def test_list_pools(self, config, httpx_mock: HTTPXMock):
@@ -194,6 +237,49 @@ class TestPoolFacade:
             assert pool.size == 3
             assert pool.ready_members == 2
             assert pool.runtime_class == "fc-host"
+            assert pool.warm_state == "Hibernated"
+        finally:
+            pool.close()
+
+    def test_create_warm_state_running(self, mock_env, httpx_mock: HTTPXMock):
+        _mock_version(httpx_mock)
+        httpx_mock.add_response(
+            method="POST",
+            url=POOLS,
+            status_code=201,
+            json=_pool_json(warm_state="Running"),
+        )
+        pool = SandboxV2Pool.create(
+            name="python-pool", size=3, image="pk-sandbox-base", warm_state="Running"
+        )
+        try:
+            body = json.loads(
+                [r for r in httpx_mock.get_requests() if r.method == "POST"][-1].content
+            )
+            assert body["warmState"] == "Running"
+            assert pool.warm_state == "Running"
+        finally:
+            pool.close()
+
+    def test_set_warm_state_updates_pool(self, mock_env, httpx_mock: HTTPXMock):
+        _mock_version(httpx_mock)
+        httpx_mock.add_response(
+            method="GET", url=f"{POOLS}/python-pool", json=_pool_json()
+        )
+        httpx_mock.add_response(
+            method="PATCH",
+            url=f"{POOLS}/python-pool",
+            json=_pool_json(warm_state="Running"),
+        )
+        pool = SandboxV2Pool.get("python-pool")
+        try:
+            assert pool.warm_state == "Hibernated"
+            pool.set_warm_state("Running")
+            assert pool.warm_state == "Running"
+            body = json.loads(
+                [r for r in httpx_mock.get_requests() if r.method == "PATCH"][-1].content
+            )
+            assert body == {"warmState": "Running"}
         finally:
             pool.close()
 
