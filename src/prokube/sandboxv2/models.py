@@ -165,3 +165,62 @@ class UploadFileV2Request(BaseModel):
     encoding: str = Field(
         default="base64", description="Content encoding ('text' or 'base64')"
     )
+
+
+# =============================================================================
+# FirecrackerHibernatedPool — warm pool of pre-hibernated sandboxes
+#
+# Mirrors the pkui backend ``modules/sandboxv2`` pool DTOs
+# (CreateHibernatedPoolRequest / HibernatedPoolInfo / HibernatedPoolMember).
+# The backend routes live at ``/api/namespaces/{ns}/sandboxv2-pools`` (note:
+# ``sandboxv2-pools``, a sibling collection of ``sandboxv2``, NOT a sub-path).
+# =============================================================================
+
+
+class CreateHibernatedPoolRequest(BaseModel):
+    """Request body for ``POST .../sandboxv2-pools`` (mirrors backend model).
+
+    ``template`` is a full v2 sandbox create spec reused verbatim — the same
+    knobs as :class:`CreateSandboxV2Request` (image, resources, egress,
+    volumes/volumeMounts, targetNode). The backend forces the template to
+    ``runtimeClassName: fc-host`` and owns ``operatingMode`` (the pool
+    controller drives each member to Hibernated), and ignores the template's own
+    ``name`` (members are named by the controller).
+    """
+
+    name: str = Field(..., min_length=1, max_length=63, description="Pool name")
+    size: int = Field(..., ge=0, description="Desired number of warm members")
+    template: CreateSandboxV2Request = Field(
+        ..., description="Sandbox spec used as the pool member template"
+    )
+
+
+class HibernatedPoolMember(BaseModel):
+    """One entry of FirecrackerHibernatedPool ``status.members``."""
+
+    name: str = Field(..., description="Member FirecrackerSandbox name")
+    phase: str | None = Field(
+        default=None, description="Member FirecrackerSandbox status.phase"
+    )
+
+
+class HibernatedPoolInfo(BaseModel):
+    """A FirecrackerHibernatedPool projected from the CR (mirrors backend)."""
+
+    name: str = Field(..., description="Pool (CR) name")
+    namespace: str = Field(..., description="Kubernetes namespace")
+    size: int = Field(default=0, description="spec.size — desired warm members")
+    ready_members: int = Field(
+        default=0, description="status.readyMembers — claimable warm members"
+    )
+    members: list[HibernatedPoolMember] = Field(
+        default_factory=list, description="status.members"
+    )
+    image: str | None = Field(default=None, description="Template base OCI image")
+    runtime_class_name: str | None = Field(
+        default=None, description="Template spec.runtimeClassName (fc-host)"
+    )
+    message: str | None = Field(
+        default=None, description="Human-readable status detail"
+    )
+    created_at: str | None = Field(default=None, description="Creation timestamp")

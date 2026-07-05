@@ -36,9 +36,12 @@ from prokube.sandbox.models import (
 from prokube.sandboxv2.models import (
     CodeResult,
     CommandResult,
+    CreateHibernatedPoolRequest,
     CreateSandboxV2Request,
     ExecV2Request,
     FileInfo,
+    HibernatedPoolInfo,
+    HibernatedPoolMember,
     SandboxV2Info,
     SandboxV2Status,
     UploadFileV2Request,
@@ -109,6 +112,16 @@ class SandboxV2Client:
 
     def _sandbox_sub_path(self, name: str, sub: str) -> str:
         return f"{self._sandbox_path(name)}/{sub}"
+
+    def _pools_path(self) -> str:
+        # Sibling collection of ``sandboxv2`` (``sandboxv2-pools``), NOT a
+        # sub-path of it — mirrors the pkui backend route registration.
+        return (
+            f"{self._prefix()}/api/namespaces/{self._namespace()}/sandboxv2-pools"
+        )
+
+    def _pool_path(self, name: str) -> str:
+        return f"{self._pools_path()}/{name}"
 
     # -- parsing --------------------------------------------------------------
 
@@ -217,6 +230,82 @@ class SandboxV2Client:
     def delete(self, name: str) -> None:
         """Delete a sandbox (deletes the CR; ephemeral PVC cleaned up)."""
         self._http.delete(self._sandbox_path(name))
+
+    # -- pools (FirecrackerHibernatedPool) ------------------------------------
+
+    def _parse_pool(self, response: dict[str, object]) -> HibernatedPoolInfo:
+        members = [
+            HibernatedPoolMember(name=m.get("name", ""), phase=m.get("phase"))
+            for m in (response.get("members") or [])
+            if m.get("name")
+        ]
+        return HibernatedPoolInfo(
+            name=response.get("name", ""),
+            namespace=response.get("namespace", self._namespace()),
+            size=response.get("size", 0) or 0,
+            ready_members=response.get("readyMembers", 0) or 0,
+            members=members,
+            image=response.get("image") or None,
+            runtime_class_name=response.get("runtimeClassName"),
+            message=response.get("message"),
+            created_at=response.get("createdAt"),
+        )
+
+    def create_pool(
+        self,
+        name: str,
+        size: int,
+        template: CreateSandboxV2Request,
+    ) -> HibernatedPoolInfo:
+        """Create a warm pool of pre-hibernated Firecracker sandboxes.
+
+        Args:
+            name: Pool name.
+            size: Desired number of warm (pre-hibernated) members.
+            template: The v2 sandbox create spec used as the member template
+                (same knobs as :meth:`create`). The backend forces the template
+                to ``runtimeClassName: fc-host`` and owns ``operatingMode``.
+        """
+        request = CreateHibernatedPoolRequest(
+            name=name, size=size, template=template
+        )
+        response = self._http.post(
+            self._pools_path(),
+            json=request.model_dump(by_alias=True, exclude_none=True),
+        )
+        return self._parse_pool(response)
+
+    def list_pools(self) -> list[HibernatedPoolInfo]:
+        """List all warm pools in the configured namespace."""
+        response = self._http.get(self._pools_path())
+        pools = response.get("pools", [])
+        return [self._parse_pool(p) for p in pools]
+
+    def get_pool(self, name: str) -> HibernatedPoolInfo:
+        """Get information about a warm pool."""
+        response = self._http.get(self._pool_path(name))
+        return self._parse_pool(response)
+
+    def delete_pool(self, name: str) -> None:
+        """Delete a warm pool (the controller garbage-collects its members)."""
+        self._http.delete(self._pool_path(name))
+
+    def claim(self, name: str) -> SandboxV2Info:
+        """Claim a ready member from a warm pool (fast resume, not cold boot).
+
+        Returns the now-resuming sandbox, detached from the pool. The pool
+        controller refills to keep ``spec.size`` warm.
+
+        Raises:
+            SandboxError: If no warm member is ready to claim (HTTP 409).
+        """
+        try:
+            response = self._http.post(f"{self._pool_path(name)}/claim")
+        except ProKubeError as e:
+            if e.status_code == 409:
+                raise SandboxError(str(e), status_code=409) from e
+            raise
+        return self._parse_info(response)
 
     # -- exec -----------------------------------------------------------------
 

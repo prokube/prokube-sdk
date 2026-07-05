@@ -69,8 +69,9 @@ with Sandbox.from_pool("python-pool") as sbx:
 sandboxes. It mirrors the v1 `Sandbox` surface (`run_code` / `commands` / `files` /
 `pause` / `resume` / `kill`), adapted for v2: pick a `runtime_class`
 (`fc-host` — a real microVM, default — or `fc-pod`), sandboxes are addressed by
-`namespace` (the v1 `workspace`), and there is **no warm pool** (`from_pool`
-raises `NotImplementedError`).
+`namespace` (the v1 `workspace`), and the warm pool is a
+**FirecrackerHibernatedPool** (`SandboxV2Pool` + `SandboxV2.from_pool`), which
+claims a pre-hibernated member via a fast VM resume rather than a cold boot.
 
 ```python
 from prokube.sandboxv2 import SandboxV2
@@ -96,6 +97,29 @@ sbx.pause()
 sbx.resume()
 
 sbx.kill()
+```
+
+Warm pool (FirecrackerHibernatedPool) — maintain pre-hibernated members and
+claim one via a fast VM resume instead of a cold boot:
+
+```python
+from prokube.sandboxv2 import SandboxV2, SandboxV2Pool
+
+# Create a pool of 3 pre-hibernated fc-host members (pools are fc-host only)
+pool = SandboxV2Pool.create(
+    name="python-pool",
+    size=3,
+    image="pk-sandbox-base",
+    resources={"vcpus": 2, "mem_mib": 2048},
+    namespace="my-namespace",
+)
+
+# Claim a warm member (fast resume ~1.4s); the controller refills the pool
+sbx = SandboxV2.from_pool("python-pool", namespace="my-namespace")
+sbx.wait_until_ready()
+print(sbx.run_code("print('hi')").stdout)
+
+pool.delete()
 ```
 
 `SandboxV2` reuses the same `x-api-key` auth, HTTP client, and configuration as

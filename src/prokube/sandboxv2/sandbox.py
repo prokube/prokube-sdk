@@ -3,7 +3,8 @@
 Mirrors the v1 :class:`prokube.sandbox.Sandbox` public surface, adapted to the
 v2 backend: creation takes a ``runtime_class`` (``fc-host`` / ``fc-pod``) and v2
 knobs (resources, egress, volumes), v1's ``workspace`` maps to ``namespace``,
-and there is no warm pool (``from_pool`` raises ``NotImplementedError``).
+and the warm pool is a FirecrackerHibernatedPool (:meth:`SandboxV2.from_pool`
+claims a pre-hibernated member; see :class:`prokube.sandboxv2.pool.SandboxV2Pool`).
 
 The stateful code / shell command / file helpers are the *same* v1 classes
 (:class:`CodeRunner` / :class:`CommandRunner` / :class:`FileManager`) — they are
@@ -412,15 +413,64 @@ class SandboxV2:
         return sandboxes
 
     @classmethod
-    def from_pool(cls, *args: object, **kwargs: object) -> Self:
-        """Not supported on v2. Sandbox v2 (Firecracker) has no warm pool.
+    def from_pool(
+        cls,
+        pool: str,
+        *,
+        namespace: str | None = None,
+        api_url: str | None = None,
+        user_id: str | None = None,
+        api_key: str | None = None,
+        timeout: int | None = None,
+    ) -> Self:
+        """Claim a ready member from a warm pool (fast resume, not cold boot).
 
-        Warm-pool parity is a known future item (see the SANDBOXV2_V1_PARITY
-        doc). Use :meth:`create` + :meth:`wait_until_ready` instead.
+        Claims a pre-hibernated member from a
+        :class:`~prokube.sandboxv2.pool.SandboxV2Pool` and returns a SandboxV2
+        bound to it. A claim is a fast VM resume (~1.4s), so unlike
+        :meth:`create` the returned sandbox is (or is quickly becoming) Running
+        — call :meth:`wait_until_ready` to be sure before use.
+
+        Args:
+            pool: Name of the warm pool to claim from.
+            namespace: Kubernetes namespace (maps to v1's ``workspace``).
+            api_url: API URL (default: PROKUBE_API_URL env var).
+            user_id: User ID (default: PROKUBE_USER_ID env var).
+            api_key: API key (default: PROKUBE_API_KEY env var).
+            timeout: Request timeout (default: PROKUBE_TIMEOUT env var).
+
+        Returns:
+            A SandboxV2 instance bound to the claimed member.
+
+        Raises:
+            SandboxError: If the pool has no ready member to claim (HTTP 409).
+
+        Example:
+            >>> sbx = SandboxV2.from_pool("python-pool")
+            >>> sbx.wait_until_ready()
+            >>> sbx.run_code("print('hello')")
         """
-        raise NotImplementedError(
-            "Sandbox v2 (Firecracker) has no warm pool. `from_pool` is a future "
-            "parity item; use SandboxV2.create() + wait_until_ready() instead."
+        config = cls._build_config(
+            api_url=api_url,
+            namespace=namespace,
+            user_id=user_id,
+            api_key=api_key,
+            timeout=timeout,
+        )
+        client = SandboxV2Client(config)
+        try:
+            info = client.claim(pool)
+        except Exception:
+            client.close()
+            raise
+
+        return cls(
+            name=info.name,
+            namespace=info.namespace,
+            client=client,
+            status=info.status,
+            image=info.image,
+            runtime_class=info.runtime_class,
         )
 
     @staticmethod

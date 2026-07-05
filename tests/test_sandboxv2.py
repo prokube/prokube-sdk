@@ -3,7 +3,7 @@
 All HTTP is mocked (pytest_httpx) — no live cluster required. Mirrors the v1
 sandbox tests: covers create (fc-host AND fc-pod), run_code, commands, files,
 pause/resume, get, kill, wait_until_ready polling, the api-key path prefix, and
-the from_pool NotImplementedError guard.
+claiming a warm-pool member via from_pool.
 """
 
 import base64
@@ -438,6 +438,21 @@ class TestApiKeyAndPool:
         assert info.name == "sbx"
         client.close()
 
-    def test_from_pool_not_implemented(self):
-        with pytest.raises(NotImplementedError):
-            SandboxV2.from_pool("any-pool")
+    def test_from_pool_claims_member(self, mock_env, httpx_mock: HTTPXMock):
+        _mock_version(httpx_mock)
+        httpx_mock.add_response(
+            method="POST",
+            url=f"{BASE}/api/namespaces/{NS}/sandboxv2-pools/python-pool/claim",
+            json=_sandbox_json(name="member-1", phase="Running"),
+        )
+        sbx = SandboxV2.from_pool("python-pool")
+        try:
+            assert sbx.name == "member-1"
+            assert sbx.status == "Running"
+            assert sbx.runtime_class == "fc-host"
+            req = [r for r in httpx_mock.get_requests() if r.method == "POST"][-1]
+            assert str(req.url).endswith(
+                f"/api/namespaces/{NS}/sandboxv2-pools/python-pool/claim"
+            )
+        finally:
+            sbx._client.close()
