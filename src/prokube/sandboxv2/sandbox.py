@@ -2,8 +2,8 @@
 
 Mirrors the v1 :class:`prokube.sandbox.Sandbox` public surface, adapted to the
 v2 backend: creation takes a ``runtime_class`` (``fc-host`` / ``fc-pod``) and v2
-knobs (resources, egress, volumes), v1's ``workspace`` maps to ``namespace``,
-and the warm pool is a FirecrackerHibernatedPool (:meth:`SandboxV2.from_pool`
+knobs (resources, egress, volumes), the same ``workspace`` param as v1, and the
+warm pool is a FirecrackerHibernatedPool (:meth:`SandboxV2.from_pool`
 claims a pre-hibernated member; see :class:`prokube.sandboxv2.pool.SandboxV2Pool`).
 
 The stateful code / shell command / file helpers are the *same* v1 classes
@@ -57,7 +57,7 @@ class SandboxV2:
     def __init__(
         self,
         name: str,
-        namespace: str,
+        workspace: str,
         client: SandboxV2Client,
         status: SandboxV2Status = SandboxV2Status.PENDING,
         image: str | None = None,
@@ -68,7 +68,7 @@ class SandboxV2:
         Note: use :meth:`create` or :meth:`get` instead of the constructor.
         """
         self._name = name
-        self._namespace = namespace
+        self._workspace = workspace
         self._client = client
         self._status = status
         self._image = image
@@ -91,9 +91,14 @@ class SandboxV2:
         return self._name
 
     @property
+    def workspace(self) -> str:
+        """The workspace (Kubernetes namespace)."""
+        return self._workspace
+
+    @property
     def namespace(self) -> str:
-        """The Kubernetes namespace."""
-        return self._namespace
+        """Deprecated alias for :attr:`workspace` (v1 uses ``workspace``)."""
+        return self._workspace
 
     @property
     def runtime_class(self) -> str | None:
@@ -246,8 +251,8 @@ class SandboxV2:
         target_node: str | None = None,
         operating_mode: str | None = None,
         manifest: dict | None = None,
-        namespace: str | None = None,
         api_url: str | None = None,
+        workspace: str | None = None,
         user_id: str | None = None,
         api_key: str | None = None,
         timeout: int | None = None,
@@ -279,8 +284,9 @@ class SandboxV2:
             target_node: Pin the microVM to a node.
             operating_mode: ``Running`` or ``Hibernated``.
             manifest: Full FirecrackerSandbox object; wins over structured knobs.
-            namespace: Kubernetes namespace (maps to v1's ``workspace``).
             api_url: API URL (default: PROKUBE_API_URL env var).
+            workspace: Workspace / Kubernetes namespace (default:
+                PROKUBE_WORKSPACE env var).
             user_id: User ID (default: PROKUBE_USER_ID env var).
             api_key: API key (default: PROKUBE_API_KEY env var).
             timeout: Request timeout (default: PROKUBE_TIMEOUT env var).
@@ -294,7 +300,7 @@ class SandboxV2:
 
         config = cls._build_config(
             api_url=api_url,
-            namespace=namespace,
+            workspace=workspace,
             user_id=user_id,
             api_key=api_key,
             timeout=timeout,
@@ -325,7 +331,7 @@ class SandboxV2:
 
         return cls(
             name=info.name,
-            namespace=info.namespace,
+            workspace=info.workspace,
             client=client,
             status=info.status,
             image=info.image or image,
@@ -337,8 +343,8 @@ class SandboxV2:
         cls,
         name: str,
         *,
-        namespace: str | None = None,
         api_url: str | None = None,
+        workspace: str | None = None,
         user_id: str | None = None,
         api_key: str | None = None,
         timeout: int | None = None,
@@ -346,7 +352,7 @@ class SandboxV2:
         """Connect to an existing Firecracker sandbox by name."""
         config = cls._build_config(
             api_url=api_url,
-            namespace=namespace,
+            workspace=workspace,
             user_id=user_id,
             api_key=api_key,
             timeout=timeout,
@@ -360,7 +366,7 @@ class SandboxV2:
 
         return cls(
             name=info.name,
-            namespace=info.namespace,
+            workspace=info.workspace,
             client=client,
             status=info.status,
             image=info.image,
@@ -375,16 +381,16 @@ class SandboxV2:
         cls,
         *,
         phase: str | None = None,
-        namespace: str | None = None,
         api_url: str | None = None,
+        workspace: str | None = None,
         user_id: str | None = None,
         api_key: str | None = None,
         timeout: int | None = None,
     ) -> list[Self]:
-        """List Firecracker sandboxes in the namespace."""
+        """List Firecracker sandboxes in the workspace."""
         config = cls._build_config(
             api_url=api_url,
-            namespace=namespace,
+            workspace=workspace,
             user_id=user_id,
             api_key=api_key,
             timeout=timeout,
@@ -408,7 +414,7 @@ class SandboxV2:
                 sandboxes.append(
                     cls(
                         name=info.name,
-                        namespace=info.namespace,
+                        workspace=info.workspace,
                         client=SandboxV2Client(config, check_version=False),
                         status=info.status,
                         image=info.image,
@@ -426,15 +432,18 @@ class SandboxV2:
         cls,
         pool: str,
         *,
-        namespace: str | None = None,
         api_url: str | None = None,
+        workspace: str | None = None,
         user_id: str | None = None,
         api_key: str | None = None,
+        auto_idle_timeout_seconds: int | None = None,
         timeout: int | None = None,
     ) -> Self:
-        """Claim a ready member from a warm pool (fast resume, not cold boot).
+        """Claim a sandbox from a warm pool.
 
-        Claims a pre-hibernated member from a
+        Signature-compatible with :meth:`prokube.sandbox.Sandbox.from_pool`, so
+        swapping ``Sandbox`` for ``SandboxV2`` needs no other change. Claims a
+        pre-hibernated member from a
         :class:`~prokube.sandboxv2.pool.SandboxV2Pool` and returns a SandboxV2
         bound to it. A claim is a fast VM resume (~1.4s), so unlike
         :meth:`create` the returned sandbox is (or is quickly becoming) Running
@@ -442,10 +451,12 @@ class SandboxV2:
 
         Args:
             pool: Name of the warm pool to claim from.
-            namespace: Kubernetes namespace (maps to v1's ``workspace``).
             api_url: API URL (default: PROKUBE_API_URL env var).
+            workspace: Workspace / Kubernetes namespace (default:
+                PROKUBE_WORKSPACE env var).
             user_id: User ID (default: PROKUBE_USER_ID env var).
             api_key: API key (default: PROKUBE_API_KEY env var).
+            auto_idle_timeout_seconds: Per-claim auto-idle override in seconds.
             timeout: Request timeout (default: PROKUBE_TIMEOUT env var).
 
         Returns:
@@ -461,21 +472,23 @@ class SandboxV2:
         """
         config = cls._build_config(
             api_url=api_url,
-            namespace=namespace,
+            workspace=workspace,
             user_id=user_id,
             api_key=api_key,
             timeout=timeout,
         )
         client = SandboxV2Client(config)
         try:
-            info = client.claim(pool)
+            info = client.claim(
+                pool, auto_idle_timeout_seconds=auto_idle_timeout_seconds
+            )
         except Exception:
             client.close()
             raise
 
         return cls(
             name=info.name,
-            namespace=info.namespace,
+            workspace=info.workspace,
             client=client,
             status=info.status,
             image=info.image,
@@ -485,17 +498,17 @@ class SandboxV2:
     @staticmethod
     def _build_config(
         api_url: str | None,
-        namespace: str | None,
+        workspace: str | None,
         user_id: str | None,
         api_key: str | None,
         timeout: int | None,
     ) -> Config:
-        """Build configuration, mapping ``namespace`` to Config.workspace."""
+        """Build configuration from explicit params and environment."""
         kwargs: dict = {}
         if api_url is not None:
             kwargs["api_url"] = api_url
-        if namespace is not None:
-            kwargs["workspace"] = namespace
+        if workspace is not None:
+            kwargs["workspace"] = workspace
         if user_id is not None:
             kwargs["user_id"] = user_id
         if api_key is not None:
@@ -519,7 +532,7 @@ class SandboxV2:
     def __repr__(self) -> str:
         return (
             f"SandboxV2(name={self._name!r}, "
-            f"namespace={self._namespace!r}, "
+            f"workspace={self._workspace!r}, "
             f"runtime_class={self._runtime_class!r}, "
             f"status={self._status.value!r})"
         )

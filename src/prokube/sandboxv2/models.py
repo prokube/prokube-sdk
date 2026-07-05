@@ -42,7 +42,7 @@ class SandboxV2Info(BaseModel):
     """Information about a Firecracker sandbox (projected from the CR)."""
 
     name: str = Field(..., description="Sandbox (CR) name")
-    namespace: str = Field(..., description="Kubernetes namespace")
+    workspace: str = Field(..., description="Workspace (Kubernetes namespace)")
     status: SandboxV2Status = Field(
         default=SandboxV2Status.UNKNOWN, description="User-facing phase"
     )
@@ -284,7 +284,7 @@ class HibernatedPoolInfo(BaseModel):
     """A FirecrackerHibernatedPool projected from the CR (mirrors backend)."""
 
     name: str = Field(..., description="Pool (CR) name")
-    namespace: str = Field(..., description="Kubernetes namespace")
+    workspace: str = Field(..., description="Workspace (Kubernetes namespace)")
     size: int = Field(default=0, description="spec.size — desired warm members")
     ready_members: int = Field(
         default=0, description="status.readyMembers — claimable warm members"

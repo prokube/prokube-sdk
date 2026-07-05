@@ -261,20 +261,43 @@ class TestPoolFacade:
 
 
 # ---------------------------------------------------------------------------
-# api-key path prefix
+# api-key ORIGIN routing
 # ---------------------------------------------------------------------------
 
 
-def test_api_key_preserves_pools_prefix(httpx_mock: HTTPXMock):
+def test_api_key_claim_uses_sandboxes_origin_route(httpx_mock: HTTPXMock):
+    """Under api-key, claim hits the sandboxes ORIGIN /claim route (pool name in
+    the body), NOT a pools sub-path — mirrors v1's ``claim_from_pool``."""
+    cfg = Config(api_url="https://prokube.ai/pkui", workspace=NS, api_key="k")
+    httpx_mock.add_response(
+        method="POST",
+        url=f"https://prokube.ai/sandboxv2/{NS}/sandboxes/claim",
+        json=_sandbox_json(name="member-1", phase="Running"),
+    )
+    client = SandboxV2Client(cfg)
+    info = client.claim("python-pool")
+    req = httpx_mock.get_requests()[-1]
+    assert req.headers["x-api-key"] == "k"
+    assert str(req.url) == f"https://prokube.ai/sandboxv2/{NS}/sandboxes/claim"
+    body = json.loads(req.content)
+    assert body["poolName"] == "python-pool"
+    assert info.name == "member-1"
+    client.close()
+
+
+def test_api_key_pool_crud_uses_origin_route(httpx_mock: HTTPXMock):
+    """Pool CRUD under api-key targets a top-level ORIGIN path (no /pkui, no
+    /api). Pool CRUD is not part of the deployed origin contract, but the path
+    branch must still drop the UI prefix consistently with every other method."""
     cfg = Config(api_url="https://prokube.ai/pkui", workspace=NS, api_key="k")
     httpx_mock.add_response(
         method="GET",
-        url=f"https://prokube.ai/pkui/api/namespaces/{NS}/sandboxv2-pools",
+        url=f"https://prokube.ai/sandboxv2/{NS}/pools",
         json={"pools": [], "total": 0},
     )
     client = SandboxV2Client(cfg)
     client.list_pools()
     req = httpx_mock.get_requests()[-1]
     assert req.headers["x-api-key"] == "k"
-    assert str(req.url).endswith(f"/api/namespaces/{NS}/sandboxv2-pools")
+    assert str(req.url) == f"https://prokube.ai/sandboxv2/{NS}/pools"
     client.close()

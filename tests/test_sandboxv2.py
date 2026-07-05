@@ -476,25 +476,89 @@ class TestLifecycle:
 
 
 # ---------------------------------------------------------------------------
-# API-key path prefix + no warm pool
+# API-key ORIGIN routing + warm pool
 # ---------------------------------------------------------------------------
 
 
 class TestApiKeyAndPool:
-    def test_api_key_preserves_path_prefix(self, httpx_mock: HTTPXMock):
+    def test_api_key_uses_origin_route(self, httpx_mock: HTTPXMock):
+        """Under api-key the client targets the top-level v2 ORIGIN route.
+
+        Mirrors v1: HttpClient strips ``api_url`` to its origin, so NO ``/pkui``
+        prefix and NO ``/api`` segment — the path is ``/sandboxv2/{ws}/
+        sandboxes/{name}`` (this is the fix; the old code wrongly re-attached
+        ``/pkui/api/...`` which hit the cookie-gated UI path -> 401).
+        """
         cfg = Config(api_url="https://prokube.ai/pkui", workspace=NS, api_key="k")
         # No version check under api-key auth; the header is x-api-key.
         httpx_mock.add_response(
             method="GET",
-            url=f"https://prokube.ai/pkui/api/namespaces/{NS}/sandboxv2/sbx",
+            url=f"https://prokube.ai/sandboxv2/{NS}/sandboxes/sbx",
             json=_sandbox_json(name="sbx"),
         )
         client = SandboxV2Client(cfg)
         info = client.get("sbx")
         req = httpx_mock.get_requests()[-1]
         assert req.headers["x-api-key"] == "k"
+        assert str(req.url) == f"https://prokube.ai/sandboxv2/{NS}/sandboxes/sbx"
         assert info.name == "sbx"
         client.close()
+
+    def test_api_key_exec_and_files_origin_routes(self, httpx_mock: HTTPXMock):
+        """exec / files sub-paths also route to the top-level ORIGIN paths."""
+        cfg = Config(api_url="https://prokube.ai/pkui", workspace=NS, api_key="k")
+        base = f"https://prokube.ai/sandboxv2/{NS}/sandboxes/sbx"
+        httpx_mock.add_response(
+            method="POST",
+            url=f"{base}/exec",
+            json={"stdout": "hi\n", "stderr": "", "exitCode": 0, "success": True},
+        )
+        httpx_mock.add_response(
+            method="POST", url=f"{base}/files", json={"message": "ok"}
+        )
+        client = SandboxV2Client(cfg)
+        client.exec_command("sbx", "echo hi")
+        client.write_file("sbx", "/workspace/x.txt", b"data")
+        urls = [str(r.url) for r in httpx_mock.get_requests()]
+        assert f"{base}/exec" in urls
+        assert f"{base}/files" in urls
+        client.close()
+
+    def test_api_key_claim_uses_origin_route_with_body(self, httpx_mock: HTTPXMock):
+        """Under api-key, claim POSTs to the sandboxes ORIGIN /claim route with
+        the pool name in the JSON body (mirrors v1's ``claim_from_pool``)."""
+        httpx_mock.add_response(
+            method="POST",
+            url=f"https://prokube.ai/sandboxv2/{NS}/sandboxes/claim",
+            json=_sandbox_json(name="member-1", phase="Running"),
+        )
+        sbx = SandboxV2.from_pool(
+            "python-pool",
+            api_url="https://prokube.ai/pkui",
+            workspace=NS,
+            api_key="k",
+        )
+        try:
+            assert sbx.name == "member-1"
+            req = [r for r in httpx_mock.get_requests() if r.method == "POST"][-1]
+            assert (
+                str(req.url)
+                == f"https://prokube.ai/sandboxv2/{NS}/sandboxes/claim"
+            )
+            body = json.loads(req.content)
+            assert body["poolName"] == "python-pool"
+        finally:
+            sbx._client.close()
+
+    def test_from_pool_signature_matches_v1(self):
+        """SandboxV2.from_pool must be drop-in for Sandbox.from_pool."""
+        import inspect
+
+        from prokube.sandbox import Sandbox
+
+        v1 = inspect.signature(Sandbox.from_pool)
+        v2 = inspect.signature(SandboxV2.from_pool)
+        assert list(v1.parameters) == list(v2.parameters)
 
     def test_from_pool_claims_member(self, mock_env, httpx_mock: HTTPXMock):
         _mock_version(httpx_mock)
@@ -508,6 +572,7 @@ class TestApiKeyAndPool:
             assert sbx.name == "member-1"
             assert sbx.status == "Running"
             assert sbx.runtime_class == "fc-host"
+            assert sbx.workspace == NS
             req = [r for r in httpx_mock.get_requests() if r.method == "POST"][-1]
             assert str(req.url).endswith(
                 f"/api/namespaces/{NS}/sandboxv2-pools/python-pool/claim"

@@ -4,11 +4,18 @@ Reuses ``prokube.common`` verbatim (same ``x-api-key`` auth, http client,
 config, exceptions) and the v1 execd result models. Only the path space and the
 create/get/pause/resume lifecycle differ from v1:
 
-* v1 paths:  ``/sandbox/{ws}/sandboxes/...`` (external) or
+* v1 paths:  ``/sandbox/{ws}/sandboxes/...`` (external / api-key) or
   ``/_platform/sandbox/{ws}/sandboxes/...`` (in-cluster).
-* v2 paths:  ``/api/namespaces/{ns}/sandboxv2/...`` — the FastAPI router is
-  mounted at ``/api`` and is namespaced. v1's ``workspace`` concept maps 1:1 to
-  the v2 ``namespace``.
+* v2 paths mirror the same api-key vs in-cluster branch:
+  - api-key (external ORIGIN route): ``/sandboxv2/{ws}/sandboxes/...`` —
+    top-level on the ingress gateway (no ``/pkui`` prefix, no ``/api``), because
+    the shared :class:`HttpClient` strips ``api_url`` to its origin under an
+    api key. This exactly mirrors v1's external ``/sandbox/{ws}/...`` routes.
+  - in-cluster: ``/api/namespaces/{ws}/sandboxv2/...`` — the FastAPI router is
+    mounted at ``/api`` and is namespaced.
+
+``workspace`` is the v1 name for the Kubernetes namespace; the two are the same
+thing and it is used verbatim in every v2 path.
 
 The exposed method surface (``exec_code`` / ``exec_command`` / ``write_file`` /
 ``read_file`` / ``list_files`` / ``write_files_batch``) matches v1's
@@ -22,7 +29,6 @@ import base64
 import uuid
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
-from urllib.parse import urlparse
 
 from prokube.common.compat import check_backend_compatibility
 from prokube.common.exceptions import NotFoundError, ProKubeError, SandboxError
@@ -31,6 +37,7 @@ from prokube.sandbox.client import _parse_batch_file_write_response
 from prokube.sandbox.models import (
     BatchFileWriteRequest,
     BatchFileWriteResponse,
+    ClaimRequest,
     FileWriteRequest,
 )
 from prokube.sandboxv2.models import (
@@ -70,8 +77,8 @@ class SandboxV2Client:
         """Initialize the v2 sandbox client.
 
         Args:
-            config: SDK configuration. ``config.workspace`` is used as the v2
-                namespace.
+            config: SDK configuration. ``config.workspace`` is the workspace
+                (Kubernetes namespace) used in every v2 path.
             check_version: Whether to check backend version compatibility.
         """
         self.config = config
@@ -85,27 +92,23 @@ class SandboxV2Client:
         self._http.close()
 
     # -- path helpers ---------------------------------------------------------
+    #
+    # Every path method branches on ``use_api_key`` exactly like v1's
+    # ``SandboxClient._sandboxes_path`` / ``PoolClient._pools_path``:
+    #
+    # * api-key -> top-level ORIGIN routes (``/sandboxv2/{ws}/...``). The shared
+    #   ``HttpClient`` uses only the ``api_url`` origin under an api key, so NO
+    #   ``/pkui`` prefix and NO ``/api`` segment may be attached here.
+    # * in-cluster -> namespaced FastAPI routes (``/api/namespaces/{ws}/...``).
 
-    def _namespace(self) -> str:
+    def _workspace(self) -> str:
         return self.config.workspace
 
-    def _prefix(self) -> str:
-        """Path prefix to prepend under API-key (external) access.
-
-        The shared ``HttpClient`` strips ``api_url`` down to its origin for
-        API-key access (v1's external ``/sandbox/*`` routes are top-level). The
-        v2 routes, by contrast, live under the app's own path prefix
-        (e.g. ``/pkui/api/namespaces/...``), so when using an API key we must
-        re-attach the configured path prefix. For in-cluster access the full
-        ``api_url`` (prefix included) is preserved by ``HttpClient`` already, so
-        no prefix is added here.
-        """
-        if self.config.use_api_key:
-            return urlparse(self.config.api_url).path.rstrip("/")
-        return ""
-
     def _collection_path(self) -> str:
-        return f"{self._prefix()}/api/namespaces/{self._namespace()}/sandboxv2"
+        ws = self._workspace()
+        if self.config.use_api_key:
+            return f"/sandboxv2/{ws}/sandboxes"
+        return f"/api/namespaces/{ws}/sandboxv2"
 
     def _sandbox_path(self, name: str) -> str:
         return f"{self._collection_path()}/{name}"
@@ -113,12 +116,27 @@ class SandboxV2Client:
     def _sandbox_sub_path(self, name: str, sub: str) -> str:
         return f"{self._sandbox_path(name)}/{sub}"
 
+    def _claim_path(self) -> str:
+        """POST target for claiming a warm-pool member.
+
+        Under api-key this is the ORIGIN route ``/sandboxv2/{ws}/sandboxes/claim``
+        (pool name travels in the JSON body, exactly as v1's
+        ``claim_from_pool``). In-cluster claims instead POST to
+        ``.../sandboxv2-pools/{pool}/claim`` (pool name in the URL); see
+        :meth:`claim`.
+        """
+        return f"{self._collection_path()}/claim"
+
     def _pools_path(self) -> str:
-        # Sibling collection of ``sandboxv2`` (``sandboxv2-pools``), NOT a
-        # sub-path of it — mirrors the pkui backend route registration.
-        return (
-            f"{self._prefix()}/api/namespaces/{self._namespace()}/sandboxv2-pools"
-        )
+        ws = self._workspace()
+        if self.config.use_api_key:
+            # Pool CRUD is not part of the deployed api-key ORIGIN contract
+            # (only pool *claim* is exposed, via the sandboxes/claim route
+            # above). Provide a consistent top-level path for completeness.
+            return f"/sandboxv2/{ws}/pools"
+        # In-cluster: sibling collection of ``sandboxv2`` (``sandboxv2-pools``),
+        # NOT a sub-path of it — mirrors the pkui backend route registration.
+        return f"/api/namespaces/{ws}/sandboxv2-pools"
 
     def _pool_path(self, name: str) -> str:
         return f"{self._pools_path()}/{name}"
@@ -128,7 +146,7 @@ class SandboxV2Client:
     def _parse_info(self, response: dict[str, object]) -> SandboxV2Info:
         return SandboxV2Info(
             name=response.get("name", ""),
-            namespace=response.get("namespace", self._namespace()),
+            workspace=response.get("namespace", self._workspace()),
             status=_parse_status(
                 response.get("phase"), SandboxV2Status.UNKNOWN
             ),
@@ -211,7 +229,7 @@ class SandboxV2Client:
         return self._parse_info(response)
 
     def list(self) -> list[SandboxV2Info]:
-        """List all Firecracker sandboxes in the configured namespace."""
+        """List all Firecracker sandboxes in the configured workspace."""
         response = self._http.get(self._collection_path())
         sandboxes = response.get("sandboxes", [])
         return [self._parse_info(s) for s in sandboxes]
@@ -250,7 +268,7 @@ class SandboxV2Client:
         ]
         return HibernatedPoolInfo(
             name=response.get("name", ""),
-            namespace=response.get("namespace", self._namespace()),
+            workspace=response.get("namespace", self._workspace()),
             size=response.get("size", 0) or 0,
             ready_members=response.get("readyMembers", 0) or 0,
             members=members,
@@ -285,7 +303,7 @@ class SandboxV2Client:
         return self._parse_pool(response)
 
     def list_pools(self) -> list[HibernatedPoolInfo]:
-        """List all warm pools in the configured namespace."""
+        """List all warm pools in the configured workspace."""
         response = self._http.get(self._pools_path())
         pools = response.get("pools", [])
         return [self._parse_pool(p) for p in pools]
@@ -299,17 +317,42 @@ class SandboxV2Client:
         """Delete a warm pool (the controller garbage-collects its members)."""
         self._http.delete(self._pool_path(name))
 
-    def claim(self, name: str) -> SandboxV2Info:
+    def claim(
+        self, name: str, auto_idle_timeout_seconds: int | None = None
+    ) -> SandboxV2Info:
         """Claim a ready member from a warm pool (fast resume, not cold boot).
 
         Returns the now-resuming sandbox, detached from the pool. The pool
         controller refills to keep ``spec.size`` warm.
 
+        Path/body mirror v1's ``claim_from_pool`` under api-key:
+
+        * api-key -> ``POST /sandboxv2/{ws}/sandboxes/claim`` with the pool name
+          in the JSON body (v1's :class:`ClaimRequest` shape: ``poolName`` +
+          optional ``autoIdleTimeoutSeconds``).
+        * in-cluster -> ``POST .../sandboxv2-pools/{pool}/claim`` (pool name in
+          the URL, no body — the existing warm-pool controller contract).
+
+        Args:
+            name: Name of the warm pool to claim from.
+            auto_idle_timeout_seconds: Per-claim auto-idle override in seconds
+                (only forwarded on the api-key origin route).
+
         Raises:
             SandboxError: If no warm member is ready to claim (HTTP 409).
         """
         try:
-            response = self._http.post(f"{self._pool_path(name)}/claim")
+            if self.config.use_api_key:
+                request = ClaimRequest(
+                    pool_name=name,
+                    auto_idle_timeout_seconds=auto_idle_timeout_seconds,
+                )
+                response = self._http.post(
+                    self._claim_path(),
+                    json=request.model_dump(by_alias=True, exclude_none=True),
+                )
+            else:
+                response = self._http.post(f"{self._pool_path(name)}/claim")
         except ProKubeError as e:
             if e.status_code == 409:
                 raise SandboxError(str(e), status_code=409) from e

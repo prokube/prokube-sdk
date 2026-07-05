@@ -3,8 +3,8 @@
 A parallel client to :mod:`prokube.sandbox`, targeting the Firecracker-backed
 ``sandboxv2`` endpoints. Reuses ``prokube.common`` (auth, http, config,
 exceptions) verbatim and mirrors the v1 public surface, adapted for microVMs
-(``runtime_class`` fc-host/fc-pod, ``namespace`` instead of ``workspace``, no
-warm pool via FirecrackerHibernatedPool).
+(``runtime_class`` fc-host/fc-pod, same ``workspace`` param as v1, warm pool via
+FirecrackerHibernatedPool).
 """
 
 from prokube.sandboxv2.client import SandboxV2Client

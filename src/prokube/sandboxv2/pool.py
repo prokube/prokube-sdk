@@ -58,7 +58,7 @@ class SandboxV2Pool:
     def __init__(
         self,
         name: str,
-        namespace: str,
+        workspace: str,
         client: SandboxV2Client,
         size: int = 0,
         ready_members: int = 0,
@@ -72,7 +72,7 @@ class SandboxV2Pool:
         constructor.
         """
         self._name = name
-        self._namespace = namespace
+        self._workspace = workspace
         self._client = client
         self._size = size
         self._ready_members = ready_members
@@ -87,9 +87,14 @@ class SandboxV2Pool:
         return self._name
 
     @property
+    def workspace(self) -> str:
+        """The workspace (Kubernetes namespace)."""
+        return self._workspace
+
+    @property
     def namespace(self) -> str:
-        """The Kubernetes namespace (v1's ``workspace``)."""
-        return self._namespace
+        """Deprecated alias for :attr:`workspace` (v1 uses ``workspace``)."""
+        return self._workspace
 
     @property
     def size(self) -> int:
@@ -174,7 +179,7 @@ class SandboxV2Pool:
             raise
         return SandboxV2(
             name=info.name,
-            namespace=info.namespace,
+            workspace=info.workspace,
             client=client,
             status=info.status,
             image=info.image,
@@ -202,8 +207,8 @@ class SandboxV2Pool:
         image_pull_secrets: list[str] | None = None,
         workspace_size: str | None = None,
         target_node: str | None = None,
-        namespace: str | None = None,
         api_url: str | None = None,
+        workspace: str | None = None,
         user_id: str | None = None,
         api_key: str | None = None,
         timeout: int | None = None,
@@ -229,7 +234,8 @@ class SandboxV2Pool:
             image_pull_secrets: Registry pull secret names.
             workspace_size: Ephemeral /workspace volume size (e.g. "10Gi").
             target_node: Pin members to a node.
-            namespace: Kubernetes namespace (maps to v1's ``workspace``).
+            workspace: Workspace / Kubernetes namespace (default:
+                PROKUBE_WORKSPACE env var).
             api_url / user_id / api_key / timeout: Connection overrides.
 
         Note: pools are ``fc-host`` only; the backend forces the member template
@@ -241,7 +247,7 @@ class SandboxV2Pool:
 
         config = cls._build_config(
             api_url=api_url,
-            namespace=namespace,
+            workspace=workspace,
             user_id=user_id,
             api_key=api_key,
             timeout=timeout,
@@ -273,7 +279,7 @@ class SandboxV2Pool:
 
         return cls(
             name=info.name,
-            namespace=info.namespace,
+            workspace=info.workspace,
             client=client,
             size=info.size,
             ready_members=info.ready_members,
@@ -287,8 +293,8 @@ class SandboxV2Pool:
         cls,
         name: str,
         *,
-        namespace: str | None = None,
         api_url: str | None = None,
+        workspace: str | None = None,
         user_id: str | None = None,
         api_key: str | None = None,
         timeout: int | None = None,
@@ -296,7 +302,7 @@ class SandboxV2Pool:
         """Get an existing warm pool by name."""
         config = cls._build_config(
             api_url=api_url,
-            namespace=namespace,
+            workspace=workspace,
             user_id=user_id,
             api_key=api_key,
             timeout=timeout,
@@ -310,7 +316,7 @@ class SandboxV2Pool:
 
         return cls(
             name=info.name,
-            namespace=info.namespace,
+            workspace=info.workspace,
             client=client,
             size=info.size,
             ready_members=info.ready_members,
@@ -323,16 +329,16 @@ class SandboxV2Pool:
     def list(
         cls,
         *,
-        namespace: str | None = None,
         api_url: str | None = None,
+        workspace: str | None = None,
         user_id: str | None = None,
         api_key: str | None = None,
         timeout: int | None = None,
     ) -> list[Self]:
-        """List all warm pools in the namespace."""
+        """List all warm pools in the workspace."""
         config = cls._build_config(
             api_url=api_url,
-            namespace=namespace,
+            workspace=workspace,
             user_id=user_id,
             api_key=api_key,
             timeout=timeout,
@@ -356,7 +362,7 @@ class SandboxV2Pool:
                 pools.append(
                     cls(
                         name=info.name,
-                        namespace=info.namespace,
+                        workspace=info.workspace,
                         client=SandboxV2Client(config, check_version=False),
                         size=info.size,
                         ready_members=info.ready_members,
@@ -374,17 +380,17 @@ class SandboxV2Pool:
     @staticmethod
     def _build_config(
         api_url: str | None,
-        namespace: str | None,
+        workspace: str | None,
         user_id: str | None,
         api_key: str | None,
         timeout: int | None,
     ) -> Config:
-        """Build configuration, mapping ``namespace`` to Config.workspace."""
+        """Build configuration from explicit params and environment."""
         kwargs: dict = {}
         if api_url is not None:
             kwargs["api_url"] = api_url
-        if namespace is not None:
-            kwargs["workspace"] = namespace
+        if workspace is not None:
+            kwargs["workspace"] = workspace
         if user_id is not None:
             kwargs["user_id"] = user_id
         if api_key is not None:
@@ -396,6 +402,6 @@ class SandboxV2Pool:
     def __repr__(self) -> str:
         return (
             f"SandboxV2Pool(name={self._name!r}, "
-            f"namespace={self._namespace!r}, "
+            f"workspace={self._workspace!r}, "
             f"size={self._size}, ready_members={self._ready_members})"
         )
