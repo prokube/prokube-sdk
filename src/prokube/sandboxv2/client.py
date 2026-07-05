@@ -228,6 +228,25 @@ class SandboxV2Client:
         response = self._http.get(self._sandbox_path(name))
         return self._parse_info(response)
 
+    def wait_ready(self, name: str, timeout: int = 30) -> SandboxV2Info:
+        """Server-side long-poll for readiness (single request).
+
+        The backend tight-polls committed CR state in-cluster and returns the
+        moment ``status.phase`` reaches Running (or Failed), or the latest phase
+        when its ``timeout`` elapses. This collapses the old flat client poll
+        (and its per-poll internet round-trip) into one request resolved near the
+        control-plane. Raises :class:`~prokube.common.exceptions.NotFoundError`
+        when the endpoint is absent (older backend) or the sandbox is missing —
+        the caller then falls back to a local ``get`` poll.
+        """
+        response = self._http.get(
+            self._sandbox_sub_path(name, "wait_ready"),
+            params={"timeout": timeout},
+            # Give httpx headroom over the server-side long-poll window.
+            timeout=timeout + 10,
+        )
+        return self._parse_info(response)
+
     def list(self) -> list[SandboxV2Info]:
         """List all Firecracker sandboxes in the configured workspace."""
         response = self._http.get(self._collection_path())

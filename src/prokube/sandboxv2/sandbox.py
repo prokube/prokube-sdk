@@ -23,7 +23,11 @@ else:
     from typing_extensions import Self
 
 from prokube.common.config import Config
-from prokube.common.exceptions import SandboxError, SandboxTimeoutError
+from prokube.common.exceptions import (
+    NotFoundError,
+    SandboxError,
+    SandboxTimeoutError,
+)
 from prokube.sandbox.code import CodeRunner
 from prokube.sandbox.commands import CommandRunner
 from prokube.sandbox.files import FileManager
@@ -177,6 +181,13 @@ class SandboxV2:
     def wait_until_ready(self, timeout: int = 120) -> None:
         """Block until the sandbox phase is Running.
 
+        A ready microVM resumes in well under a second, so this prefers the
+        backend's server-side long-poll readiness endpoint (a single request the
+        backend resolves in-cluster the instant ``status.phase`` flips to
+        Running) and otherwise falls back to a tight local ``get`` poll (~100ms,
+        gently backing off to 1s). Both paths supersede the old flat 2s poll that
+        quantized a sub-second resume into multi-second waits.
+
         Args:
             timeout: Maximum seconds to wait (default: 120).
 
@@ -185,9 +196,48 @@ class SandboxV2:
             SandboxError: If it enters the Failed terminal state while waiting.
         """
         self._check_not_killed()
-        poll_interval = 2
         deadline = time.monotonic() + timeout
+        use_long_poll = True
+        # Local-poll fallback cadence: start tight (matches the ~0.4s
+        # control-plane lag) and back off so a slow-to-ready sandbox does not
+        # hammer the backend for the full timeout window.
+        poll_interval = 0.1
+
         while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+
+            if use_long_poll:
+                try:
+                    # Server long-polls up to its own window; loop here until our
+                    # deadline. Cap each call so a stalled connection still
+                    # rechecks our timeout periodically.
+                    info = self._client.wait_ready(
+                        self._name, timeout=min(int(remaining) + 1, 30)
+                    )
+                except NotFoundError:
+                    # Endpoint absent (older backend) or sandbox genuinely
+                    # missing: drop to the local poll, which re-raises the real
+                    # not-found error if the sandbox truly does not exist.
+                    use_long_poll = False
+                    continue
+                self._status = info.status
+                if info.runtime_class is not None:
+                    self._runtime_class = info.runtime_class
+                if info.image is not None:
+                    self._image = info.image
+                if self._status == SandboxV2Status.RUNNING:
+                    return
+                if self._status == SandboxV2Status.FAILED:
+                    raise SandboxError(
+                        f"Sandbox {self._name} entered terminal state "
+                        f"{self._status.value!r} while waiting for it to become "
+                        f"ready"
+                    )
+                # Server-side timeout below Running: loop (re-checks deadline).
+                continue
+
             self.refresh()
             if self._status == SandboxV2Status.RUNNING:
                 return
@@ -200,6 +250,8 @@ class SandboxV2:
             if remaining <= 0:
                 break
             time.sleep(min(poll_interval, remaining))
+            poll_interval = min(poll_interval * 1.5, 1.0)
+
         raise SandboxTimeoutError(
             f"Sandbox {self._name} did not become ready within {timeout}s "
             f"(current phase: {self._status.value!r})"
