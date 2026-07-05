@@ -153,6 +153,8 @@ class SandboxV2Client:
         mem_mib: int | None = None,
         egress: bool = False,
         terminal: bool = True,
+        env_vars: dict[str, str] | list[dict[str, str]] | None = None,
+        secret_refs: list[str] | None = None,
         volumes: list[dict[str, object]] | None = None,
         volume_mounts: list[dict[str, object]] | None = None,
         image_pull_secrets: list[str] | None = None,
@@ -165,6 +167,11 @@ class SandboxV2Client:
 
         Returns as soon as the CR is created; the controller drives
         Pending -> Running asynchronously (poll via :meth:`get`).
+
+        ``env_vars`` accepts a ``dict[str,str]`` or a list of ``{name,value}``
+        dicts and serializes to CRD ``spec.env``; ``secret_refs`` accepts a list
+        of Secret names and serializes to CRD ``spec.envFrom``. Env is baked into
+        the guest at boot/snapshot and is not refreshed on pause/resume.
         """
         if name is None:
             name = f"sandbox-{uuid.uuid4().hex[:8]}"
@@ -177,6 +184,8 @@ class SandboxV2Client:
             mem_mib=mem_mib,
             egress=egress,
             terminal=terminal,
+            env=env_vars,
+            env_from=secret_refs,
             volumes=volumes,
             volume_mounts=volume_mounts,
             image_pull_secrets=image_pull_secrets,

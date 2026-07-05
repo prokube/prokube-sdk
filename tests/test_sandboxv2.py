@@ -126,6 +126,64 @@ class TestCreate:
         assert body["volumeMounts"] == mounts
         client.close()
 
+    def test_create_env_vars_and_secret_refs(self, config, httpx_mock: HTTPXMock):
+        _mock_version(httpx_mock)
+        httpx_mock.add_response(
+            method="POST", url=COLL, status_code=201, json=_sandbox_json()
+        )
+        client = SandboxV2Client(config)
+        client.create(
+            name="sbx",
+            env_vars={"FOO": "bar", "BAZ": "qux"},
+            secret_refs=["openai-key", "hf-token"],
+        )
+
+        body = json.loads(
+            [r for r in httpx_mock.get_requests() if r.method == "POST"][-1].content
+        )
+        # dict[str,str] -> CRD spec.env: [{name,value}]
+        assert body["env"] == [
+            {"name": "FOO", "value": "bar"},
+            {"name": "BAZ", "value": "qux"},
+        ]
+        # list[str] -> CRD spec.envFrom: [{secretRef:{name}}]
+        assert body["envFrom"] == [
+            {"secretRef": {"name": "openai-key"}},
+            {"secretRef": {"name": "hf-token"}},
+        ]
+        client.close()
+
+    def test_facade_create_env_list_form(self, mock_env, httpx_mock: HTTPXMock):
+        _mock_version(httpx_mock)
+        httpx_mock.add_response(
+            method="POST", url=COLL, status_code=201, json=_sandbox_json()
+        )
+        SandboxV2.create(
+            image="pk-sandbox-base",
+            name="sbx",
+            env_vars=[{"name": "A", "value": "1"}],
+            secret_refs=["s1"],
+        )
+        body = json.loads(
+            [r for r in httpx_mock.get_requests() if r.method == "POST"][-1].content
+        )
+        assert body["env"] == [{"name": "A", "value": "1"}]
+        assert body["envFrom"] == [{"secretRef": {"name": "s1"}}]
+
+    def test_create_omits_env_when_absent(self, config, httpx_mock: HTTPXMock):
+        _mock_version(httpx_mock)
+        httpx_mock.add_response(
+            method="POST", url=COLL, status_code=201, json=_sandbox_json()
+        )
+        client = SandboxV2Client(config)
+        client.create(name="sbx")
+        body = json.loads(
+            [r for r in httpx_mock.get_requests() if r.method == "POST"][-1].content
+        )
+        assert "env" not in body
+        assert "envFrom" not in body
+        client.close()
+
     def test_facade_create_resources_shorthand(self, mock_env, httpx_mock: HTTPXMock):
         _mock_version(httpx_mock)
         httpx_mock.add_response(

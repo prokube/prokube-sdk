@@ -237,6 +237,8 @@ class SandboxV2:
         mem_mib: int | None = None,
         egress: bool = False,
         terminal: bool = True,
+        env_vars: dict[str, str] | list[dict[str, str]] | None = None,
+        secret_refs: list[str] | None = None,
         volumes: list[dict] | None = None,
         volume_mounts: list[dict] | None = None,
         image_pull_secrets: list[str] | None = None,
@@ -265,6 +267,11 @@ class SandboxV2:
             egress: Whether the microVM may reach the cluster/internet
                 (default: False — isolated).
             terminal: Inject a ttyd Terminal (:7681) into the guest.
+            env_vars: Literal env vars baked into the guest. Accepts a
+                ``dict[str,str]`` or a list of ``{"name","value"}`` dicts;
+                serializes to CRD ``spec.env``. Not refreshed on pause/resume.
+            secret_refs: Names of Secrets (in the sandbox namespace) whose keys
+                are injected as env vars; serializes to CRD ``spec.envFrom``.
             volumes: ``spec.volumes`` pass-through (CR-shaped dicts).
             volume_mounts: ``spec.volumeMounts`` pass-through (CR-shaped dicts).
             image_pull_secrets: Registry pull secret names.
@@ -302,6 +309,8 @@ class SandboxV2:
                 mem_mib=mem_mib,
                 egress=egress,
                 terminal=terminal,
+                env_vars=env_vars,
+                secret_refs=secret_refs,
                 volumes=volumes,
                 volume_mounts=volume_mounts,
                 image_pull_secrets=image_pull_secrets,

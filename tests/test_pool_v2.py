@@ -197,6 +197,32 @@ class TestPoolFacade:
         finally:
             pool.close()
 
+    def test_create_template_carries_env_and_secret_refs(
+        self, mock_env, httpx_mock: HTTPXMock
+    ):
+        _mock_version(httpx_mock)
+        httpx_mock.add_response(
+            method="POST", url=POOLS, status_code=201, json=_pool_json()
+        )
+        pool = SandboxV2Pool.create(
+            name="python-pool",
+            size=3,
+            image="pk-sandbox-base",
+            env_vars={"FOO": "bar"},
+            secret_refs=["openai-key"],
+        )
+        try:
+            body = json.loads(
+                [r for r in httpx_mock.get_requests() if r.method == "POST"][-1].content
+            )
+            # env/envFrom land in the nested pool-member template, CRD-shaped.
+            assert body["template"]["env"] == [{"name": "FOO", "value": "bar"}]
+            assert body["template"]["envFrom"] == [
+                {"secretRef": {"name": "openai-key"}}
+            ]
+        finally:
+            pool.close()
+
     def test_claim_returns_bound_sandbox(self, mock_env, httpx_mock: HTTPXMock):
         _mock_version(httpx_mock)
         httpx_mock.add_response(

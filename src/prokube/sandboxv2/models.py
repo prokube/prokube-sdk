@@ -12,7 +12,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 # Result/file models are reused verbatim from v1 so the public result surface
 # (``.success`` / ``.stdout`` / ``.stderr`` / ``FileInfo``) is identical.
@@ -75,6 +75,37 @@ class SandboxV2Resources(BaseModel):
     )
 
 
+class EnvVar(BaseModel):
+    """A literal environment variable baked into the guest (spec.env entry).
+
+    Mirrors the Kubernetes ``EnvVar`` (name/value) shape one-for-one so the
+    serialized JSON matches the FirecrackerSandbox CRD ``spec.env`` directly.
+    """
+
+    name: str = Field(..., description="Environment variable name")
+    value: str = Field(..., description="Environment variable value")
+
+
+class SecretEnvSource(BaseModel):
+    """Reference to a Secret by name (spec.envFrom[].secretRef)."""
+
+    name: str = Field(..., description="Secret name in the sandbox namespace")
+
+
+class EnvFromSource(BaseModel):
+    """A ``spec.envFrom`` entry — inject all keys from a Secret as env vars.
+
+    Mirrors the Kubernetes ``EnvFromSource`` shape (``{secretRef: {name}}``) so
+    the serialized JSON matches the FirecrackerSandbox CRD ``spec.envFrom``.
+    """
+
+    secret_ref: SecretEnvSource = Field(
+        ...,
+        serialization_alias="secretRef",
+        description="Secret whose keys are injected into the guest environment",
+    )
+
+
 class CreateSandboxV2Request(BaseModel):
     """Request body for ``POST .../sandboxv2`` (mirrors backend model)."""
 
@@ -118,6 +149,15 @@ class CreateSandboxV2Request(BaseModel):
         default=None,
         description="spec.egress — true lets the microVM reach the cluster/internet",
     )
+    env: list[EnvVar] | None = Field(
+        default=None,
+        description="spec.env — literal env vars ({name,value}) baked into the guest",
+    )
+    env_from: list[EnvFromSource] | None = Field(
+        default=None,
+        serialization_alias="envFrom",
+        description="spec.envFrom — inject all keys from the named Secret(s)",
+    )
     volumes: list[dict[str, Any]] | None = Field(
         default=None, description="spec.volumes pass-through (CR-shaped dicts)"
     )
@@ -130,6 +170,42 @@ class CreateSandboxV2Request(BaseModel):
         default=None,
         description="Full FirecrackerSandbox object; wins over structured knobs",
     )
+
+    @field_validator("env", mode="before")
+    @classmethod
+    def _coerce_env(cls, v: Any) -> Any:
+        """Accept a ``dict[str,str]`` or ``list[{name,value}]`` for env vars.
+
+        A mapping is expanded to CRD-shaped ``[{name, value}]`` entries (values
+        stringified); a list of dicts / :class:`EnvVar` is passed through.
+        """
+        if isinstance(v, dict):
+            return [{"name": k, "value": str(val)} for k, val in v.items()]
+        return v
+
+    @field_validator("env_from", mode="before")
+    @classmethod
+    def _coerce_env_from(cls, v: Any) -> Any:
+        """Accept a ``list[str]`` of Secret names for ``envFrom``.
+
+        Each bare Secret name is wrapped into a CRD-shaped
+        ``{secretRef: {name}}`` entry. Already-shaped dicts / model instances
+        pass through unchanged.
+        """
+        if v is None or not isinstance(v, list):
+            return v
+        out: list[Any] = []
+        for item in v:
+            if isinstance(item, str):
+                out.append(EnvFromSource(secret_ref=SecretEnvSource(name=item)))
+            elif isinstance(item, dict) and "secretRef" in item:
+                # CR-shaped {"secretRef": {"name": ...}} — normalize the key.
+                out.append(
+                    EnvFromSource(secret_ref=SecretEnvSource(**item["secretRef"]))
+                )
+            else:
+                out.append(item)
+        return out
 
 
 class ExecV2Request(BaseModel):
