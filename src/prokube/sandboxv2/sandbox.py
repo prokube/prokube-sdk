@@ -33,7 +33,12 @@ from prokube.sandbox.commands import CommandRunner
 from prokube.sandbox.files import FileManager
 from prokube.sandbox.models import CodeResult
 from prokube.sandboxv2.client import SandboxV2Client
-from prokube.sandboxv2.models import Lifecycle, Probe, SandboxV2Status
+from prokube.sandboxv2.models import (
+    DNSConfig,
+    Lifecycle,
+    Probe,
+    SandboxV2Status,
+)
 
 
 class SandboxV2:
@@ -304,6 +309,8 @@ class SandboxV2:
         operating_mode: str | None = None,
         startup_probe: Probe | dict | None = None,
         lifecycle: Lifecycle | dict | None = None,
+        dns_policy: str | None = None,
+        dns_config: DNSConfig | dict | None = None,
         manifest: dict | None = None,
         api_url: str | None = None,
         workspace: str | None = None,
@@ -343,6 +350,12 @@ class SandboxV2:
             lifecycle: spec.lifecycle (core/v1 Lifecycle; ``postStart`` warm-up
                 hook). A :class:`~prokube.sandboxv2.models.Lifecycle` or a
                 CR-shaped dict. Omitted -> backend execd default.
+            dns_policy: spec.dnsPolicy (``ClusterFirst`` | ``None`` | ``Default``)
+                — how the guest /etc/resolv.conf is written at cold boot.
+                Omitted -> executor ClusterFirst default.
+            dns_config: spec.dnsConfig (Pod PodDNSConfig — nameservers/searches/
+                options merged into the guest resolv.conf). A
+                :class:`~prokube.sandboxv2.models.DNSConfig` or a CR-shaped dict.
             manifest: Full FirecrackerSandbox object; wins over structured knobs.
             api_url: API URL (default: PROKUBE_API_URL env var).
             workspace: Workspace / Kubernetes namespace (default:
@@ -385,6 +398,8 @@ class SandboxV2:
                 operating_mode=operating_mode,
                 startup_probe=startup_probe,
                 lifecycle=lifecycle,
+                dns_policy=dns_policy,
+                dns_config=dns_config,
                 manifest=manifest,
             )
         except Exception:

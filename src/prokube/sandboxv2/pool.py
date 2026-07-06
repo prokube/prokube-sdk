@@ -25,6 +25,7 @@ from prokube.common.exceptions import SandboxError
 from prokube.sandboxv2.client import SandboxV2Client
 from prokube.sandboxv2.models import (
     CreateSandboxV2Request,
+    DNSConfig,
     HibernatedPoolMember,
     Lifecycle,
     Probe,
@@ -236,6 +237,8 @@ class SandboxV2Pool:
         target_node: str | None = None,
         startup_probe: Probe | dict | None = None,
         lifecycle: Lifecycle | dict | None = None,
+        dns_policy: str | None = None,
+        dns_config: DNSConfig | dict | None = None,
         api_url: str | None = None,
         workspace: str | None = None,
         user_id: str | None = None,
@@ -275,6 +278,13 @@ class SandboxV2Pool:
                 its effect rides the resumable snapshot. A
                 :class:`~prokube.sandboxv2.models.Lifecycle` or a CR-shaped dict.
                 Omitted -> backend execd default.
+            dns_policy: spec.dnsPolicy (``ClusterFirst`` | ``None`` | ``Default``)
+                baked into every member template — how each member's guest
+                /etc/resolv.conf is written at cold boot. Omitted -> executor
+                ClusterFirst default.
+            dns_config: spec.dnsConfig (Pod PodDNSConfig — nameservers/searches/
+                options) baked into every member template. A
+                :class:`~prokube.sandboxv2.models.DNSConfig` or a CR-shaped dict.
             workspace: Workspace / Kubernetes namespace (default:
                 PROKUBE_WORKSPACE env var).
             api_url / user_id / api_key / timeout: Connection overrides.
@@ -312,6 +322,8 @@ class SandboxV2Pool:
             target_node=target_node,
             startup_probe=startup_probe,
             lifecycle=lifecycle,
+            dns_policy=dns_policy,
+            dns_config=dns_config,
         )
         client = SandboxV2Client(config)
         try:

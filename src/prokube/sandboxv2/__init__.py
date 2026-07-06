@@ -9,6 +9,8 @@ FirecrackerPool with a ``warm_state`` Hibernated/Running knob).
 
 from prokube.sandboxv2.client import SandboxV2Client
 from prokube.sandboxv2.models import (
+    DNSConfig,
+    DNSConfigOption,
     ExecAction,
     HTTPGetAction,
     HTTPHeader,
@@ -31,4 +33,6 @@ __all__ = [
     "HTTPHeader",
     "TCPSocketAction",
     "ExecAction",
+    "DNSConfig",
+    "DNSConfigOption",
 ]

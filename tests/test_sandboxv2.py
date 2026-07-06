@@ -17,6 +17,8 @@ from prokube.common.config import Config
 from prokube.common.exceptions import SandboxError, SandboxTimeoutError
 from prokube.sandboxv2 import SandboxV2, SandboxV2Client, SandboxV2Pool
 from prokube.sandboxv2.models import (
+    DNSConfig,
+    DNSConfigOption,
     ExecAction,
     HTTPGetAction,
     Lifecycle,
@@ -812,5 +814,154 @@ class TestProbesAndLifecycle:
                     "body": "{}",
                 }
             }
+        }
+        pool._client.close()
+
+
+# ---------------------------------------------------------------------------
+# Pod-mirrored guest DNS (spec.dnsPolicy + spec.dnsConfig)
+# ---------------------------------------------------------------------------
+
+
+class TestGuestDNS:
+    def test_create_dns_policy_and_config_serialize(
+        self, config, httpx_mock: HTTPXMock
+    ):
+        """dnsPolicy + a full dnsConfig serialize to the exact CRD/back-end shape,
+        with options rendered as {name, value} entries."""
+        _mock_version(httpx_mock)
+        httpx_mock.add_response(
+            method="POST", url=COLL, status_code=201, json=_sandbox_json()
+        )
+        client = SandboxV2Client(config)
+        client.create(
+            name="sbx",
+            dns_policy="None",
+            dns_config=DNSConfig(
+                nameservers=["1.1.1.1", "8.8.8.8"],
+                searches=["svc.cluster.local", "example.com"],
+                options=[
+                    DNSConfigOption(name="ndots", value="5"),
+                    DNSConfigOption(name="edns0"),
+                ],
+            ),
+        )
+        body = _last_post_body(httpx_mock)
+        assert body["dnsPolicy"] == "None"
+        assert body["dnsConfig"] == {
+            "nameservers": ["1.1.1.1", "8.8.8.8"],
+            "searches": ["svc.cluster.local", "example.com"],
+            "options": [
+                {"name": "ndots", "value": "5"},
+                {"name": "edns0"},
+            ],
+        }
+        client.close()
+
+    def test_create_dns_policy_only(self, config, httpx_mock: HTTPXMock):
+        """dnsPolicy alone (no dnsConfig) serializes and omits dnsConfig."""
+        _mock_version(httpx_mock)
+        httpx_mock.add_response(
+            method="POST", url=COLL, status_code=201, json=_sandbox_json()
+        )
+        client = SandboxV2Client(config)
+        client.create(name="sbx", dns_policy="ClusterFirst")
+        body = _last_post_body(httpx_mock)
+        assert body["dnsPolicy"] == "ClusterFirst"
+        assert "dnsConfig" not in body
+        client.close()
+
+    def test_dns_config_option_value_omitted_when_absent(
+        self, config, httpx_mock: HTTPXMock
+    ):
+        """An option with no value renders as bare {name} (no null value key)."""
+        _mock_version(httpx_mock)
+        httpx_mock.add_response(
+            method="POST", url=COLL, status_code=201, json=_sandbox_json()
+        )
+        client = SandboxV2Client(config)
+        client.create(
+            name="sbx",
+            dns_config=DNSConfig(options=[DNSConfigOption(name="edns0")]),
+        )
+        body = _last_post_body(httpx_mock)
+        assert body["dnsConfig"] == {"options": [{"name": "edns0"}]}
+        client.close()
+
+    def test_create_accepts_cr_shaped_dns_dict(
+        self, config, httpx_mock: HTTPXMock
+    ):
+        """A camelCase CR-shaped dnsConfig dict passes through verbatim."""
+        _mock_version(httpx_mock)
+        httpx_mock.add_response(
+            method="POST", url=COLL, status_code=201, json=_sandbox_json()
+        )
+        client = SandboxV2Client(config)
+        client.create(
+            name="sbx",
+            dns_policy="Default",
+            dns_config={
+                "nameservers": ["10.0.0.10"],
+                "options": [{"name": "ndots", "value": "2"}],
+            },
+        )
+        body = _last_post_body(httpx_mock)
+        assert body["dnsPolicy"] == "Default"
+        assert body["dnsConfig"] == {
+            "nameservers": ["10.0.0.10"],
+            "options": [{"name": "ndots", "value": "2"}],
+        }
+        client.close()
+
+    def test_omitted_dns_absent_from_json(self, config, httpx_mock: HTTPXMock):
+        """Back-compat: omitting both drops them from the wire (exclude_none),
+        so the executor applies its ClusterFirst default."""
+        _mock_version(httpx_mock)
+        httpx_mock.add_response(
+            method="POST", url=COLL, status_code=201, json=_sandbox_json()
+        )
+        client = SandboxV2Client(config)
+        client.create(name="sbx")
+        body = _last_post_body(httpx_mock)
+        assert "dnsPolicy" not in body
+        assert "dnsConfig" not in body
+        client.close()
+
+    def test_facade_create_threads_dns(self, mock_env, httpx_mock: HTTPXMock):
+        _mock_version(httpx_mock)
+        httpx_mock.add_response(
+            method="POST", url=COLL, status_code=201, json=_sandbox_json()
+        )
+        sbx = SandboxV2.create(
+            name="sbx",
+            dns_policy="None",
+            dns_config=DNSConfig(nameservers=["9.9.9.9"]),
+        )
+        body = _last_post_body(httpx_mock)
+        assert body["dnsPolicy"] == "None"
+        assert body["dnsConfig"] == {"nameservers": ["9.9.9.9"]}
+        sbx._client.close()
+
+    def test_pool_template_carries_dns(self, mock_env, httpx_mock: HTTPXMock):
+        """Pool members declare their own DNS via the template."""
+        _mock_version(httpx_mock)
+        httpx_mock.add_response(
+            method="POST", url=POOLS, status_code=201, json=_pool_json(name="p")
+        )
+        pool = SandboxV2Pool.create(
+            name="p",
+            size=2,
+            dns_policy="ClusterFirst",
+            dns_config=DNSConfig(
+                searches=["team.svc.cluster.local"],
+                options=[DNSConfigOption(name="ndots", value="3")],
+            ),
+        )
+        body = _last_post_body(httpx_mock)
+        template = body["template"]
+        assert template["dnsPolicy"] == "ClusterFirst"
+        assert template["dnsConfig"] == {
+            "searches": ["team.svc.cluster.local"],
+            "options": [{"name": "ndots", "value": "3"}],
         }
         pool._client.close()

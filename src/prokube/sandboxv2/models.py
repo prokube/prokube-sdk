@@ -249,6 +249,54 @@ class Lifecycle(BaseModel):
     )
 
 
+# =============================================================================
+# Guest DNS — Pod-mirrored spec.dnsPolicy + spec.dnsConfig. The executor writes
+# the guest ``/etc/resolv.conf`` host-side at COLD BOOT (the way a container
+# runtime does), mirroring the Pod spec. Every field is optional; when a create
+# request omits ``dnsPolicy`` / ``dnsConfig`` the executor applies its
+# ClusterFirst default (mirror the pod resolver + append 1.1.1.1), so existing
+# callers are unaffected (``exclude_none=True`` drops the omitted fields).
+# Field names mirror the FirecrackerSandbox CRD / Pod spec one-for-one so the
+# serialized JSON is the exact shape the backend accepts. See
+# docs/sandbox-dns-design.md.
+# =============================================================================
+
+
+class DNSConfigOption(BaseModel):
+    """One ``dnsConfig.options`` entry (Pod PodDNSConfigOption).
+
+    Rendered guest-side as ``name`` or ``name:value``. ``value`` is optional.
+    """
+
+    name: str = Field(..., min_length=1, description="Option name, e.g. ndots.")
+    value: str | None = Field(
+        default=None, description='Optional option value, e.g. "5" for ndots.'
+    )
+
+
+class DNSConfig(BaseModel):
+    """core/v1 PodDNSConfig — resolver config merged into the guest resolv.conf.
+
+    With ``dnsPolicy: None`` it is the ENTIRE config; with ``ClusterFirst`` it
+    augments the mirrored base (nameservers appended, searches merged, options
+    set by name — K8s merge semantics). Accepts both snake_case (Python) and
+    camelCase (CR-shaped dict) input; serializes to the CRD shape via
+    ``model_dump(by_alias=True)``.
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    nameservers: list[str] | None = Field(
+        default=None, description="Resolver IPs appended to the base nameservers."
+    )
+    searches: list[str] | None = Field(
+        default=None, description="DNS search domains merged into the base list."
+    )
+    options: list[DNSConfigOption] | None = Field(
+        default=None, description="Resolver options set by name."
+    )
+
+
 class CreateSandboxV2Request(BaseModel):
     """Request body for ``POST .../sandboxv2`` (mirrors backend model)."""
 
@@ -321,6 +369,19 @@ class CreateSandboxV2Request(BaseModel):
         description="spec.lifecycle (core/v1 Lifecycle; only postStart modelled) "
         "— a one-shot warm-up run after the probe passes (baked into a pool "
         "member's snapshot). Omitted -> the execd /code POST default.",
+    )
+    dns_policy: str | None = Field(
+        default=None,
+        serialization_alias="dnsPolicy",
+        description="spec.dnsPolicy (ClusterFirst | None | Default) — how the "
+        "guest /etc/resolv.conf is written at cold boot. Omitted -> the executor "
+        "ClusterFirst default (mirror the pod resolver + 1.1.1.1 fallback).",
+    )
+    dns_config: DNSConfig | None = Field(
+        default=None,
+        serialization_alias="dnsConfig",
+        description="spec.dnsConfig (Pod PodDNSConfig) — extra resolver config "
+        "merged into the guest resolv.conf (nameservers/searches/options).",
     )
     manifest: dict[str, Any] | None = Field(
         default=None,
