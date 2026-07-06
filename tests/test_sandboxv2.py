@@ -8,6 +8,7 @@ claiming a warm-pool member via from_pool.
 
 import base64
 import json
+import re
 
 import pytest
 from pytest_httpx import HTTPXMock
@@ -436,12 +437,12 @@ class TestLifecycle:
         httpx_mock.add_response(
             method="POST", url=COLL, status_code=201, json=_sandbox_json(phase="Pending")
         )
-        # First refresh -> Pending, second -> Running.
+        # Prefers the server-side long-poll readiness endpoint, which returns
+        # the moment the phase reaches Running.
         httpx_mock.add_response(
-            method="GET", url=f"{COLL}/sbx", json=_sandbox_json(name="sbx", phase="Pending")
-        )
-        httpx_mock.add_response(
-            method="GET", url=f"{COLL}/sbx", json=_sandbox_json(name="sbx", phase="Running")
+            method="GET",
+            url=re.compile(rf"{re.escape(COLL)}/sbx/wait_ready(\?.*)?$"),
+            json=_sandbox_json(name="sbx", phase="Running"),
         )
         sbx = SandboxV2.create(image="pk-sandbox-base", name="sbx")
         sbx.wait_until_ready(timeout=10)
@@ -453,7 +454,9 @@ class TestLifecycle:
             method="POST", url=COLL, status_code=201, json=_sandbox_json(phase="Pending")
         )
         httpx_mock.add_response(
-            method="GET", url=f"{COLL}/sbx", json=_sandbox_json(name="sbx", phase="Failed")
+            method="GET",
+            url=re.compile(rf"{re.escape(COLL)}/sbx/wait_ready(\?.*)?$"),
+            json=_sandbox_json(name="sbx", phase="Failed"),
         )
         sbx = SandboxV2.create(image="pk-sandbox-base", name="sbx")
         with pytest.raises(SandboxError):
@@ -464,12 +467,8 @@ class TestLifecycle:
         httpx_mock.add_response(
             method="POST", url=COLL, status_code=201, json=_sandbox_json(phase="Pending")
         )
-        httpx_mock.add_response(
-            method="GET",
-            url=f"{COLL}/sbx",
-            json=_sandbox_json(name="sbx", phase="Pending"),
-            is_reusable=True,
-        )
+        # timeout=0 → the deadline has already passed, so no readiness request
+        # is issued before it raises.
         sbx = SandboxV2.create(image="pk-sandbox-base", name="sbx")
         with pytest.raises(SandboxTimeoutError):
             sbx.wait_until_ready(timeout=0)
