@@ -383,6 +383,18 @@ class CreateSandboxV2Request(BaseModel):
         description="spec.dnsConfig (Pod PodDNSConfig) — extra resolver config "
         "merged into the guest resolv.conf (nameservers/searches/options).",
     )
+    mesh: bool | None = Field(
+        default=None,
+        description="Optional: opt this sandbox into the Istio service mesh "
+        "(spec.mesh).",
+    )
+    snapshot_resume_policy: str | None = Field(
+        default=None,
+        serialization_alias="snapshotResumePolicy",
+        description="spec.snapshotResumePolicy (Strict | AllowStale) — whether "
+        "resuming from a pool member's snapshot requires an exact recipe/base "
+        "match. Omitted -> the executor Strict default.",
+    )
     manifest: dict[str, Any] | None = Field(
         default=None,
         description="Full FirecrackerSandbox object; wins over structured knobs",

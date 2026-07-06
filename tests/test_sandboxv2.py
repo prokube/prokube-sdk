@@ -965,3 +965,133 @@ class TestGuestDNS:
             "options": [{"name": "ndots", "value": "3"}],
         }
         pool._client.close()
+
+
+# ---------------------------------------------------------------------------
+# Istio service mesh opt-in (spec.mesh)
+# ---------------------------------------------------------------------------
+
+
+class TestMesh:
+    def test_create_mesh_true_serializes(self, config, httpx_mock: HTTPXMock):
+        """mesh=True serializes to spec.mesh: true."""
+        _mock_version(httpx_mock)
+        httpx_mock.add_response(
+            method="POST", url=COLL, status_code=201, json=_sandbox_json()
+        )
+        client = SandboxV2Client(config)
+        client.create(name="sbx", mesh=True)
+        body = _last_post_body(httpx_mock)
+        assert body["mesh"] is True
+        client.close()
+
+    def test_create_mesh_false_serializes(self, config, httpx_mock: HTTPXMock):
+        """mesh=False serializes to spec.mesh: false."""
+        _mock_version(httpx_mock)
+        httpx_mock.add_response(
+            method="POST", url=COLL, status_code=201, json=_sandbox_json()
+        )
+        client = SandboxV2Client(config)
+        client.create(name="sbx", mesh=False)
+        body = _last_post_body(httpx_mock)
+        assert body["mesh"] is False
+        client.close()
+
+    def test_omitted_mesh_absent_from_json(self, config, httpx_mock: HTTPXMock):
+        """Back-compat: omitting mesh drops it from the wire (exclude_none)."""
+        _mock_version(httpx_mock)
+        httpx_mock.add_response(
+            method="POST", url=COLL, status_code=201, json=_sandbox_json()
+        )
+        client = SandboxV2Client(config)
+        client.create(name="sbx")
+        body = _last_post_body(httpx_mock)
+        assert "mesh" not in body
+        client.close()
+
+    def test_facade_create_threads_mesh(self, mock_env, httpx_mock: HTTPXMock):
+        _mock_version(httpx_mock)
+        httpx_mock.add_response(
+            method="POST", url=COLL, status_code=201, json=_sandbox_json()
+        )
+        sbx = SandboxV2.create(name="sbx", mesh=True)
+        body = _last_post_body(httpx_mock)
+        assert body["mesh"] is True
+        sbx._client.close()
+
+    def test_pool_template_carries_mesh(self, mock_env, httpx_mock: HTTPXMock):
+        """Pool members declare their own mesh opt-in via the template."""
+        _mock_version(httpx_mock)
+        httpx_mock.add_response(
+            method="POST", url=POOLS, status_code=201, json=_pool_json(name="p")
+        )
+        pool = SandboxV2Pool.create(name="p", size=2, mesh=True)
+        body = _last_post_body(httpx_mock)
+        template = body["template"]
+        assert template["mesh"] is True
+        pool._client.close()
+
+
+# ---------------------------------------------------------------------------
+# Pod-mirrored snapshot resume policy (spec.snapshotResumePolicy)
+# ---------------------------------------------------------------------------
+
+
+class TestSnapshotResumePolicy:
+    def test_create_snapshot_resume_policy_serializes(
+        self, config, httpx_mock: HTTPXMock
+    ):
+        """snapshotResumePolicy serializes to the exact CRD/back-end shape."""
+        _mock_version(httpx_mock)
+        httpx_mock.add_response(
+            method="POST", url=COLL, status_code=201, json=_sandbox_json()
+        )
+        client = SandboxV2Client(config)
+        client.create(name="sbx", snapshot_resume_policy="AllowStale")
+        body = _last_post_body(httpx_mock)
+        assert body["snapshotResumePolicy"] == "AllowStale"
+        client.close()
+
+    def test_omitted_snapshot_resume_policy_absent_from_json(
+        self, config, httpx_mock: HTTPXMock
+    ):
+        """Back-compat: omitting it drops it from the wire (exclude_none), so
+        the executor applies its Strict default."""
+        _mock_version(httpx_mock)
+        httpx_mock.add_response(
+            method="POST", url=COLL, status_code=201, json=_sandbox_json()
+        )
+        client = SandboxV2Client(config)
+        client.create(name="sbx")
+        body = _last_post_body(httpx_mock)
+        assert "snapshotResumePolicy" not in body
+        client.close()
+
+    def test_facade_create_threads_snapshot_resume_policy(
+        self, mock_env, httpx_mock: HTTPXMock
+    ):
+        _mock_version(httpx_mock)
+        httpx_mock.add_response(
+            method="POST", url=COLL, status_code=201, json=_sandbox_json()
+        )
+        sbx = SandboxV2.create(name="sbx", snapshot_resume_policy="AllowStale")
+        body = _last_post_body(httpx_mock)
+        assert body["snapshotResumePolicy"] == "AllowStale"
+        sbx._client.close()
+
+    def test_pool_template_carries_snapshot_resume_policy(
+        self, mock_env, httpx_mock: HTTPXMock
+    ):
+        """Pool members declare their own snapshot resume policy via the
+        template."""
+        _mock_version(httpx_mock)
+        httpx_mock.add_response(
+            method="POST", url=POOLS, status_code=201, json=_pool_json(name="p")
+        )
+        pool = SandboxV2Pool.create(
+            name="p", size=2, snapshot_resume_policy="AllowStale"
+        )
+        body = _last_post_body(httpx_mock)
+        template = body["template"]
+        assert template["snapshotResumePolicy"] == "AllowStale"
+        pool._client.close()
