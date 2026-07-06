@@ -51,6 +51,7 @@ from prokube.sandboxv2.models import (
     HibernatedPoolMember,
     SandboxV2Info,
     SandboxV2Status,
+    UpdatePoolRequest,
     UploadFileV2Request,
 )
 
@@ -289,6 +290,7 @@ class SandboxV2Client:
             name=response.get("name", ""),
             workspace=response.get("namespace", self._workspace()),
             size=response.get("size", 0) or 0,
+            warm_state=response.get("warmState") or "Hibernated",
             ready_members=response.get("readyMembers", 0) or 0,
             members=members,
             image=response.get("image") or None,
@@ -302,21 +304,43 @@ class SandboxV2Client:
         name: str,
         size: int,
         template: CreateSandboxV2Request,
+        warm_state: str = "Hibernated",
     ) -> HibernatedPoolInfo:
-        """Create a warm pool of pre-hibernated Firecracker sandboxes.
+        """Create a warm pool of Firecracker sandboxes.
 
         Args:
             name: Pool name.
-            size: Desired number of warm (pre-hibernated) members.
+            size: Desired number of warm members.
             template: The v2 sandbox create spec used as the member template
                 (same knobs as :meth:`create`). The backend forces the template
                 to ``runtimeClassName: fc-host`` and owns ``operatingMode``.
+            warm_state: How warm members are kept — ``"Hibernated"`` (default,
+                pre-snapshotted; a claim is a fast resume) or ``"Running"``
+                (members kept hot). Editable later via :meth:`set_pool_warm_state`.
         """
         request = CreateHibernatedPoolRequest(
-            name=name, size=size, template=template
+            name=name, size=size, warm_state=warm_state, template=template
         )
         response = self._http.post(
             self._pools_path(),
+            json=request.model_dump(by_alias=True, exclude_none=True),
+        )
+        return self._parse_pool(response)
+
+    def set_pool_warm_state(
+        self, name: str, warm_state: str
+    ) -> HibernatedPoolInfo:
+        """Change a pool's ``warmState`` post-create (Hibernated <-> Running).
+
+        The fc controller reconciles every member to the new state.
+
+        Args:
+            name: Pool name.
+            warm_state: ``"Hibernated"`` or ``"Running"``.
+        """
+        request = UpdatePoolRequest(warm_state=warm_state)
+        response = self._http.patch(
+            self._pool_path(name),
             json=request.model_dump(by_alias=True, exclude_none=True),
         )
         return self._parse_pool(response)

@@ -65,6 +65,7 @@ class SandboxV2Pool:
         members: list[HibernatedPoolMember] | None = None,
         image: str | None = None,
         runtime_class: str | None = None,
+        warm_state: str = "Hibernated",
     ) -> None:
         """Initialize a SandboxV2Pool instance.
 
@@ -79,6 +80,7 @@ class SandboxV2Pool:
         self._members = members or []
         self._image = image
         self._runtime_class = runtime_class
+        self._warm_state = warm_state
         self._deleted = False
 
     @property
@@ -121,6 +123,27 @@ class SandboxV2Pool:
         """The template runtime class (always ``fc-host`` for pools)."""
         return self._runtime_class
 
+    @property
+    def warm_state(self) -> str:
+        """How warm members are kept (spec.warmState): ``"Hibernated"`` or
+        ``"Running"``."""
+        return self._warm_state
+
+    def set_warm_state(self, warm_state: str) -> None:
+        """Change this pool's ``warmState`` (Hibernated <-> Running).
+
+        The fc controller reconciles every member to the new state.
+
+        Args:
+            warm_state: ``"Hibernated"`` or ``"Running"``.
+        """
+        self._check_not_deleted()
+        info = self._client.set_pool_warm_state(self._name, warm_state)
+        self._warm_state = info.warm_state
+        self._size = info.size
+        self._ready_members = info.ready_members
+        self._members = info.members
+
     def _check_not_deleted(self) -> None:
         if self._deleted:
             raise SandboxError(f"Pool '{self._name}' has been deleted")
@@ -153,6 +176,7 @@ class SandboxV2Pool:
         self._members = info.members
         self._image = info.image
         self._runtime_class = info.runtime_class_name
+        self._warm_state = info.warm_state
 
     def claim(self) -> SandboxV2:
         """Claim a ready member from this pool (fast resume, not cold boot).
@@ -195,6 +219,7 @@ class SandboxV2Pool:
         size: int,
         image: str | None = None,
         *,
+        warm_state: str = "Hibernated",
         resources: dict | None = None,
         vcpus: int | None = None,
         mem_mib: int | None = None,
@@ -217,8 +242,11 @@ class SandboxV2Pool:
 
         Args:
             name: Pool name.
-            size: Desired number of warm (pre-hibernated) members.
+            size: Desired number of warm members.
             image: Base OCI image for members (defaults to pk-sandbox-base).
+            warm_state: How warm members are kept — ``"Hibernated"`` (default,
+                pre-snapshotted; a claim is a fast resume) or ``"Running"``
+                (members kept hot). Editable later via :meth:`set_warm_state`.
             resources: ``{"vcpus": int, "mem_mib": int}`` shorthand.
             vcpus: Guest vCPUs (overrides ``resources['vcpus']``).
             mem_mib: Guest memory in MiB (overrides ``resources['mem_mib']``).
@@ -272,7 +300,9 @@ class SandboxV2Pool:
         )
         client = SandboxV2Client(config)
         try:
-            info = client.create_pool(name=name, size=size, template=template)
+            info = client.create_pool(
+                name=name, size=size, template=template, warm_state=warm_state
+            )
         except Exception:
             client.close()
             raise
@@ -286,6 +316,7 @@ class SandboxV2Pool:
             members=info.members,
             image=info.image or image,
             runtime_class=info.runtime_class_name or "fc-host",
+            warm_state=info.warm_state,
         )
 
     @classmethod
@@ -323,6 +354,7 @@ class SandboxV2Pool:
             members=info.members,
             image=info.image,
             runtime_class=info.runtime_class_name,
+            warm_state=info.warm_state,
         )
 
     @classmethod
@@ -369,6 +401,7 @@ class SandboxV2Pool:
                         members=info.members,
                         image=info.image,
                         runtime_class=info.runtime_class_name,
+                        warm_state=info.warm_state,
                     )
                 )
         except Exception:
@@ -403,5 +436,6 @@ class SandboxV2Pool:
         return (
             f"SandboxV2Pool(name={self._name!r}, "
             f"workspace={self._workspace!r}, "
-            f"size={self._size}, ready_members={self._ready_members})"
+            f"size={self._size}, ready_members={self._ready_members}, "
+            f"warm_state={self._warm_state!r})"
         )

@@ -244,12 +244,14 @@ class UploadFileV2Request(BaseModel):
 
 
 # =============================================================================
-# FirecrackerHibernatedPool — warm pool of pre-hibernated sandboxes
+# FirecrackerPool — warm pool of sandboxes (Hibernated or Running members)
 #
 # Mirrors the pkui backend ``modules/sandboxv2`` pool DTOs
 # (CreateHibernatedPoolRequest / HibernatedPoolInfo / HibernatedPoolMember).
 # The backend routes live at ``/api/namespaces/{ns}/sandboxv2-pools`` (note:
 # ``sandboxv2-pools``, a sibling collection of ``sandboxv2``, NOT a sub-path).
+# (The k8s kind was renamed FirecrackerHibernatedPool -> FirecrackerPool and
+# gained a ``warmState`` knob; the REST paths are unchanged.)
 # =============================================================================
 
 
@@ -260,19 +262,40 @@ class CreateHibernatedPoolRequest(BaseModel):
     knobs as :class:`CreateSandboxV2Request` (image, resources, egress,
     volumes/volumeMounts, targetNode). The backend forces the template to
     ``runtimeClassName: fc-host`` and owns ``operatingMode`` (the pool
-    controller drives each member to Hibernated), and ignores the template's own
-    ``name`` (members are named by the controller).
+    controller drives each member to the pool's ``warmState``), and ignores the
+    template's own ``name`` (members are named by the controller).
+
+    ``warm_state`` (serialised as ``warmState``) is how warm members are kept:
+    ``"Hibernated"`` (default — pre-snapshotted, a claim is a fast resume) or
+    ``"Running"`` (members kept hot). Editable post-create via ``set_warm_state``.
     """
 
     name: str = Field(..., min_length=1, max_length=63, description="Pool name")
     size: int = Field(..., ge=0, description="Desired number of warm members")
+    warm_state: str = Field(
+        default="Hibernated",
+        serialization_alias="warmState",
+        description="spec.warmState — 'Hibernated' (default) or 'Running'",
+    )
     template: CreateSandboxV2Request = Field(
         ..., description="Sandbox spec used as the pool member template"
     )
 
 
+class UpdatePoolRequest(BaseModel):
+    """Request body for ``PATCH .../sandboxv2-pools/{name}`` — mutable fields.
+
+    Currently ``warm_state`` (serialised as ``warmState``) only."""
+
+    warm_state: str = Field(
+        ...,
+        serialization_alias="warmState",
+        description="spec.warmState — 'Hibernated' or 'Running'",
+    )
+
+
 class HibernatedPoolMember(BaseModel):
-    """One entry of FirecrackerHibernatedPool ``status.members``."""
+    """One entry of FirecrackerPool ``status.members``."""
 
     name: str = Field(..., description="Member FirecrackerSandbox name")
     phase: str | None = Field(
@@ -281,11 +304,15 @@ class HibernatedPoolMember(BaseModel):
 
 
 class HibernatedPoolInfo(BaseModel):
-    """A FirecrackerHibernatedPool projected from the CR (mirrors backend)."""
+    """A FirecrackerPool projected from the CR (mirrors backend)."""
 
     name: str = Field(..., description="Pool (CR) name")
     workspace: str = Field(..., description="Workspace (Kubernetes namespace)")
     size: int = Field(default=0, description="spec.size — desired warm members")
+    warm_state: str = Field(
+        default="Hibernated",
+        description="spec.warmState — 'Hibernated' (default) or 'Running'",
+    )
     ready_members: int = Field(
         default=0, description="status.readyMembers — claimable warm members"
     )
