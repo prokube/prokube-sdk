@@ -383,6 +383,11 @@ class CreateSandboxV2Request(BaseModel):
         description="spec.dnsConfig (Pod PodDNSConfig) — extra resolver config "
         "merged into the guest resolv.conf (nameservers/searches/options).",
     )
+    mesh: bool | None = Field(
+        default=None,
+        description="Optional: opt this sandbox into the Istio service mesh "
+        "(spec.mesh).",
+    )
     manifest: dict[str, Any] | None = Field(
         default=None,
         description="Full FirecrackerSandbox object; wins over structured knobs",

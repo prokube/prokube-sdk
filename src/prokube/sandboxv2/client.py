@@ -187,6 +187,7 @@ class SandboxV2Client:
         lifecycle: Lifecycle | dict[str, object] | None = None,
         dns_policy: str | None = None,
         dns_config: DNSConfig | dict[str, object] | None = None,
+        mesh: bool | None = None,
         manifest: dict[str, object] | None = None,
     ) -> SandboxV2Info:
         """Create a new Firecracker sandbox.
@@ -210,6 +211,9 @@ class SandboxV2Client:
         control the guest ``/etc/resolv.conf`` written host-side at cold boot.
         ``dns_config`` accepts a model instance or a CR-shaped dict. Omitted ->
         the executor ClusterFirst default, so existing callers are unaffected.
+
+        ``mesh`` is Optional: opt this sandbox into the Istio service mesh
+        (spec.mesh).
         """
         if name is None:
             name = f"sandbox-{uuid.uuid4().hex[:8]}"
@@ -234,6 +238,7 @@ class SandboxV2Client:
             lifecycle=lifecycle,
             dns_policy=dns_policy,
             dns_config=dns_config,
+            mesh=mesh,
             manifest=manifest,
         )
         response = self._http.post(

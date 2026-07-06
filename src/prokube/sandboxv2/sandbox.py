@@ -311,6 +311,7 @@ class SandboxV2:
         lifecycle: Lifecycle | dict | None = None,
         dns_policy: str | None = None,
         dns_config: DNSConfig | dict | None = None,
+        mesh: bool | None = None,
         manifest: dict | None = None,
         api_url: str | None = None,
         workspace: str | None = None,
@@ -356,6 +357,8 @@ class SandboxV2:
             dns_config: spec.dnsConfig (Pod PodDNSConfig — nameservers/searches/
                 options merged into the guest resolv.conf). A
                 :class:`~prokube.sandboxv2.models.DNSConfig` or a CR-shaped dict.
+            mesh: Optional: opt this sandbox into the Istio service mesh
+                (spec.mesh).
             manifest: Full FirecrackerSandbox object; wins over structured knobs.
             api_url: API URL (default: PROKUBE_API_URL env var).
             workspace: Workspace / Kubernetes namespace (default:
@@ -400,6 +403,7 @@ class SandboxV2:
                 lifecycle=lifecycle,
                 dns_policy=dns_policy,
                 dns_config=dns_config,
+                mesh=mesh,
                 manifest=manifest,
             )
         except Exception:

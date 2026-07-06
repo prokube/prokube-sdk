@@ -239,6 +239,7 @@ class SandboxV2Pool:
         lifecycle: Lifecycle | dict | None = None,
         dns_policy: str | None = None,
         dns_config: DNSConfig | dict | None = None,
+        mesh: bool | None = None,
         api_url: str | None = None,
         workspace: str | None = None,
         user_id: str | None = None,
@@ -285,6 +286,8 @@ class SandboxV2Pool:
             dns_config: spec.dnsConfig (Pod PodDNSConfig — nameservers/searches/
                 options) baked into every member template. A
                 :class:`~prokube.sandboxv2.models.DNSConfig` or a CR-shaped dict.
+            mesh: Optional: opt every member template into the Istio service
+                mesh (spec.mesh).
             workspace: Workspace / Kubernetes namespace (default:
                 PROKUBE_WORKSPACE env var).
             api_url / user_id / api_key / timeout: Connection overrides.
@@ -324,6 +327,7 @@ class SandboxV2Pool:
             lifecycle=lifecycle,
             dns_policy=dns_policy,
             dns_config=dns_config,
+            mesh=mesh,
         )
         client = SandboxV2Client(config)
         try:
