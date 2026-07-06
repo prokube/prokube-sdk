@@ -388,6 +388,13 @@ class CreateSandboxV2Request(BaseModel):
         description="Optional: opt this sandbox into the Istio service mesh "
         "(spec.mesh).",
     )
+    snapshot_resume_policy: str | None = Field(
+        default=None,
+        serialization_alias="snapshotResumePolicy",
+        description="spec.snapshotResumePolicy (Strict | AllowStale) — whether "
+        "resuming from a pool member's snapshot requires an exact recipe/base "
+        "match. Omitted -> the executor Strict default.",
+    )
     manifest: dict[str, Any] | None = Field(
         default=None,
         description="Full FirecrackerSandbox object; wins over structured knobs",

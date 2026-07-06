@@ -312,6 +312,7 @@ class SandboxV2:
         dns_policy: str | None = None,
         dns_config: DNSConfig | dict | None = None,
         mesh: bool | None = None,
+        snapshot_resume_policy: str | None = None,
         manifest: dict | None = None,
         api_url: str | None = None,
         workspace: str | None = None,
@@ -359,6 +360,10 @@ class SandboxV2:
                 :class:`~prokube.sandboxv2.models.DNSConfig` or a CR-shaped dict.
             mesh: Optional: opt this sandbox into the Istio service mesh
                 (spec.mesh).
+            snapshot_resume_policy: spec.snapshotResumePolicy (``Strict`` |
+                ``AllowStale``) — whether resuming from a pool member's
+                snapshot requires an exact recipe/base match. Omitted ->
+                executor Strict default.
             manifest: Full FirecrackerSandbox object; wins over structured knobs.
             api_url: API URL (default: PROKUBE_API_URL env var).
             workspace: Workspace / Kubernetes namespace (default:
@@ -404,6 +409,7 @@ class SandboxV2:
                 dns_policy=dns_policy,
                 dns_config=dns_config,
                 mesh=mesh,
+                snapshot_resume_policy=snapshot_resume_policy,
                 manifest=manifest,
             )
         except Exception:

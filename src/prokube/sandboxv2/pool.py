@@ -240,6 +240,7 @@ class SandboxV2Pool:
         dns_policy: str | None = None,
         dns_config: DNSConfig | dict | None = None,
         mesh: bool | None = None,
+        snapshot_resume_policy: str | None = None,
         api_url: str | None = None,
         workspace: str | None = None,
         user_id: str | None = None,
@@ -288,6 +289,10 @@ class SandboxV2Pool:
                 :class:`~prokube.sandboxv2.models.DNSConfig` or a CR-shaped dict.
             mesh: Optional: opt every member template into the Istio service
                 mesh (spec.mesh).
+            snapshot_resume_policy: spec.snapshotResumePolicy (``Strict`` |
+                ``AllowStale``) baked into every member template — whether
+                resuming a member's snapshot requires an exact recipe/base
+                match. Omitted -> executor Strict default.
             workspace: Workspace / Kubernetes namespace (default:
                 PROKUBE_WORKSPACE env var).
             api_url / user_id / api_key / timeout: Connection overrides.
@@ -328,6 +333,7 @@ class SandboxV2Pool:
             dns_policy=dns_policy,
             dns_config=dns_config,
             mesh=mesh,
+            snapshot_resume_policy=snapshot_resume_policy,
         )
         client = SandboxV2Client(config)
         try:

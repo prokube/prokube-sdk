@@ -188,6 +188,7 @@ class SandboxV2Client:
         dns_policy: str | None = None,
         dns_config: DNSConfig | dict[str, object] | None = None,
         mesh: bool | None = None,
+        snapshot_resume_policy: str | None = None,
         manifest: dict[str, object] | None = None,
     ) -> SandboxV2Info:
         """Create a new Firecracker sandbox.
@@ -214,6 +215,11 @@ class SandboxV2Client:
 
         ``mesh`` is Optional: opt this sandbox into the Istio service mesh
         (spec.mesh).
+
+        ``snapshot_resume_policy`` (spec.snapshotResumePolicy: Strict |
+        AllowStale) controls whether resuming from a pool member's snapshot
+        requires an exact recipe/base match. Omitted -> the executor Strict
+        default, so existing callers are unaffected.
         """
         if name is None:
             name = f"sandbox-{uuid.uuid4().hex[:8]}"
@@ -239,6 +245,7 @@ class SandboxV2Client:
             dns_policy=dns_policy,
             dns_config=dns_config,
             mesh=mesh,
+            snapshot_resume_policy=snapshot_resume_policy,
             manifest=manifest,
         )
         response = self._http.post(
