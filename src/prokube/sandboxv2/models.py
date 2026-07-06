@@ -12,7 +12,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 # Result/file models are reused verbatim from v1 so the public result surface
 # (``.success`` / ``.stdout`` / ``.stderr`` / ``FileInfo``) is identical.
@@ -106,6 +106,149 @@ class EnvFromSource(BaseModel):
     )
 
 
+# =============================================================================
+# Health & warm-up — Pod-mirrored spec.startupProbe (core/v1 Probe) and
+# spec.lifecycle.postStart (core/v1 LifecycleHandler). See
+# docs/rfc-declarative-probes-lifecycle.md §3. Every field is optional; when a
+# create request omits ``startupProbe`` / ``lifecycle`` the backend CR builder
+# fills the pk-sandbox-base execd defaults (§6), so existing callers are
+# unaffected (``exclude_none=True`` drops the omitted fields entirely).
+#
+# The one documented deviation from stock Pod ``HTTPGetAction`` is the
+# ``method`` + ``body`` superset on ``httpGet`` (default method GET) so a warm-up
+# can POST execd's ``/code``. Field names mirror the pkui backend models
+# (``modules/sandboxv2/models.py``) one-for-one so the serialized JSON is the
+# exact shape the backend accepts.
+# =============================================================================
+
+
+class HTTPHeader(BaseModel):
+    """One ``httpGet.httpHeaders`` entry (core/v1 HTTPHeader)."""
+
+    name: str = Field(..., min_length=1, description="Header name.")
+    value: str = Field(default="", description="Header value.")
+
+
+class HTTPGetAction(BaseModel):
+    """core/v1 HTTPGetAction + the ``method``/``body`` superset (RFC §3)."""
+
+    # Accept both snake_case (Python) and camelCase (CR-shaped dict) input, and
+    # serialize to the CRD camelCase keys via ``model_dump(by_alias=True)``.
+    model_config = ConfigDict(populate_by_name=True)
+
+    port: int = Field(..., description="Guest port to probe/hit.")
+    path: str | None = Field(default=None, description="Request path.")
+    host: str | None = Field(default=None, description="Host header override.")
+    scheme: str | None = Field(default=None, description="HTTP | HTTPS.")
+    http_headers: list[HTTPHeader] | None = Field(
+        default=None,
+        alias="httpHeaders",
+        description="Custom request headers.",
+    )
+    # Superset over stock Pod HTTPGetAction (documented deviation): lets a warm-up
+    # POST a body (e.g. execd /code). Default method is GET when omitted.
+    method: str | None = Field(
+        default=None, description="HTTP method (superset; default GET)."
+    )
+    body: str | None = Field(
+        default=None, description="Request body (superset; used with method POST)."
+    )
+
+
+class TCPSocketAction(BaseModel):
+    """core/v1 TCPSocketAction — a host-side tcp-connect probe."""
+
+    port: int = Field(..., description="Guest port to connect to.")
+    host: str | None = Field(default=None, description="Host to connect to.")
+
+
+class ExecAction(BaseModel):
+    """core/v1 ExecAction — run a command inside the guest (vsock agent)."""
+
+    command: list[str] = Field(
+        ..., min_length=1, description="argv to run inside the guest."
+    )
+
+
+def _handler_count(
+    http_get: HTTPGetAction | None,
+    tcp_socket: TCPSocketAction | None,
+    exec_action: ExecAction | None,
+) -> int:
+    return sum(1 for h in (http_get, tcp_socket, exec_action) if h is not None)
+
+
+class Probe(BaseModel):
+    """core/v1 Probe — exactly one of ``httpGet`` / ``tcpSocket`` / ``exec``.
+
+    Serializes to the CRD ``spec.startupProbe`` shape (camelCase handler keys and
+    ``failureThreshold`` etc. via ``model_dump(by_alias=True)``). Accepts both
+    snake_case and camelCase (CR-shaped dict) input.
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    http_get: HTTPGetAction | None = Field(default=None, alias="httpGet")
+    tcp_socket: TCPSocketAction | None = Field(default=None, alias="tcpSocket")
+    exec: ExecAction | None = Field(default=None)
+    initial_delay_seconds: int | None = Field(
+        default=None, ge=0, alias="initialDelaySeconds"
+    )
+    period_seconds: int | None = Field(
+        default=None, ge=1, alias="periodSeconds"
+    )
+    timeout_seconds: int | None = Field(
+        default=None, ge=1, alias="timeoutSeconds"
+    )
+    failure_threshold: int | None = Field(
+        default=None, ge=1, alias="failureThreshold"
+    )
+    success_threshold: int | None = Field(
+        default=None, ge=1, alias="successThreshold"
+    )
+
+    @model_validator(mode="after")
+    def _exactly_one_handler(self) -> Probe:
+        n = _handler_count(self.http_get, self.tcp_socket, self.exec)
+        if n != 1:
+            raise ValueError(
+                "startupProbe must set exactly one handler "
+                f"(httpGet | tcpSocket | exec), got {n}"
+            )
+        return self
+
+
+class LifecycleHandler(BaseModel):
+    """core/v1 LifecycleHandler — exactly one of ``httpGet`` / ``tcpSocket`` /
+    ``exec``. Serializes to the CRD ``lifecycle.postStart`` shape."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    http_get: HTTPGetAction | None = Field(default=None, alias="httpGet")
+    tcp_socket: TCPSocketAction | None = Field(default=None, alias="tcpSocket")
+    exec: ExecAction | None = Field(default=None)
+
+    @model_validator(mode="after")
+    def _exactly_one_handler(self) -> LifecycleHandler:
+        n = _handler_count(self.http_get, self.tcp_socket, self.exec)
+        if n != 1:
+            raise ValueError(
+                "lifecycle.postStart must set exactly one handler "
+                f"(httpGet | tcpSocket | exec), got {n}"
+            )
+        return self
+
+
+class Lifecycle(BaseModel):
+    """core/v1 Lifecycle — only ``postStart`` is modelled (RFC §3 subset)."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    post_start: LifecycleHandler | None = Field(
+        default=None, alias="postStart"
+    )
+
+
 class CreateSandboxV2Request(BaseModel):
     """Request body for ``POST .../sandboxv2`` (mirrors backend model)."""
 
@@ -165,6 +308,19 @@ class CreateSandboxV2Request(BaseModel):
         default=None,
         serialization_alias="volumeMounts",
         description="spec.volumeMounts pass-through (CR-shaped dicts)",
+    )
+    startup_probe: Probe | None = Field(
+        default=None,
+        serialization_alias="startupProbe",
+        description="spec.startupProbe (core/v1 Probe) gating boot-readiness. "
+        "Omitted -> the backend fills the pk-sandbox-base execd default "
+        "(httpGet /ping). See docs/rfc-declarative-probes-lifecycle.md §3/§6.",
+    )
+    lifecycle: Lifecycle | None = Field(
+        default=None,
+        description="spec.lifecycle (core/v1 Lifecycle; only postStart modelled) "
+        "— a one-shot warm-up run after the probe passes (baked into a pool "
+        "member's snapshot). Omitted -> the execd /code POST default.",
     )
     manifest: dict[str, Any] | None = Field(
         default=None,

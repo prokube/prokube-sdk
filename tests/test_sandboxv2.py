@@ -15,8 +15,16 @@ from pytest_httpx import HTTPXMock
 
 from prokube.common.config import Config
 from prokube.common.exceptions import SandboxError, SandboxTimeoutError
-from prokube.sandboxv2 import SandboxV2, SandboxV2Client
-from prokube.sandboxv2.models import SandboxV2Status
+from prokube.sandboxv2 import SandboxV2, SandboxV2Client, SandboxV2Pool
+from prokube.sandboxv2.models import (
+    ExecAction,
+    HTTPGetAction,
+    Lifecycle,
+    LifecycleHandler,
+    Probe,
+    SandboxV2Status,
+    TCPSocketAction,
+)
 
 BASE = "https://test.example.com"
 NS = "test-ns"
@@ -578,3 +586,231 @@ class TestApiKeyAndPool:
             )
         finally:
             sbx._client.close()
+
+
+# ---------------------------------------------------------------------------
+# Declarative startupProbe + lifecycle (RFC declarative-probes-lifecycle)
+# ---------------------------------------------------------------------------
+
+
+POOLS = f"{BASE}/api/namespaces/{NS}/sandboxv2-pools"
+
+
+def _pool_json(name="pool", size=1, warm_state="Hibernated"):
+    return {
+        "name": name,
+        "namespace": NS,
+        "size": size,
+        "warmState": warm_state,
+        "readyMembers": 0,
+        "members": [],
+        "image": "pk-sandbox-base",
+        "runtimeClassName": "fc-host",
+    }
+
+
+def _last_post_body(httpx_mock: HTTPXMock):
+    return json.loads(
+        [r for r in httpx_mock.get_requests() if r.method == "POST"][-1].content
+    )
+
+
+class TestProbesAndLifecycle:
+    def test_create_httpget_probe_and_poststart_serialize(
+        self, config, httpx_mock: HTTPXMock
+    ):
+        """A full pk-sandbox-base probe + POST warm-up serializes to the exact
+        CRD/back-end camelCase shape (RFC §6)."""
+        _mock_version(httpx_mock)
+        httpx_mock.add_response(
+            method="POST", url=COLL, status_code=201, json=_sandbox_json()
+        )
+        client = SandboxV2Client(config)
+        client.create(
+            name="sbx",
+            startup_probe=Probe(
+                http_get=HTTPGetAction(port=44772, path="/ping"),
+                period_seconds=1,
+                failure_threshold=120,
+            ),
+            lifecycle=Lifecycle(
+                post_start=LifecycleHandler(
+                    http_get=HTTPGetAction(
+                        port=44772,
+                        path="/code",
+                        method="POST",
+                        body='{"code":"1"}',
+                    )
+                )
+            ),
+        )
+        body = _last_post_body(httpx_mock)
+        assert body["startupProbe"] == {
+            "httpGet": {"port": 44772, "path": "/ping"},
+            "periodSeconds": 1,
+            "failureThreshold": 120,
+        }
+        assert body["lifecycle"] == {
+            "postStart": {
+                "httpGet": {
+                    "port": 44772,
+                    "path": "/code",
+                    "method": "POST",
+                    "body": '{"code":"1"}',
+                }
+            }
+        }
+        client.close()
+
+    def test_create_tcp_socket_probe(self, config, httpx_mock: HTTPXMock):
+        _mock_version(httpx_mock)
+        httpx_mock.add_response(
+            method="POST", url=COLL, status_code=201, json=_sandbox_json()
+        )
+        client = SandboxV2Client(config)
+        client.create(
+            name="sbx",
+            startup_probe=Probe(tcp_socket=TCPSocketAction(port=8080)),
+        )
+        body = _last_post_body(httpx_mock)
+        assert body["startupProbe"] == {"tcpSocket": {"port": 8080}}
+        client.close()
+
+    def test_create_exec_probe(self, config, httpx_mock: HTTPXMock):
+        _mock_version(httpx_mock)
+        httpx_mock.add_response(
+            method="POST", url=COLL, status_code=201, json=_sandbox_json()
+        )
+        client = SandboxV2Client(config)
+        client.create(
+            name="sbx",
+            lifecycle=Lifecycle(
+                post_start=LifecycleHandler(
+                    exec=ExecAction(command=["sh", "-c", "true"])
+                )
+            ),
+        )
+        body = _last_post_body(httpx_mock)
+        assert body["lifecycle"] == {
+            "postStart": {"exec": {"command": ["sh", "-c", "true"]}}
+        }
+        client.close()
+
+    def test_create_accepts_cr_shaped_dict(self, config, httpx_mock: HTTPXMock):
+        """A camelCase CR-shaped dict is accepted and passes through verbatim."""
+        _mock_version(httpx_mock)
+        httpx_mock.add_response(
+            method="POST", url=COLL, status_code=201, json=_sandbox_json()
+        )
+        client = SandboxV2Client(config)
+        client.create(
+            name="sbx",
+            startup_probe={
+                "httpGet": {
+                    "port": 9000,
+                    "path": "/healthz",
+                    "httpHeaders": [{"name": "X-Probe", "value": "1"}],
+                },
+                "initialDelaySeconds": 3,
+            },
+        )
+        body = _last_post_body(httpx_mock)
+        assert body["startupProbe"] == {
+            "httpGet": {
+                "port": 9000,
+                "path": "/healthz",
+                "httpHeaders": [{"name": "X-Probe", "value": "1"}],
+            },
+            "initialDelaySeconds": 3,
+        }
+        client.close()
+
+    def test_probe_exactly_one_handler_enforced(self):
+        # zero handlers
+        with pytest.raises(ValueError, match="exactly one handler"):
+            Probe(period_seconds=1)
+        # two handlers
+        with pytest.raises(ValueError, match="exactly one handler"):
+            Probe(
+                http_get=HTTPGetAction(port=1),
+                tcp_socket=TCPSocketAction(port=2),
+            )
+
+    def test_lifecycle_handler_exactly_one_handler_enforced(self):
+        with pytest.raises(ValueError, match="exactly one handler"):
+            LifecycleHandler()
+        with pytest.raises(ValueError, match="exactly one handler"):
+            LifecycleHandler(
+                tcp_socket=TCPSocketAction(port=1),
+                exec=ExecAction(command=["true"]),
+            )
+
+    def test_omitted_probe_lifecycle_absent_from_json(
+        self, config, httpx_mock: HTTPXMock
+    ):
+        """Back-compat: omitting the fields drops them from the wire (exclude_none),
+        so the backend fills the execd default."""
+        _mock_version(httpx_mock)
+        httpx_mock.add_response(
+            method="POST", url=COLL, status_code=201, json=_sandbox_json()
+        )
+        client = SandboxV2Client(config)
+        client.create(name="sbx")
+        body = _last_post_body(httpx_mock)
+        assert "startupProbe" not in body
+        assert "lifecycle" not in body
+        client.close()
+
+    def test_facade_create_threads_probe(self, mock_env, httpx_mock: HTTPXMock):
+        _mock_version(httpx_mock)
+        httpx_mock.add_response(
+            method="POST", url=COLL, status_code=201, json=_sandbox_json()
+        )
+        sbx = SandboxV2.create(
+            name="sbx",
+            startup_probe=Probe(tcp_socket=TCPSocketAction(port=7681)),
+        )
+        body = _last_post_body(httpx_mock)
+        assert body["startupProbe"] == {"tcpSocket": {"port": 7681}}
+        sbx._client.close()
+
+    def test_pool_template_carries_probe_and_lifecycle(
+        self, mock_env, httpx_mock: HTTPXMock
+    ):
+        """Pool members declare their own probe/warm-up via the template."""
+        _mock_version(httpx_mock)
+        httpx_mock.add_response(
+            method="POST", url=POOLS, status_code=201, json=_pool_json(name="p")
+        )
+        pool = SandboxV2Pool.create(
+            name="p",
+            size=2,
+            startup_probe=Probe(
+                http_get=HTTPGetAction(port=44772, path="/ping"),
+                failure_threshold=120,
+            ),
+            lifecycle=Lifecycle(
+                post_start=LifecycleHandler(
+                    http_get=HTTPGetAction(
+                        port=44772, path="/code", method="POST", body="{}"
+                    )
+                )
+            ),
+        )
+        body = _last_post_body(httpx_mock)
+        template = body["template"]
+        assert template["startupProbe"] == {
+            "httpGet": {"port": 44772, "path": "/ping"},
+            "failureThreshold": 120,
+        }
+        assert template["lifecycle"] == {
+            "postStart": {
+                "httpGet": {
+                    "port": 44772,
+                    "path": "/code",
+                    "method": "POST",
+                    "body": "{}",
+                }
+            }
+        }
+        pool._client.close()

@@ -33,7 +33,7 @@ from prokube.sandbox.commands import CommandRunner
 from prokube.sandbox.files import FileManager
 from prokube.sandbox.models import CodeResult
 from prokube.sandboxv2.client import SandboxV2Client
-from prokube.sandboxv2.models import SandboxV2Status
+from prokube.sandboxv2.models import Lifecycle, Probe, SandboxV2Status
 
 
 class SandboxV2:
@@ -302,6 +302,8 @@ class SandboxV2:
         workspace_size: str | None = None,
         target_node: str | None = None,
         operating_mode: str | None = None,
+        startup_probe: Probe | dict | None = None,
+        lifecycle: Lifecycle | dict | None = None,
         manifest: dict | None = None,
         api_url: str | None = None,
         workspace: str | None = None,
@@ -335,6 +337,12 @@ class SandboxV2:
             workspace_size: Default ephemeral /workspace size (e.g. "10Gi").
             target_node: Pin the microVM to a node.
             operating_mode: ``Running`` or ``Hibernated``.
+            startup_probe: spec.startupProbe (core/v1 Probe) gating boot
+                readiness. A :class:`~prokube.sandboxv2.models.Probe` or a
+                CR-shaped dict. Omitted -> backend execd default.
+            lifecycle: spec.lifecycle (core/v1 Lifecycle; ``postStart`` warm-up
+                hook). A :class:`~prokube.sandboxv2.models.Lifecycle` or a
+                CR-shaped dict. Omitted -> backend execd default.
             manifest: Full FirecrackerSandbox object; wins over structured knobs.
             api_url: API URL (default: PROKUBE_API_URL env var).
             workspace: Workspace / Kubernetes namespace (default:
@@ -375,6 +383,8 @@ class SandboxV2:
                 workspace_size=workspace_size,
                 target_node=target_node,
                 operating_mode=operating_mode,
+                startup_probe=startup_probe,
+                lifecycle=lifecycle,
                 manifest=manifest,
             )
         except Exception:

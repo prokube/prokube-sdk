@@ -8,7 +8,27 @@ FirecrackerPool with a ``warm_state`` Hibernated/Running knob).
 """
 
 from prokube.sandboxv2.client import SandboxV2Client
+from prokube.sandboxv2.models import (
+    ExecAction,
+    HTTPGetAction,
+    HTTPHeader,
+    Lifecycle,
+    LifecycleHandler,
+    Probe,
+    TCPSocketAction,
+)
 from prokube.sandboxv2.pool import SandboxV2Pool
 from prokube.sandboxv2.sandbox import SandboxV2
 
-__all__ = ["SandboxV2", "SandboxV2Client", "SandboxV2Pool"]
+__all__ = [
+    "SandboxV2",
+    "SandboxV2Client",
+    "SandboxV2Pool",
+    "Probe",
+    "Lifecycle",
+    "LifecycleHandler",
+    "HTTPGetAction",
+    "HTTPHeader",
+    "TCPSocketAction",
+    "ExecAction",
+]
