@@ -49,6 +49,8 @@ from prokube.sandboxv2.models import (
     FileInfo,
     HibernatedPoolInfo,
     HibernatedPoolMember,
+    Lifecycle,
+    Probe,
     SandboxV2Info,
     SandboxV2Status,
     UpdatePoolRequest,
@@ -180,6 +182,8 @@ class SandboxV2Client:
         workspace_size: str | None = None,
         target_node: str | None = None,
         operating_mode: str | None = None,
+        startup_probe: Probe | dict[str, object] | None = None,
+        lifecycle: Lifecycle | dict[str, object] | None = None,
         manifest: dict[str, object] | None = None,
     ) -> SandboxV2Info:
         """Create a new Firecracker sandbox.
@@ -191,6 +195,12 @@ class SandboxV2Client:
         dicts and serializes to CRD ``spec.env``; ``secret_refs`` accepts a list
         of Secret names and serializes to CRD ``spec.envFrom``. Env is baked into
         the guest at boot/snapshot and is not refreshed on pause/resume.
+
+        ``startup_probe`` (spec.startupProbe, core/v1 Probe) and ``lifecycle``
+        (spec.lifecycle with ``postStart``, core/v1 Lifecycle) are Pod-mirrored
+        readiness/warm-up knobs. Each accepts a model instance or a CR-shaped
+        dict. Omitted -> the backend fills the pk-sandbox-base execd defaults, so
+        existing callers are unaffected.
         """
         if name is None:
             name = f"sandbox-{uuid.uuid4().hex[:8]}"
@@ -211,6 +221,8 @@ class SandboxV2Client:
             workspace_size=workspace_size,
             target_node=target_node,
             operating_mode=operating_mode,
+            startup_probe=startup_probe,
+            lifecycle=lifecycle,
             manifest=manifest,
         )
         response = self._http.post(

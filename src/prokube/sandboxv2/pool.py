@@ -26,6 +26,8 @@ from prokube.sandboxv2.client import SandboxV2Client
 from prokube.sandboxv2.models import (
     CreateSandboxV2Request,
     HibernatedPoolMember,
+    Lifecycle,
+    Probe,
 )
 
 if TYPE_CHECKING:
@@ -232,6 +234,8 @@ class SandboxV2Pool:
         image_pull_secrets: list[str] | None = None,
         workspace_size: str | None = None,
         target_node: str | None = None,
+        startup_probe: Probe | dict | None = None,
+        lifecycle: Lifecycle | dict | None = None,
         api_url: str | None = None,
         workspace: str | None = None,
         user_id: str | None = None,
@@ -262,6 +266,15 @@ class SandboxV2Pool:
             image_pull_secrets: Registry pull secret names.
             workspace_size: Ephemeral /workspace volume size (e.g. "10Gi").
             target_node: Pin members to a node.
+            startup_probe: spec.startupProbe (core/v1 Probe) baked into every
+                member template — gates each member's boot readiness. A
+                :class:`~prokube.sandboxv2.models.Probe` or a CR-shaped dict.
+                Omitted -> backend execd default.
+            lifecycle: spec.lifecycle (core/v1 Lifecycle; ``postStart`` warm-up
+                hook) baked into every member template — runs before hibernate so
+                its effect rides the resumable snapshot. A
+                :class:`~prokube.sandboxv2.models.Lifecycle` or a CR-shaped dict.
+                Omitted -> backend execd default.
             workspace: Workspace / Kubernetes namespace (default:
                 PROKUBE_WORKSPACE env var).
             api_url / user_id / api_key / timeout: Connection overrides.
@@ -297,6 +310,8 @@ class SandboxV2Pool:
             image_pull_secrets=image_pull_secrets,
             workspace_size=workspace_size,
             target_node=target_node,
+            startup_probe=startup_probe,
+            lifecycle=lifecycle,
         )
         client = SandboxV2Client(config)
         try:
