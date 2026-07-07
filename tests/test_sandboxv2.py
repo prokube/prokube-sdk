@@ -287,7 +287,8 @@ class TestExec:
         result = client.exec_code("sbx", "print(2+2)", language="python")
 
         body = json.loads(httpx_mock.get_requests()[-1].content)
-        assert body["use_jupyter"] is True
+        assert body["stateful"] is True
+        assert "use_jupyter" not in body
         assert body["language"] == "python"
         assert result.stdout == "4\n"
         assert result.success is True
@@ -311,7 +312,8 @@ class TestExec:
         result = client.exec_command("sbx", "echo hello")
 
         body = json.loads(httpx_mock.get_requests()[-1].content)
-        assert body["use_jupyter"] is False
+        assert body["stateful"] is False
+        assert "use_jupyter" not in body
         assert body["language"] == "bash"
         assert "session_id" not in body
         assert result.stdout == "hello\n"
@@ -1095,3 +1097,116 @@ class TestSnapshotResumePolicy:
         template = body["template"]
         assert template["snapshotResumePolicy"] == "AllowStale"
         pool._client.close()
+
+
+# ---------------------------------------------------------------------------
+# V2 session semantics (T1/T2): pause/resume preserve the session; only an
+# explicit reset_session() restarts the language child; run_code is stateful,
+# commands.run is stateless.
+# ---------------------------------------------------------------------------
+
+
+def _exec_json(session_id="sess-1"):
+    return {
+        "stdout": "",
+        "stderr": "",
+        "exitCode": 0,
+        "durationMs": 1,
+        "success": True,
+        "session_id": session_id,
+        "sandboxName": "sbx",
+    }
+
+
+class TestV2SessionSemantics:
+    def test_pause_resume_do_not_reset_session(self, config, httpx_mock: HTTPXMock):
+        """pause()+resume() must NOT arm a session reset — state survives."""
+        _mock_version(httpx_mock)
+        httpx_mock.add_response(
+            method="GET", url=f"{COLL}/sbx", json=_sandbox_json(phase="Running")
+        )
+        # First run_code (establishes session), then pause, resume, run_code.
+        httpx_mock.add_response(
+            method="POST", url=f"{COLL}/sbx/exec", json=_exec_json()
+        )
+        httpx_mock.add_response(
+            method="POST",
+            url=f"{COLL}/sbx/pause",
+            json=_sandbox_json(phase="Paused"),
+        )
+        httpx_mock.add_response(
+            method="POST",
+            url=f"{COLL}/sbx/resume",
+            json=_sandbox_json(phase="Running"),
+        )
+        httpx_mock.add_response(
+            method="POST", url=f"{COLL}/sbx/exec", json=_exec_json()
+        )
+
+        sbx = SandboxV2.get("sbx", api_url=BASE, workspace=NS)
+        sbx.run_code("x = 1")
+        sbx.pause()
+        assert sbx.status == "Paused"
+        sbx.resume()
+        assert sbx.status == "Running"
+        sbx.run_code("print(x)")
+
+        exec_bodies = [
+            json.loads(r.content)
+            for r in httpx_mock.get_requests()
+            if str(r.url).endswith("/exec")
+        ]
+        assert len(exec_bodies) == 2
+        # The post-resume exec preserves the session and does NOT reset it.
+        assert exec_bodies[1]["reset_session"] is False
+        assert exec_bodies[1]["session_id"] == "sess-1"
+        assert exec_bodies[1]["stateful"] is True
+        sbx._client.close()
+
+    def test_reset_session_arms_reset_on_next_run(self, config, httpx_mock: HTTPXMock):
+        """reset_session() still restarts the child on the next run_code."""
+        _mock_version(httpx_mock)
+        httpx_mock.add_response(
+            method="GET", url=f"{COLL}/sbx", json=_sandbox_json(phase="Running")
+        )
+        httpx_mock.add_response(
+            method="POST", url=f"{COLL}/sbx/exec", json=_exec_json()
+        )
+        httpx_mock.add_response(
+            method="POST", url=f"{COLL}/sbx/exec", json=_exec_json()
+        )
+
+        sbx = SandboxV2.get("sbx", api_url=BASE, workspace=NS)
+        sbx.run_code("x = 1")
+        sbx.reset_session()
+        sbx.run_code("print('fresh')")
+
+        exec_bodies = [
+            json.loads(r.content)
+            for r in httpx_mock.get_requests()
+            if str(r.url).endswith("/exec")
+        ]
+        assert exec_bodies[0]["reset_session"] is False
+        # After reset_session(), the next run_code arms context.reset and drops
+        # the stale session id.
+        assert exec_bodies[1]["reset_session"] is True
+        assert exec_bodies[1].get("session_id") is None
+        sbx._client.close()
+
+    def test_commands_run_is_stateless(self, config, httpx_mock: HTTPXMock):
+        """commands.run rides the exec endpoint with stateful=false."""
+        _mock_version(httpx_mock)
+        httpx_mock.add_response(
+            method="GET", url=f"{COLL}/sbx", json=_sandbox_json(phase="Running")
+        )
+        httpx_mock.add_response(
+            method="POST",
+            url=f"{COLL}/sbx/exec",
+            json={"stdout": "hi\n", "stderr": "", "exitCode": 0, "sandboxName": "sbx"},
+        )
+        sbx = SandboxV2.get("sbx", api_url=BASE, workspace=NS)
+        sbx.commands.run("echo hi")
+        body = json.loads(httpx_mock.get_requests()[-1].content)
+        assert body["stateful"] is False
+        assert "use_jupyter" not in body
+        sbx._client.close()
