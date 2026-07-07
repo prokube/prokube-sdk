@@ -13,13 +13,12 @@ def multi_step_run_code(sandbox_api: Sandbox | SandboxV2, name: str, workspace: 
     print("Running python code in the sandbox...")
     sbx.run_code(language="python", code=
     """
-        x = x if 'x' in globals() else None
-        y = y if 'y' in globals() else None
-        z = x + y + z if 'z' in globals() else x + y
+        x = x if 'x' in globals() else 3
+        x *= 2
     """)
     result = sbx.run_code(language="python", code=
     """
-        print(z)
+        print(x)
     """)
     print(f"python result: {result.stdout}")  # Output: 15, 30, 45... increments by 15 each time the code is run
 
@@ -27,36 +26,31 @@ def multi_step_run_code(sandbox_api: Sandbox | SandboxV2, name: str, workspace: 
     sbx.run_code(language="bash", code=
     """
         x=${x:-5}
-        y=${y:-10}
-        if [ -z "$z" ]; then
-            z=$((x + y))
-        else
-            z=$((x + y + z))
-        fi
+        x=$((x * 2))
     """)
-    sbx.run_code(language="bash", code=
+    result = sbx.run_code(language="bash", code=
     """
-        echo $z
+        echo $x
     """)
     print(f"bash result: {result.stdout}")  # Output: 15, 30, 45... increments by 15 each time the code is run
 
     print("Running node code in the sandbox...")
     sbx.run_code(language="node", code=
     """
-        let x = 5;
-        let y = 10;
-        if (typeof z === 'undefined') {
-            let z = x + y;
-        } else {
-            z = x + y + z;
+        if (typeof x === 'undefined') {
+            let x = 7
         }
+        x *= 2;
     """)
-    sbx.run_code(language="node", code=
+    result = sbx.run_code(language="node", code=
     """
-        console.log(z);
+        console.log(x);
     """)
     print(f"node result: {result.stdout}")  # Output: 15, 30, 45... increments by 15 each time the code is run
 
-multi_step_run_code(Sandbox, name="python-pool-tqjnq", workspace="developer1")
+
+v1_sandbox = "python-pool-f6pg8"
+v2_sandbox = "agent-pool-be36bb"
+multi_step_run_code(Sandbox, name=v1_sandbox, workspace="developer1")
 print("================================")
-multi_step_run_code(SandboxV2, name="python-pool-0268d3", workspace="developer1")
+multi_step_run_code(SandboxV2, name=v2_sandbox, workspace="developer1")
