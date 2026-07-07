@@ -440,8 +440,14 @@ class CreateSandboxV2Request(BaseModel):
 class ExecV2Request(BaseModel):
     """Request body for ``POST .../sandboxv2/{name}/exec``.
 
-    Matches the backend ``ExecuteCodeRequest`` field names verbatim (snake_case
-    on the wire — the v2 exec endpoint does not use camelCase aliases).
+    Matches the backend V2 exec contract field names verbatim (snake_case on the
+    wire — the v2 exec endpoint does not use camelCase aliases).
+
+    ``stateful`` is the V2 contract flag (replaces the Jupyter-era
+    ``use_jupyter``): ``true`` routes to the persistent per-language session
+    (guest agent ``/code`` path — survives hibernate/resume); ``false`` runs
+    one-shot stateless via the guest ``/command`` path. ``reset_session`` and
+    ``session_id`` are only meaningful when ``stateful`` is true.
     """
 
     code: str = Field(..., description="Code or command to execute")
@@ -451,14 +457,17 @@ class ExecV2Request(BaseModel):
     )
     timeout: int = Field(default=60, ge=1, le=300, description="Timeout in seconds")
     workdir: str = Field(default="/workspace", description="Working directory")
-    use_jupyter: bool = Field(
-        default=False, description="Use stateful Jupyter kernel execution"
+    stateful: bool = Field(
+        default=False,
+        description="Route to the persistent per-language session (true) or "
+        "one-shot stateless execution (false)",
     )
     session_id: str | None = Field(
-        default=None, description="Session ID for stateful Jupyter execution"
+        default=None, description="Session ID for the stateful session"
     )
     reset_session: bool = Field(
-        default=False, description="Restart the Jupyter kernel before executing"
+        default=False,
+        description="Restart the language child before executing (stateful only)",
     )
 
 

@@ -160,6 +160,11 @@ class SandboxV2:
     def pause(self) -> None:
         """Pause the sandbox (native VM snapshot to shared storage).
 
+        Session state (the persistent per-language child on the curated agent
+        image) survives the snapshot, so pause does NOT reset the session — a
+        subsequent :meth:`resume` restores all prior state. Callers who want a
+        clean slate call :meth:`reset_session` explicitly.
+
         Raises:
             SandboxError: If the sandbox is not in Running state (HTTP 409).
         """
@@ -170,10 +175,13 @@ class SandboxV2:
             if info.status != SandboxV2Status.UNKNOWN
             else SandboxV2Status.PAUSED
         )
-        self._code.reset_session()
 
     def resume(self) -> None:
         """Resume a paused sandbox (native VM restore).
+
+        The restored microVM keeps its pre-pause session state (variables,
+        imports, shell/node scope), so resume does NOT reset the session.
+        Callers who want a clean slate call :meth:`reset_session` explicitly.
 
         Raises:
             SandboxError: If the sandbox is not in Paused state (HTTP 409).
@@ -181,7 +189,6 @@ class SandboxV2:
         self._check_not_killed()
         info = self._client.resume(self._name)
         self._status = info.status
-        self._code.reset_session()
 
     def wait_until_ready(self, timeout: int = 120) -> None:
         """Block until the sandbox phase is Running.

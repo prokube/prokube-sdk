@@ -448,12 +448,12 @@ class SandboxV2Client:
         session_id: str | None = None,
         reset_session: bool = False,
     ) -> CodeResult:
-        """Execute code in the guest Jupyter kernel (stateful)."""
+        """Execute code in the persistent per-language session (stateful)."""
         request = ExecV2Request(
             code=code,
             language=language,
             timeout=min(timeout, 300),
-            use_jupyter=True,
+            stateful=True,
             session_id=session_id,
             reset_session=reset_session,
         )
@@ -479,18 +479,19 @@ class SandboxV2Client:
         command: str,
         timeout: int = 300,
     ) -> CommandResult:
-        """Execute a shell command in the guest.
+        """Execute a shell command in the guest (one-shot, stateless).
 
-        v2's ``/exec`` endpoint runs a raw shell command when ``use_jupyter`` is
+        v2's ``/exec`` endpoint runs a raw shell command when ``stateful`` is
         False and ``language`` is ``bash`` — no separate command endpoint
         exists, so shell commands ride the same endpoint as code with those
-        settings.
+        settings (backend routes ``stateful=false`` to the stateless
+        ``/command`` path).
         """
         request = ExecV2Request(
             code=command,
             language="bash",
             timeout=min(timeout, 300),
-            use_jupyter=False,
+            stateful=False,
         )
         response = self._http.post(
             self._sandbox_sub_path(name, "exec"),
