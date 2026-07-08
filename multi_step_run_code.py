@@ -46,11 +46,12 @@ def multi_step_run_code(sandbox_api: Sandbox | SandboxV2, name: str, workspace: 
     """
         console.log(x);
     """)
+    
     print(f"node result: {result.stdout}")  # Output: 15, 30, 45... increments by 15 each time the code is run
 
 
-v1_sandbox = "python-pool-f6pg8"
-v2_sandbox = "agent-pool-be36bb"
-multi_step_run_code(Sandbox, name=v1_sandbox, workspace="developer1")
+# v1_sandbox = "v1pool-rwxlr"
+v2_sandbox = "pool1-09a3b8"
+# multi_step_run_code(Sandbox, name=v1_sandbox, workspace="developer1")
 print("================================")
 multi_step_run_code(SandboxV2, name=v2_sandbox, workspace="developer1")
