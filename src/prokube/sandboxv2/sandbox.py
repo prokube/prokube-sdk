@@ -143,18 +143,24 @@ class SandboxV2:
         language: str = "python",
         timeout: int = 300,
     ) -> CodeResult:
-        """Execute code in the guest Jupyter kernel (stateful)."""
+        """Execute code in the guest's persistent per-language session (stateful).
+
+        SandboxV2 runs the curated sandbox-agent, which keeps one long-lived
+        interpreter per language (python/bash/node) — variables, imports and
+        shell state persist across calls and survive pause/resume. (There is no
+        Jupyter kernel; that was the old execd image.)"""
         self._check_not_killed()
         return self._code.run(code, language=language, timeout=timeout)
 
     def reset_session(self) -> None:
-        """Reset the Jupyter kernel session for the next ``run_code``."""
+        """Restart the guest's per-language interpreter session, clearing its
+        state for the next ``run_code`` (maps to the agent's ``context.reset``)."""
         self._check_not_killed()
         self._code.reset_session()
 
     @property
     def session_id(self) -> str | None:
-        """Current Jupyter session ID, if any."""
+        """Current guest interpreter session ID, if any."""
         return self._code.session_id
 
     def pause(self) -> None:
@@ -208,6 +214,10 @@ class SandboxV2:
             SandboxError: If it enters the Failed terminal state while waiting.
         """
         self._check_not_killed()
+        # Fast path: a pool-hot (warmState=Running) member is handed over already
+        # Running, so skip the readiness round-trip entirely.
+        if self._status == SandboxV2Status.RUNNING:
+            return
         deadline = time.monotonic() + timeout
         use_long_poll = True
         # Local-poll fallback cadence: start tight (matches the ~0.4s
@@ -539,9 +549,9 @@ class SandboxV2:
         swapping ``Sandbox`` for ``SandboxV2`` needs no other change. Claims a
         pre-hibernated member from a
         :class:`~prokube.sandboxv2.pool.SandboxV2Pool` and returns a SandboxV2
-        bound to it. A claim is a fast VM resume (~1.4s), so unlike
-        :meth:`create` the returned sandbox is (or is quickly becoming) Running
-        — call :meth:`wait_until_ready` to be sure before use.
+        bound to it. A claim is a fast VM resume (~1.4s); ``from_pool`` waits
+        for the member to reach Running (via :meth:`wait_until_ready`) before
+        returning, so the sandbox is ready to use immediately.
 
         Args:
             pool: Name of the warm pool to claim from.
@@ -580,7 +590,7 @@ class SandboxV2:
             client.close()
             raise
 
-        return cls(
+        sbx = cls(
             name=info.name,
             workspace=info.workspace,
             client=client,
@@ -588,6 +598,19 @@ class SandboxV2:
             image=info.image,
             runtime_class=info.runtime_class,
         )
+        # Hand back a ready-to-use sandbox. A claim flips a Hibernated member to
+        # Running (a ~1.4s VM resume); wait_until_ready gates on that via the
+        # backend's server-side readiness long-poll. A pool-hot (warmState=Running)
+        # member is already Running, so this returns immediately (see the
+        # short-circuit in wait_until_ready). No guest-kernel probing/reset: the
+        # curated sandbox-agent's per-language session survives the snapshot, so
+        # once the VM is Running the session is intact.
+        try:
+            sbx.wait_until_ready()
+        except Exception:
+            client.close()
+            raise
+        return sbx
 
     @staticmethod
     def _build_config(
