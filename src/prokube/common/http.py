@@ -117,6 +117,24 @@ class HttpClient:
         response = self.client.post(self._normalize_path(path), **kwargs)
         return self._handle_response(response)
 
+    def patch(self, path: str, **kwargs: Any) -> dict[str, Any]:
+        """Make a PATCH request.
+
+        Args:
+            path: API path (will be joined with base_url).
+            **kwargs: Additional arguments to pass to httpx.
+
+        Returns:
+            JSON response as dictionary.
+
+        Raises:
+            AuthenticationError: If authentication fails (401/403).
+            NotFoundError: If resource is not found (404).
+            ProKubeError: For other HTTP errors.
+        """
+        response = self.client.patch(self._normalize_path(path), **kwargs)
+        return self._handle_response(response)
+
     def delete(self, path: str, **kwargs: Any) -> dict[str, Any] | None:
         """Make a DELETE request.
 
