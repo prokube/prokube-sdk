@@ -449,7 +449,7 @@ class TestLifecycle:
         client.close()
 
     def test_wait_ready_uses_explicit_request_timeout(self, config, monkeypatch):
-        client = SandboxV2Client(config)
+        client = SandboxV2Client(config, check_version=False)
         calls = []
 
         def _get(path, **kwargs):
@@ -472,7 +472,7 @@ class TestLifecycle:
     def test_wait_ready_keeps_default_request_timeout_headroom(
         self, config, monkeypatch
     ):
-        client = SandboxV2Client(config)
+        client = SandboxV2Client(config, check_version=False)
         calls = []
 
         def _get(path, **kwargs):
