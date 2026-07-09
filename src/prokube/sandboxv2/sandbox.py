@@ -230,13 +230,13 @@ class SandboxV2:
             if remaining <= 0:
                 break
 
-            if use_long_poll:
+            if use_long_poll and remaining >= 1:
                 try:
                     # Server long-polls up to its own window; loop here until our
                     # deadline. Cap each call so a stalled connection still
                     # rechecks our timeout periodically.
                     info = self._client.wait_ready(
-                        self._name, timeout=min(int(remaining) + 1, 30)
+                        self._name, timeout=min(int(remaining), 30)
                     )
                 except NotFoundError:
                     # Endpoint absent (older backend) or sandbox genuinely
