@@ -4,7 +4,7 @@ import pytest
 from pytest_httpx import HTTPXMock
 
 from prokube.common.config import Config
-from prokube.common.exceptions import NotFoundError, ProKubeError
+from prokube.common.exceptions import NotFoundError, PoolExhaustedError, ProKubeError
 from prokube.common.http import HttpClient
 
 
@@ -99,6 +99,42 @@ class TestHttpClient:
 
         with pytest.raises(ProKubeError, match="Internal server error"):
             http_client.get("/api/error")
+
+    def test_429_pool_exhausted_raises_pool_exhausted_error(
+        self, http_client: HttpClient, httpx_mock: HTTPXMock
+    ):
+        """Structured pool_exhausted responses are retryable typed errors."""
+        httpx_mock.add_response(
+            method="POST",
+            url="https://test.example.com/api/sandboxes/claim",
+            status_code=429,
+            headers={"Retry-After": "5"},
+            json={"reason": "pool_exhausted", "error": "pool_exhausted"},
+        )
+
+        with pytest.raises(PoolExhaustedError) as exc_info:
+            http_client.post("/api/sandboxes/claim", json={"poolName": "python-pool"})
+
+        assert exc_info.value.status_code == 429
+        assert exc_info.value.reason == "pool_exhausted"
+        assert exc_info.value.retry_after == "5"
+        assert "No warm pool capacity" in str(exc_info.value)
+
+    def test_detail_429_pool_exhausted_raises_pool_exhausted_error(
+        self, http_client: HttpClient, httpx_mock: HTTPXMock
+    ):
+        """The backend may nest the structured reason under detail."""
+        httpx_mock.add_response(
+            method="POST",
+            url="https://test.example.com/api/sandboxes/claim",
+            status_code=429,
+            json={"detail": {"reason": "pool_exhausted"}},
+        )
+
+        with pytest.raises(PoolExhaustedError) as exc_info:
+            http_client.post("/api/sandboxes/claim", json={"poolName": "python-pool"})
+
+        assert exc_info.value.retry_after is None
 
     def test_auth_headers_included(
         self, http_client: HttpClient, httpx_mock: HTTPXMock
