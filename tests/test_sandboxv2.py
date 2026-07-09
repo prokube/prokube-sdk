@@ -469,6 +469,29 @@ class TestLifecycle:
         ]
         client.close()
 
+    def test_wait_ready_keeps_default_request_timeout_headroom(
+        self, config, monkeypatch
+    ):
+        client = SandboxV2Client(config)
+        calls = []
+
+        def _get(path, **kwargs):
+            calls.append((path, kwargs))
+            return _sandbox_json(name="sbx", phase="Running")
+
+        monkeypatch.setattr(client._http, "get", _get)
+
+        info = client.wait_ready("sbx", timeout=7)
+
+        assert info.status == SandboxV2Status.RUNNING
+        assert calls == [
+            (
+                "/api/namespaces/test-ns/sandboxv2/sbx/wait_ready",
+                {"params": {"timeout": 7}, "timeout": 17},
+            )
+        ]
+        client.close()
+
     def test_wait_until_ready_polls(self, mock_env, httpx_mock: HTTPXMock):
         _mock_version(httpx_mock)
         httpx_mock.add_response(
