@@ -1,6 +1,6 @@
 """Tests for the Sandbox v2 (Firecracker) client and facade.
 
-All HTTP is mocked (pytest_httpx) — no live cluster required. Mirrors the v1
+All HTTP is mocked (pytest_httpx or direct client stubs) — no live cluster required. Mirrors the v1
 sandbox tests: covers create (fc-host AND fc-pod), run_code, commands, files,
 pause/resume, get, kill, wait_until_ready polling, the api-key path prefix, and
 claiming a warm-pool member via from_pool.
