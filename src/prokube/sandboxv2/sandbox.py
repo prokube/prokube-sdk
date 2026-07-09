@@ -17,6 +17,8 @@ from __future__ import annotations
 import sys
 import time
 
+import httpx
+
 if sys.version_info >= (3, 11):
     from typing import Self
 else:
@@ -236,7 +238,9 @@ class SandboxV2:
                     # deadline. Cap each call so a stalled connection still
                     # rechecks our timeout periodically.
                     info = self._client.wait_ready(
-                        self._name, timeout=min(int(remaining), 30)
+                        self._name,
+                        timeout=min(int(remaining), 30),
+                        request_timeout=remaining,
                     )
                 except NotFoundError:
                     # Endpoint absent (older backend) or sandbox genuinely
@@ -244,6 +248,8 @@ class SandboxV2:
                     # not-found error if the sandbox truly does not exist.
                     use_long_poll = False
                     continue
+                except httpx.TimeoutException:
+                    break
                 self._status = info.status
                 if info.runtime_class is not None:
                     self._runtime_class = info.runtime_class

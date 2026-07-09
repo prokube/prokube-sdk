@@ -62,9 +62,7 @@ if TYPE_CHECKING:
     from prokube.common.config import Config
 
 
-def _parse_status(
-    status_str: str | None, default: SandboxV2Status
-) -> SandboxV2Status:
+def _parse_status(status_str: str | None, default: SandboxV2Status) -> SandboxV2Status:
     """Parse a phase string to SandboxV2Status, tolerating unknown values."""
     if not status_str:
         return default
@@ -151,9 +149,7 @@ class SandboxV2Client:
         return SandboxV2Info(
             name=response.get("name", ""),
             workspace=response.get("namespace", self._workspace()),
-            status=_parse_status(
-                response.get("phase"), SandboxV2Status.UNKNOWN
-            ),
+            status=_parse_status(response.get("phase"), SandboxV2Status.UNKNOWN),
             image=response.get("image") or None,
             runtime_class=response.get("runtimeClassName"),
             operating_mode=response.get("operatingMode") or None,
@@ -264,7 +260,9 @@ class SandboxV2Client:
         response = self._http.get(self._sandbox_path(name))
         return self._parse_info(response)
 
-    def wait_ready(self, name: str, timeout: int = 30) -> SandboxV2Info:
+    def wait_ready(
+        self, name: str, timeout: int = 30, request_timeout: float | None = None
+    ) -> SandboxV2Info:
         """Server-side long-poll for readiness (single request).
 
         The backend tight-polls committed CR state in-cluster and returns the
@@ -278,8 +276,10 @@ class SandboxV2Client:
         response = self._http.get(
             self._sandbox_sub_path(name, "wait_ready"),
             params={"timeout": timeout},
-            # Give httpx headroom over the server-side long-poll window.
-            timeout=timeout + 10,
+            # Normal direct calls get headroom over the server-side long-poll
+            # window. Callers with an overall deadline can pass request_timeout
+            # to keep this single HTTP request within their remaining budget.
+            timeout=request_timeout if request_timeout is not None else timeout + 10,
         )
         return self._parse_info(response)
 
@@ -362,9 +362,7 @@ class SandboxV2Client:
         )
         return self._parse_pool(response)
 
-    def set_pool_warm_state(
-        self, name: str, warm_state: str
-    ) -> HibernatedPoolInfo:
+    def set_pool_warm_state(self, name: str, warm_state: str) -> HibernatedPoolInfo:
         """Change a pool's ``warmState`` post-create (Hibernated <-> Running).
 
         The fc controller reconciles every member to the new state.
@@ -495,9 +493,7 @@ class SandboxV2Client:
         )
         response = self._http.post(
             self._sandbox_sub_path(name, "exec"),
-            json=request.model_dump(
-                exclude={"session_id", "reset_session"}
-            ),
+            json=request.model_dump(exclude={"session_id", "reset_session"}),
         )
         return CommandResult(
             stdout=response.get("stdout", ""),
