@@ -551,6 +551,7 @@ class TestLifecycle:
         )
 
         elapsed = {"seconds": 0.0}
+        server_timeouts: list[int] = []
         request_timeouts: list[float | None] = []
 
         monkeypatch.setattr("time.monotonic", lambda: elapsed["seconds"])
@@ -559,6 +560,7 @@ class TestLifecycle:
         sbx = SandboxV2.create(image="pk-sandbox-base", name="sbx")
 
         def _timeout_wait_ready(name, timeout=30, request_timeout=None):
+            server_timeouts.append(timeout)
             request_timeouts.append(request_timeout)
             elapsed["seconds"] += request_timeout or 0
             raise httpx.TimeoutException("timed out")
@@ -571,6 +573,7 @@ class TestLifecycle:
         ):
             sbx.wait_until_ready(timeout=3)
 
+        assert server_timeouts == [3]
         assert request_timeouts == [3]
         sbx._client.close()
 
