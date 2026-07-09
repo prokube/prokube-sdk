@@ -4,9 +4,16 @@
 class ProKubeError(Exception):
     """Base exception for all prokube SDK errors."""
 
-    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int | None = None,
+        reason: str | None = None,
+    ) -> None:
         super().__init__(message)
         self.status_code = status_code
+        self.reason = reason
 
 
 class AuthenticationError(ProKubeError):
@@ -52,6 +59,19 @@ class PoolNotFoundError(SandboxError):
 
 
 class PoolExhaustedError(SandboxError):
-    """Raised when no sandboxes are available in the pool."""
+    """Raised when no warm pool capacity is currently available.
 
-    pass
+    The condition is retryable. If the backend provides a Retry-After header,
+    it is exposed as ``retry_after``.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int | None = 429,
+        reason: str | None = "pool_exhausted",
+        retry_after: str | None = None,
+    ) -> None:
+        super().__init__(message, status_code=status_code, reason=reason)
+        self.retry_after = retry_after

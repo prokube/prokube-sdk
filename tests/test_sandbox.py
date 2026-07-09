@@ -5,7 +5,7 @@ import base64
 import pytest
 from pytest_httpx import HTTPXMock
 
-from prokube.common.exceptions import SandboxError
+from prokube.common.exceptions import PoolExhaustedError, SandboxError
 from prokube.sandbox import Sandbox
 
 
@@ -175,6 +175,28 @@ class TestSandboxFromPool:
         assert body["autoIdleTimeoutSeconds"] == 900
         assert sbx.auto_idle_timeout_seconds == 900
         sbx._client.close()
+
+    def test_from_pool_exposes_pool_exhaustion(self, mock_env, httpx_mock: HTTPXMock):
+        """from_pool preserves retryable 429 pool_exhausted responses."""
+        httpx_mock.add_response(
+            method="GET",
+            url="https://test.example.com/api/version",
+            json={"version": "0.1.0"},
+        )
+        httpx_mock.add_response(
+            method="POST",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandboxes/claim",
+            status_code=429,
+            headers={"Retry-After": "30"},
+            json={"reason": "pool_exhausted"},
+        )
+
+        with pytest.raises(PoolExhaustedError) as exc_info:
+            Sandbox.from_pool("python-pool")
+
+        assert exc_info.value.reason == "pool_exhausted"
+        assert exc_info.value.retry_after == "30"
+        assert "No warm pool capacity" in str(exc_info.value)
 
 
 class TestSandboxCreate:

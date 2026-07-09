@@ -64,3 +64,10 @@ class TestExceptions:
         """Test PoolExhaustedError inherits from SandboxError."""
         error = PoolExhaustedError("pool exhausted")
         assert isinstance(error, SandboxError)
+
+    def test_pool_exhausted_preserves_retry_metadata(self):
+        """PoolExhaustedError exposes structured retry metadata."""
+        error = PoolExhaustedError("pool exhausted", retry_after="15")
+        assert error.status_code == 429
+        assert error.reason == "pool_exhausted"
+        assert error.retry_after == "15"
