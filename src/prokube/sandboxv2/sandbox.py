@@ -17,6 +17,8 @@ from __future__ import annotations
 import sys
 import time
 
+import httpx
+
 if sys.version_info >= (3, 11):
     from typing import Self
 else:
@@ -230,13 +232,15 @@ class SandboxV2:
             if remaining <= 0:
                 break
 
-            if use_long_poll:
+            if use_long_poll and remaining >= 1:
                 try:
-                    # Server long-polls up to its own window; loop here until our
-                    # deadline. Cap each call so a stalled connection still
-                    # rechecks our timeout periodically.
+                    # Server long-polls up to its own window, while the HTTP
+                    # request itself is bounded by the caller's remaining
+                    # readiness budget.
                     info = self._client.wait_ready(
-                        self._name, timeout=min(int(remaining) + 1, 30)
+                        self._name,
+                        timeout=min(int(remaining), 30),
+                        request_timeout=remaining,
                     )
                 except NotFoundError:
                     # Endpoint absent (older backend) or sandbox genuinely
@@ -244,6 +248,8 @@ class SandboxV2:
                     # not-found error if the sandbox truly does not exist.
                     use_long_poll = False
                     continue
+                except httpx.TimeoutException:
+                    break
                 self._status = info.status
                 if info.runtime_class is not None:
                     self._runtime_class = info.runtime_class
@@ -260,7 +266,10 @@ class SandboxV2:
                 # Server-side timeout below Running: loop (re-checks deadline).
                 continue
 
-            self.refresh()
+            try:
+                self.refresh(request_timeout=remaining)
+            except httpx.TimeoutException:
+                break
             if self._status == SandboxV2Status.RUNNING:
                 return
             if self._status == SandboxV2Status.FAILED:
@@ -292,10 +301,10 @@ class SandboxV2:
         self._killed = True
         self._client.close()
 
-    def refresh(self) -> None:
+    def refresh(self, request_timeout: float | None = None) -> None:
         """Refresh sandbox information from the API."""
         self._check_not_killed()
-        info = self._client.get(self._name)
+        info = self._client.get(self._name, request_timeout=request_timeout)
         self._status = info.status
         if info.runtime_class is not None:
             self._runtime_class = info.runtime_class

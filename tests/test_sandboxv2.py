@@ -1,6 +1,6 @@
 """Tests for the Sandbox v2 (Firecracker) client and facade.
 
-All HTTP is mocked (pytest_httpx) — no live cluster required. Mirrors the v1
+All HTTP is mocked (pytest_httpx or direct client stubs) — no live cluster required. Mirrors the v1
 sandbox tests: covers create (fc-host AND fc-pod), run_code, commands, files,
 pause/resume, get, kill, wait_until_ready polling, the api-key path prefix, and
 claiming a warm-pool member via from_pool.
@@ -10,11 +10,12 @@ import base64
 import json
 import re
 
+import httpx
 import pytest
 from pytest_httpx import HTTPXMock
 
 from prokube.common.config import Config
-from prokube.common.exceptions import SandboxError, SandboxTimeoutError
+from prokube.common.exceptions import NotFoundError, SandboxError, SandboxTimeoutError
 from prokube.sandboxv2 import SandboxV2, SandboxV2Client, SandboxV2Pool
 from prokube.sandboxv2.models import (
     DNSConfig,
@@ -198,7 +199,10 @@ class TestCreate:
     def test_facade_create_resources_shorthand(self, mock_env, httpx_mock: HTTPXMock):
         _mock_version(httpx_mock)
         httpx_mock.add_response(
-            method="POST", url=COLL, status_code=201, json=_sandbox_json(phase="Pending")
+            method="POST",
+            url=COLL,
+            status_code=201,
+            json=_sandbox_json(phase="Pending"),
         )
         sbx = SandboxV2.create(
             image="pk-sandbox-base", resources={"vcpus": 4, "mem_mib": 4096}
@@ -444,10 +448,57 @@ class TestLifecycle:
         assert info.status == SandboxV2Status.RUNNING
         client.close()
 
+    def test_wait_ready_uses_explicit_request_timeout(self, config, monkeypatch):
+        client = SandboxV2Client(config, check_version=False)
+        calls = []
+
+        def _get(path, **kwargs):
+            calls.append((path, kwargs))
+            return _sandbox_json(name="sbx", phase="Running")
+
+        monkeypatch.setattr(client._http, "get", _get)
+
+        info = client.wait_ready("sbx", timeout=7, request_timeout=2.5)
+
+        assert info.status == SandboxV2Status.RUNNING
+        assert calls == [
+            (
+                "/api/namespaces/test-ns/sandboxv2/sbx/wait_ready",
+                {"params": {"timeout": 7}, "timeout": 2.5},
+            )
+        ]
+        client.close()
+
+    def test_wait_ready_keeps_default_request_timeout_headroom(
+        self, config, monkeypatch
+    ):
+        client = SandboxV2Client(config, check_version=False)
+        calls = []
+
+        def _get(path, **kwargs):
+            calls.append((path, kwargs))
+            return _sandbox_json(name="sbx", phase="Running")
+
+        monkeypatch.setattr(client._http, "get", _get)
+
+        info = client.wait_ready("sbx", timeout=7)
+
+        assert info.status == SandboxV2Status.RUNNING
+        assert calls == [
+            (
+                "/api/namespaces/test-ns/sandboxv2/sbx/wait_ready",
+                {"params": {"timeout": 7}, "timeout": 17},
+            )
+        ]
+        client.close()
+
     def test_wait_until_ready_polls(self, mock_env, httpx_mock: HTTPXMock):
         _mock_version(httpx_mock)
         httpx_mock.add_response(
-            method="POST", url=COLL, status_code=201, json=_sandbox_json(phase="Pending")
+            method="POST",
+            url=COLL,
+            status_code=201,
+            json=_sandbox_json(phase="Pending"),
         )
         # Prefers the server-side long-poll readiness endpoint, which returns
         # the moment the phase reaches Running.
@@ -463,7 +514,10 @@ class TestLifecycle:
     def test_wait_until_ready_failed_raises(self, mock_env, httpx_mock: HTTPXMock):
         _mock_version(httpx_mock)
         httpx_mock.add_response(
-            method="POST", url=COLL, status_code=201, json=_sandbox_json(phase="Pending")
+            method="POST",
+            url=COLL,
+            status_code=201,
+            json=_sandbox_json(phase="Pending"),
         )
         httpx_mock.add_response(
             method="GET",
@@ -477,13 +531,176 @@ class TestLifecycle:
     def test_wait_until_ready_timeout(self, mock_env, httpx_mock: HTTPXMock):
         _mock_version(httpx_mock)
         httpx_mock.add_response(
-            method="POST", url=COLL, status_code=201, json=_sandbox_json(phase="Pending")
+            method="POST",
+            url=COLL,
+            status_code=201,
+            json=_sandbox_json(phase="Pending"),
         )
         # timeout=0 → the deadline has already passed, so no readiness request
         # is issued before it raises.
         sbx = SandboxV2.create(image="pk-sandbox-base", name="sbx")
         with pytest.raises(SandboxTimeoutError):
             sbx.wait_until_ready(timeout=0)
+
+    def test_wait_until_ready_pending_uses_single_timeout_budget(
+        self, mock_env, monkeypatch, httpx_mock: HTTPXMock
+    ):
+        _mock_version(httpx_mock)
+        httpx_mock.add_response(
+            method="POST",
+            url=COLL,
+            status_code=201,
+            json=_sandbox_json(phase="Pending"),
+        )
+
+        elapsed = {"seconds": 0.0}
+        sent_timeouts: list[int] = []
+
+        monkeypatch.setattr("time.monotonic", lambda: elapsed["seconds"])
+        monkeypatch.setattr("time.sleep", lambda _: None)
+
+        def _pending_callback(request):
+            timeout = int(request.url.params["timeout"])
+            sent_timeouts.append(timeout)
+            elapsed["seconds"] += timeout
+            return httpx.Response(200, json=_sandbox_json(name="sbx", phase="Pending"))
+
+        httpx_mock.add_callback(
+            _pending_callback,
+            method="GET",
+            url=re.compile(rf"{re.escape(COLL)}/sbx/wait_ready(\?.*)?$"),
+            is_reusable=True,
+        )
+
+        sbx = SandboxV2.create(image="pk-sandbox-base", name="sbx")
+        with pytest.raises(
+            SandboxTimeoutError,
+            match="Sandbox sbx did not become ready within 3s .*'Pending'",
+        ):
+            sbx.wait_until_ready(timeout=3)
+
+        assert sent_timeouts == [3]
+        assert sbx.status == "Pending"
+        sbx._client.close()
+
+    def test_wait_until_ready_bounds_long_poll_http_timeout(
+        self, mock_env, monkeypatch, httpx_mock: HTTPXMock
+    ):
+        _mock_version(httpx_mock)
+        httpx_mock.add_response(
+            method="POST",
+            url=COLL,
+            status_code=201,
+            json=_sandbox_json(phase="Pending"),
+        )
+
+        elapsed = {"seconds": 0.0}
+        server_timeouts: list[int] = []
+        request_timeouts: list[float | None] = []
+
+        monkeypatch.setattr("time.monotonic", lambda: elapsed["seconds"])
+        monkeypatch.setattr("time.sleep", lambda _: None)
+
+        sbx = SandboxV2.create(image="pk-sandbox-base", name="sbx")
+
+        def _timeout_wait_ready(name, timeout=30, request_timeout=None):
+            server_timeouts.append(timeout)
+            request_timeouts.append(request_timeout)
+            elapsed["seconds"] += request_timeout or 0
+            raise httpx.TimeoutException("timed out")
+
+        monkeypatch.setattr(sbx._client, "wait_ready", _timeout_wait_ready)
+
+        with pytest.raises(
+            SandboxTimeoutError,
+            match="Sandbox sbx did not become ready within 3s .*'Pending'",
+        ):
+            sbx.wait_until_ready(timeout=3)
+
+        assert server_timeouts == [3]
+        assert request_timeouts == [3]
+        sbx._client.close()
+
+    def test_wait_until_ready_bounds_local_poll_http_timeout(
+        self, mock_env, monkeypatch, httpx_mock: HTTPXMock
+    ):
+        _mock_version(httpx_mock)
+        httpx_mock.add_response(
+            method="POST",
+            url=COLL,
+            status_code=201,
+            json=_sandbox_json(phase="Pending"),
+        )
+
+        elapsed = {"seconds": 0.0}
+        request_timeouts: list[float | None] = []
+
+        monkeypatch.setattr("time.monotonic", lambda: elapsed["seconds"])
+        monkeypatch.setattr("time.sleep", lambda _: None)
+
+        sbx = SandboxV2.create(image="pk-sandbox-base", name="sbx")
+
+        def _missing_wait_ready(name, timeout=30, request_timeout=None):
+            raise NotFoundError("wait_ready not available")
+
+        def _timeout_get(name, request_timeout=None):
+            request_timeouts.append(request_timeout)
+            elapsed["seconds"] += request_timeout or 0
+            raise httpx.TimeoutException("timed out")
+
+        monkeypatch.setattr(sbx._client, "wait_ready", _missing_wait_ready)
+        monkeypatch.setattr(sbx._client, "get", _timeout_get)
+
+        with pytest.raises(
+            SandboxTimeoutError,
+            match="Sandbox sbx did not become ready within 3s .*'Pending'",
+        ):
+            sbx.wait_until_ready(timeout=3)
+
+        assert request_timeouts == [3]
+        sbx._client.close()
+
+    def test_wait_until_ready_pending_then_running_before_timeout(
+        self, mock_env, monkeypatch, httpx_mock: HTTPXMock
+    ):
+        _mock_version(httpx_mock)
+        httpx_mock.add_response(
+            method="POST",
+            url=COLL,
+            status_code=201,
+            json=_sandbox_json(phase="Pending"),
+        )
+
+        elapsed = {"seconds": 0.0}
+        sent_timeouts: list[int] = []
+
+        monkeypatch.setattr("time.monotonic", lambda: elapsed["seconds"])
+        monkeypatch.setattr("time.sleep", lambda _: None)
+
+        def _ready_callback(request):
+            timeout = int(request.url.params["timeout"])
+            sent_timeouts.append(timeout)
+            if len(sent_timeouts) == 1:
+                elapsed["seconds"] += 2
+                return httpx.Response(
+                    200, json=_sandbox_json(name="sbx", phase="Pending")
+                )
+            elapsed["seconds"] += 1
+            return httpx.Response(200, json=_sandbox_json(name="sbx", phase="Running"))
+
+        httpx_mock.add_callback(
+            _ready_callback,
+            method="GET",
+            url=re.compile(rf"{re.escape(COLL)}/sbx/wait_ready(\?.*)?$"),
+            is_reusable=True,
+        )
+
+        sbx = SandboxV2.create(image="pk-sandbox-base", name="sbx")
+        sbx.wait_until_ready(timeout=5)
+
+        assert sent_timeouts == [5, 3]
+        assert sbx.status == "Running"
+        sbx._client.close()
 
 
 # ---------------------------------------------------------------------------
@@ -552,10 +769,7 @@ class TestApiKeyAndPool:
         try:
             assert sbx.name == "member-1"
             req = [r for r in httpx_mock.get_requests() if r.method == "POST"][-1]
-            assert (
-                str(req.url)
-                == f"https://prokube.ai/sandboxv2/{NS}/sandboxes/claim"
-            )
+            assert str(req.url) == f"https://prokube.ai/sandboxv2/{NS}/sandboxes/claim"
             body = json.loads(req.content)
             assert body["poolName"] == "python-pool"
         finally:
@@ -890,9 +1104,7 @@ class TestGuestDNS:
         assert body["dnsConfig"] == {"options": [{"name": "edns0"}]}
         client.close()
 
-    def test_create_accepts_cr_shaped_dns_dict(
-        self, config, httpx_mock: HTTPXMock
-    ):
+    def test_create_accepts_cr_shaped_dns_dict(self, config, httpx_mock: HTTPXMock):
         """A camelCase CR-shaped dnsConfig dict passes through verbatim."""
         _mock_version(httpx_mock)
         httpx_mock.add_response(
