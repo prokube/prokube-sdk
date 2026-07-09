@@ -15,7 +15,7 @@ import pytest
 from pytest_httpx import HTTPXMock
 
 from prokube.common.config import Config
-from prokube.common.exceptions import SandboxError, SandboxTimeoutError
+from prokube.common.exceptions import NotFoundError, SandboxError, SandboxTimeoutError
 from prokube.sandboxv2 import SandboxV2, SandboxV2Client, SandboxV2Pool
 from prokube.sandboxv2.models import (
     DNSConfig,
@@ -595,6 +595,45 @@ class TestLifecycle:
             sbx.wait_until_ready(timeout=3)
 
         assert server_timeouts == [3]
+        assert request_timeouts == [3]
+        sbx._client.close()
+
+    def test_wait_until_ready_bounds_local_poll_http_timeout(
+        self, mock_env, monkeypatch, httpx_mock: HTTPXMock
+    ):
+        _mock_version(httpx_mock)
+        httpx_mock.add_response(
+            method="POST",
+            url=COLL,
+            status_code=201,
+            json=_sandbox_json(phase="Pending"),
+        )
+
+        elapsed = {"seconds": 0.0}
+        request_timeouts: list[float | None] = []
+
+        monkeypatch.setattr("time.monotonic", lambda: elapsed["seconds"])
+        monkeypatch.setattr("time.sleep", lambda _: None)
+
+        sbx = SandboxV2.create(image="pk-sandbox-base", name="sbx")
+
+        def _missing_wait_ready(name, timeout=30, request_timeout=None):
+            raise NotFoundError("wait_ready not available")
+
+        def _timeout_get(name, request_timeout=None):
+            request_timeouts.append(request_timeout)
+            elapsed["seconds"] += request_timeout or 0
+            raise httpx.TimeoutException("timed out")
+
+        monkeypatch.setattr(sbx._client, "wait_ready", _missing_wait_ready)
+        monkeypatch.setattr(sbx._client, "get", _timeout_get)
+
+        with pytest.raises(
+            SandboxTimeoutError,
+            match="Sandbox sbx did not become ready within 3s .*'Pending'",
+        ):
+            sbx.wait_until_ready(timeout=3)
+
         assert request_timeouts == [3]
         sbx._client.close()
 

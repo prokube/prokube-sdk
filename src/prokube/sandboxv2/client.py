@@ -255,9 +255,10 @@ class SandboxV2Client:
             info.status = SandboxV2Status.PENDING
         return info
 
-    def get(self, name: str) -> SandboxV2Info:
+    def get(self, name: str, request_timeout: float | None = None) -> SandboxV2Info:
         """Get information about a sandbox."""
-        response = self._http.get(self._sandbox_path(name))
+        kwargs = {"timeout": request_timeout} if request_timeout is not None else {}
+        response = self._http.get(self._sandbox_path(name), **kwargs)
         return self._parse_info(response)
 
     def wait_ready(
