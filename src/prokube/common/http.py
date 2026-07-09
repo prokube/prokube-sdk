@@ -8,7 +8,12 @@ import httpx
 
 from prokube.common.auth import get_auth_headers
 from prokube.common.config import Config
-from prokube.common.exceptions import AuthenticationError, NotFoundError, ProKubeError
+from prokube.common.exceptions import (
+    AuthenticationError,
+    NotFoundError,
+    PoolExhaustedError,
+    ProKubeError,
+)
 
 
 class HttpClient:
@@ -243,11 +248,41 @@ class HttpClient:
                 status_code=404,
             )
         if response.status_code >= 400:
+            error_body: dict[str, Any] = {}
             try:
-                error_detail = response.json().get("detail", response.text)
+                parsed = response.json()
+                if isinstance(parsed, dict):
+                    error_body = parsed
             except Exception:
-                error_detail = response.text
+                pass
+
+            reason = self._extract_error_reason(error_body)
+            if response.status_code == 429 and reason == "pool_exhausted":
+                raise PoolExhaustedError(
+                    "No warm pool capacity is currently available; retry the "
+                    "claim later.",
+                    retry_after=response.headers.get("Retry-After"),
+                )
+
+            error_detail = error_body.get("detail", response.text)
             raise ProKubeError(
                 f"API request failed ({response.status_code}): {error_detail}",
                 status_code=response.status_code,
+                reason=reason,
             )
+
+    @staticmethod
+    def _extract_error_reason(error_body: dict[str, Any]) -> str | None:
+        """Extract a structured error reason from backend error payloads."""
+        for key in ("reason", "error"):
+            value = error_body.get(key)
+            if isinstance(value, str):
+                return value
+
+        detail = error_body.get("detail")
+        if isinstance(detail, dict):
+            for key in ("reason", "error"):
+                value = detail.get(key)
+                if isinstance(value, str):
+                    return value
+        return None

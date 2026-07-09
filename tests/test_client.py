@@ -4,6 +4,7 @@ import pytest
 from pytest_httpx import HTTPXMock
 
 from prokube.common.config import Config
+from prokube.common.exceptions import PoolExhaustedError
 from prokube.sandbox.client import SandboxClient, _parse_status
 from prokube.sandbox.models import SandboxStatus
 
@@ -140,6 +141,32 @@ class TestListSandboxes:
         assert body["poolName"] == "python-pool"
         assert body["autoIdleTimeoutSeconds"] == 900
         assert info.auto_idle_timeout_seconds == 900
+        client.close()
+
+    def test_claim_pool_exhausted_raises_retryable_error(
+        self, config, httpx_mock: HTTPXMock
+    ):
+        """claim_from_pool exposes 429 pool_exhausted distinctly."""
+        httpx_mock.add_response(
+            method="GET",
+            url="https://test.example.com/api/version",
+            json={"version": "0.1.0"},
+        )
+        httpx_mock.add_response(
+            method="POST",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandboxes/claim",
+            status_code=429,
+            headers={"Retry-After": "10"},
+            json={"error": "pool_exhausted"},
+        )
+
+        client = SandboxClient(config)
+        with pytest.raises(PoolExhaustedError) as exc_info:
+            client.claim_from_pool("python-pool")
+
+        assert exc_info.value.status_code == 429
+        assert exc_info.value.reason == "pool_exhausted"
+        assert exc_info.value.retry_after == "10"
         client.close()
 
     def test_list_with_status_field(self, config, httpx_mock: HTTPXMock):
