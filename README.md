@@ -70,7 +70,7 @@ sandboxes. It mirrors the v1 `Sandbox` surface (`run_code` / `commands` / `files
 `pause` / `resume` / `kill`), adapted for v2: every sandbox runs on `fc-pod`
 (the only runtime — there is no runtime choice), and sandboxes are addressed by
 `namespace` (the v1 `workspace`). There is no warm pool; instead a **running**
-sandbox can be snapshotted into a reusable FirecrackerImage and a later
+sandbox can be snapshotted into a reusable FirecrackerSnapshot and a later
 sandbox can resume-clone from it for a fast start.
 
 ```python
@@ -98,12 +98,12 @@ sbx.resume()
 sbx.kill()
 ```
 
-Snapshots — capture a running sandbox into a reusable FirecrackerImage, then
+Snapshots — capture a running sandbox into a reusable FirecrackerSnapshot, then
 launch a new sandbox that resume-clones it (fast start instead of a cold boot).
 Capture is asynchronous: `snapshot()` returns as soon as the backend accepts
 the request, and the sandbox keeps running throughout. Poll
 `SandboxV2.list_snapshots()` (or use `wait_for_snapshot_ready()`) for the
-image's `phase == "Ready"`:
+snapshot's `phase == "Ready"`:
 
 ```python
 from prokube.sandboxv2 import SandboxV2
@@ -112,10 +112,10 @@ sbx = SandboxV2.create(image="pk-sandbox-base", namespace="my-namespace")
 sbx.wait_until_ready()
 sbx.commands.run("pip install numpy")   # bake state into the snapshot
 
-image_name = sbx.snapshot("my-warm-python")  # async: sandbox keeps running
-SandboxV2.wait_for_snapshot_ready(image_name, namespace="my-namespace")
+snapshot_name = sbx.snapshot("my-warm-python")  # async: sandbox keeps running
+SandboxV2.wait_for_snapshot_ready(snapshot_name, namespace="my-namespace")
 
-clone = SandboxV2.from_snapshot(image_name, namespace="my-namespace")
+clone = SandboxV2.from_snapshot(snapshot_name, namespace="my-namespace")
 clone.wait_until_ready()
 print(clone.run_code("import numpy; print(numpy.__version__)").stdout)
 ```

@@ -292,15 +292,14 @@ class CreateSandboxV2Request(BaseModel):
     image: str | None = Field(
         default=None,
         description="Base OCI image (defaults to pk-sandbox-base). Mutually "
-        "exclusive with snapshot_image.",
+        "exclusive with snapshot.",
     )
-    snapshot_image: str | None = Field(
+    snapshot: str | None = Field(
         default=None,
-        serialization_alias="snapshotImage",
-        description="Name of an existing snapshot FirecrackerImage to "
-        "resume-clone from (spec.firecrackerImage.name), instead of building "
-        "from an OCI image. Mutually exclusive with image; when both are "
-        "omitted image defaults to pk-sandbox-base.",
+        description="Name of an existing FirecrackerSnapshot to resume-clone "
+        "from (spec.firecrackerSnapshot), instead of building from an OCI "
+        "image. Mutually exclusive with image; when both are omitted image "
+        "defaults to pk-sandbox-base.",
     )
     vcpus: int | None = Field(default=None, ge=1, description="Guest vCPUs")
     mem_mib: int | None = Field(
@@ -394,14 +393,14 @@ class CreateSandboxV2Request(BaseModel):
     )
 
     @model_validator(mode="after")
-    def _image_xor_snapshot_image(self) -> CreateSandboxV2Request:
+    def _image_xor_snapshot(self) -> CreateSandboxV2Request:
         if self.manifest is not None:
             return self
-        if self.image is not None and self.snapshot_image is not None:
+        if self.image is not None and self.snapshot is not None:
             raise ValueError(
-                "image and snapshot_image are mutually exclusive — set at most "
-                "one (image for an OCI ref, snapshot_image to resume-clone an "
-                "existing snapshot FirecrackerImage by name)"
+                "image and snapshot are mutually exclusive — set at most one "
+                "(image for an OCI ref, snapshot to resume-clone an existing "
+                "FirecrackerSnapshot by name)"
             )
         return self
 
@@ -487,53 +486,53 @@ class UploadFileV2Request(BaseModel):
 
 
 # =============================================================================
-# Snapshots — capture a RUNNING sandbox into a reusable FirecrackerImage, and
-# resume-clone from one on a later create (via ``snapshotImage``, see
-# :class:`CreateSandboxV2Request`). Mirrors the pkui backend
-# ``modules/sandboxv2`` snapshot DTOs (SnapshotSandboxRequest / SnapshotImage /
-# SnapshotImageListResponse). Capture is ASYNC: the create response confirms
-# the request was accepted, not that the image is Ready — the sandbox keeps
+# Snapshots — capture a RUNNING sandbox into a reusable, NAMESPACED
+# FirecrackerSnapshot, and resume-clone from one on a later create (via
+# ``snapshot``, see :class:`CreateSandboxV2Request`). Mirrors the pkui backend
+# ``modules/sandboxv2`` snapshot DTOs (SnapshotSandboxRequest / Snapshot /
+# SnapshotListResponse). Capture is ASYNC: the create response confirms the
+# request was accepted, not that the snapshot is Ready — the sandbox keeps
 # running throughout; poll :meth:`SandboxV2Client.snapshots` for
 # ``phase == "Ready"``.
 #
 # Endpoints:
-#   POST .../sandboxv2/{name}/snapshot  -> SnapshotImage (201; a sub-path of
-#       the sandbox, not a sibling collection)
-#   GET  .../sandboxv2-images           -> {images: [SnapshotImage], total}
-#       (best-effort; empty list if unavailable)
+#   POST .../sandboxv2/{name}/snapshot  -> Snapshot (201; a sub-path of the
+#       sandbox, not a sibling collection)
+#   GET  .../sandboxv2-snapshots        -> {snapshots: [Snapshot], total}
+#       (namespaced; best-effort — empty list if unavailable)
 # =============================================================================
 
 
 class SnapshotSandboxRequest(BaseModel):
     """Request body for ``POST .../sandboxv2/{name}/snapshot``."""
 
-    name: str = Field(
-        ..., min_length=1, max_length=63, description="Snapshot image name"
-    )
+    name: str = Field(..., min_length=1, max_length=63, description="Snapshot name")
 
 
-class SnapshotImage(BaseModel):
-    """A snapshot FirecrackerImage (``SnapshotImage`` in the backend contract).
+class Snapshot(BaseModel):
+    """A namespaced FirecrackerSnapshot (``Snapshot`` in the backend contract).
 
-    Returned both by the live-snapshot POST (the newly-created FCI) and the
-    ``sandboxv2-images`` list endpoint. FirecrackerImage is CLUSTER-SCOPED, so
-    ``namespace`` here is not ``metadata.namespace`` — it is the caller's
-    workspace, echoed back for namespaced routing. ``phase`` reaches
-    ``"Ready"`` once the async capture completes; it may be ``None`` right
-    after creation, before status is populated.
+    Returned both by the live-snapshot POST (the newly-created snapshot) and
+    the ``sandboxv2-snapshots`` list endpoint. FirecrackerSnapshot is
+    NAMESPACE-SCOPED, so ``namespace`` here is ``metadata.namespace``.
+    ``phase`` reaches ``"Ready"`` once the async capture completes; it may be
+    ``None`` right after creation, before status is populated.
     """
 
-    name: str = Field(..., description="FirecrackerImage (CR) name")
+    name: str = Field(..., description="FirecrackerSnapshot (CR) name")
     namespace: str | None = Field(
-        default=None, description="Caller's workspace (FCI is cluster-scoped)"
+        default=None, description="FirecrackerSnapshot namespace"
     )
     phase: str | None = Field(
         default=None,
-        description="FirecrackerImage status.phase (Pending | Building | "
+        description="FirecrackerSnapshot status.phase (Pending | Building | "
         "Ready | Failed), or None before status is populated",
     )
     from_sandbox: str | None = Field(
         default=None, description="spec.snapshotOf.fromSandbox — source sandbox name"
+    )
+    snapshot_id: str | None = Field(
+        default=None, description="status.snapshotId, if populated"
     )
     message: str | None = Field(
         default=None, description="status.message, if any (e.g. failure detail)"

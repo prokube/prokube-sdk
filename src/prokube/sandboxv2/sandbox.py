@@ -5,7 +5,7 @@ v2 backend: every sandbox runs on ``fc-pod`` (the only runtime; there is no
 runtime choice), creation takes v2 knobs (resources, egress, volumes), and
 sandboxes are addressed by the same ``workspace`` param as v1. There is no warm
 pool — instead a RUNNING sandbox can be snapshotted into a reusable
-FirecrackerImage (:meth:`SandboxV2.snapshot`) and a later sandbox can
+FirecrackerSnapshot (:meth:`SandboxV2.snapshot`) and a later sandbox can
 resume-clone from it for a fast start (:meth:`SandboxV2.from_snapshot`).
 
 The stateful code / shell command / file helpers are the *same* v1 classes
@@ -40,7 +40,7 @@ from prokube.sandboxv2.models import (
     Lifecycle,
     Probe,
     SandboxV2Status,
-    SnapshotImage,
+    Snapshot,
 )
 
 
@@ -296,10 +296,10 @@ class SandboxV2:
         self._client.close()
 
     def snapshot(self, name: str) -> str:
-        """Snapshot this RUNNING sandbox into a reusable FirecrackerImage.
+        """Snapshot this RUNNING sandbox into a reusable FirecrackerSnapshot.
 
         The backend captures the microVM ASYNCHRONOUSLY: this call returns as
-        soon as the capture request is accepted, not once the image is
+        soon as the capture request is accepted, not once the snapshot is
         ``Ready``. This sandbox keeps running throughout — snapshotting does
         not pause or kill it. Poll for readiness via
         :meth:`SandboxV2.list_snapshots` (``phase == "Ready"``) or
@@ -307,10 +307,10 @@ class SandboxV2:
         know it is ready.
 
         Args:
-            name: Name for the new snapshot FirecrackerImage.
+            name: Name for the new FirecrackerSnapshot.
 
         Returns:
-            The snapshot image name (echoed back by the backend).
+            The snapshot name (echoed back by the backend).
 
         Raises:
             SandboxError: If this sandbox is not in Running state (HTTP 409).
@@ -337,7 +337,7 @@ class SandboxV2:
         image: str | None = None,
         *,
         name: str | None = None,
-        snapshot_image: str | None = None,
+        snapshot: str | None = None,
         resources: dict | None = None,
         vcpus: int | None = None,
         mem_mib: int | None = None,
@@ -367,13 +367,13 @@ class SandboxV2:
         """Create a new Firecracker sandbox.
 
         Args:
-            image: Base OCI image. If None (and ``snapshot_image`` is also
-                None), the backend default (pk-sandbox-base) is used. Mutually
-                exclusive with ``snapshot_image``.
+            image: Base OCI image. If None (and ``snapshot`` is also None),
+                the backend default (pk-sandbox-base) is used. Mutually
+                exclusive with ``snapshot``.
             name: Optional sandbox name (auto-generated if not provided).
-            snapshot_image: Name of an existing snapshot FirecrackerImage
-                (created via :meth:`snapshot`, once ``Ready``) to resume-clone
-                from instead of an OCI image (``spec.firecrackerImage.name``).
+            snapshot: Name of an existing FirecrackerSnapshot (created via
+                :meth:`snapshot`, once ``Ready``) to resume-clone from
+                instead of an OCI image (``spec.firecrackerSnapshot``).
                 Mutually exclusive with ``image``. Prefer
                 :meth:`from_snapshot`, which wraps this with resume-oriented
                 defaults.
@@ -440,7 +440,7 @@ class SandboxV2:
             info = client.create(
                 image=image,
                 name=name,
-                snapshot_image=snapshot_image,
+                snapshot=snapshot,
                 vcpus=vcpus,
                 mem_mib=mem_mib,
                 egress=egress,
@@ -572,8 +572,8 @@ class SandboxV2:
         user_id: str | None = None,
         api_key: str | None = None,
         timeout: int | None = None,
-    ) -> list[SnapshotImage]:
-        """List snapshot FirecrackerImages in the workspace.
+    ) -> list[Snapshot]:
+        """List FirecrackerSnapshots in the workspace.
 
         Best-effort: returns an empty list (never raises) when snapshot
         listing is unavailable backend-side (CRD missing, RBAC).
@@ -587,10 +587,10 @@ class SandboxV2:
         )
         client = SandboxV2Client(config)
         try:
-            images = client.snapshots()
+            snapshots = client.snapshots()
         finally:
             client.close()
-        return images
+        return snapshots
 
     @classmethod
     def wait_for_snapshot_ready(
@@ -604,14 +604,14 @@ class SandboxV2:
         user_id: str | None = None,
         api_key: str | None = None,
         request_timeout: int | None = None,
-    ) -> SnapshotImage:
-        """Block until the named snapshot FirecrackerImage reaches ``Ready``.
+    ) -> Snapshot:
+        """Block until the named FirecrackerSnapshot reaches ``Ready``.
 
         Polls :meth:`list_snapshots` (there is no server-side long-poll for
-        FirecrackerImage readiness, unlike :meth:`wait_until_ready`).
+        FirecrackerSnapshot readiness, unlike :meth:`wait_until_ready`).
 
         Args:
-            image: Name of the snapshot FirecrackerImage to wait for.
+            image: Name of the FirecrackerSnapshot to wait for.
             timeout: Maximum seconds to wait (default: 120).
             poll_interval: Seconds between polls (default: 1.0).
             api_url: API URL (default: PROKUBE_API_URL env var).
@@ -623,7 +623,7 @@ class SandboxV2:
                 var).
 
         Returns:
-            The ``Ready`` :class:`~prokube.sandboxv2.models.SnapshotImage`.
+            The ``Ready`` :class:`~prokube.sandboxv2.models.Snapshot`.
 
         Raises:
             SandboxTimeoutError: If it does not become Ready in time (or is
@@ -639,7 +639,7 @@ class SandboxV2:
             timeout=request_timeout,
         )
         client = SandboxV2Client(config)
-        last: SnapshotImage | None = None
+        last: Snapshot | None = None
         try:
             deadline = time.monotonic() + timeout
             while True:
@@ -689,17 +689,17 @@ class SandboxV2:
         api_key: str | None = None,
         timeout: int | None = None,
     ) -> Self:
-        """Launch a new sandbox by resume-cloning a snapshot FirecrackerImage.
+        """Launch a new sandbox by resume-cloning a FirecrackerSnapshot.
 
-        ``image`` must be the name of a FirecrackerImage created by
+        ``image`` must be the name of a FirecrackerSnapshot created by
         :meth:`snapshot` (once its ``status.phase`` reaches ``Ready`` — see
-        :meth:`wait_for_snapshot_ready`) — NOT an OCI ref. Sets
-        ``snapshotImage`` on the create request, which the backend maps onto
-        ``spec.firecrackerImage.name`` (a structured knob, mutually exclusive
+        :meth:`wait_for_snapshot_ready`) — NOT an OCI ref. Sets ``snapshot``
+        on the create request, which the backend maps onto
+        ``spec.firecrackerSnapshot`` (a structured knob, mutually exclusive
         with ``image``); no ``manifest`` escape hatch needed.
 
         Args:
-            image: Name of the snapshot FirecrackerImage to resume-clone from.
+            image: Name of the FirecrackerSnapshot to resume-clone from.
             name: Optional sandbox name (auto-generated if not provided).
             resources: ``{"vcpus": int, "mem_mib": int}`` shorthand.
             vcpus: Guest vCPUs (overrides ``resources['vcpus']``; default 2).
@@ -736,7 +736,7 @@ class SandboxV2:
 
         return cls.create(
             name=name,
-            snapshot_image=image,
+            snapshot=image,
             vcpus=vcpus if vcpus is not None else 2,
             mem_mib=mem_mib if mem_mib is not None else 2048,
             egress=egress,
