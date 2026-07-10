@@ -50,7 +50,7 @@ from prokube.sandboxv2.models import (
     Probe,
     SandboxV2Info,
     SandboxV2Status,
-    SnapshotInfo,
+    SnapshotImage,
     SnapshotSandboxRequest,
     UploadFileV2Request,
 )
@@ -115,6 +115,16 @@ class SandboxV2Client:
     def _sandbox_sub_path(self, name: str, sub: str) -> str:
         return f"{self._sandbox_path(name)}/{sub}"
 
+    def _images_path(self) -> str:
+        # Sibling of the collection path (not a sandbox sub-path): mirrors the
+        # in-cluster ``sandboxv2`` -> ``sandboxv2-images`` naming transform for
+        # the api-key ORIGIN route too, matching every other path helper's
+        # api-key vs in-cluster branch.
+        ws = self._workspace()
+        if self.config.use_api_key:
+            return f"/sandboxv2/{ws}/sandboxes-images"
+        return f"/api/namespaces/{ws}/sandboxv2-images"
+
     # -- parsing --------------------------------------------------------------
 
     def _parse_info(self, response: dict[str, object]) -> SandboxV2Info:
@@ -132,12 +142,23 @@ class SandboxV2Client:
             created_at=response.get("createdAt"),
         )
 
+    def _parse_snapshot_image(self, response: dict[str, object]) -> SnapshotImage:
+        return SnapshotImage(
+            name=response.get("name", ""),
+            namespace=response.get("namespace", self._workspace()),
+            phase=response.get("phase"),
+            from_sandbox=response.get("fromSandbox"),
+            message=response.get("message"),
+            created_at=response.get("createdAt"),
+        )
+
     # -- lifecycle ------------------------------------------------------------
 
     def create(
         self,
         image: str | None = None,
         name: str | None = None,
+        snapshot_image: str | None = None,
         vcpus: int | None = None,
         mem_mib: int | None = None,
         egress: bool = False,
@@ -188,10 +209,10 @@ class SandboxV2Client:
         exact recipe/base match. Omitted -> the executor Strict default, so
         existing callers are unaffected.
 
-        ``image`` is always an OCI ref (or omitted for the backend default);
-        the backend has no by-name knob for launching from a snapshot
-        FirecrackerImage (created via :meth:`snapshot`) — that goes through
-        ``manifest.spec.firecrackerImage.name`` instead. See
+        ``image`` is an OCI ref (or omitted for the backend default);
+        ``snapshot_image`` is the name of an existing snapshot FirecrackerImage
+        (created via :meth:`snapshot`) to resume-clone from instead
+        (``spec.firecrackerImage.name``). The two are mutually exclusive. See
         :meth:`prokube.sandboxv2.sandbox.SandboxV2.from_snapshot`.
         """
         if name is None:
@@ -200,6 +221,7 @@ class SandboxV2Client:
         request = CreateSandboxV2Request(
             name=name,
             image=image,
+            snapshot_image=snapshot_image,
             vcpus=vcpus,
             mem_mib=mem_mib,
             egress=egress,
@@ -285,14 +307,15 @@ class SandboxV2Client:
         """Delete a sandbox (deletes the CR; ephemeral PVC cleaned up)."""
         self._http.delete(self._sandbox_path(name))
 
-    def snapshot(self, name: str, snapshot_name: str) -> SnapshotInfo:
+    def snapshot(self, name: str, snapshot_name: str) -> SnapshotImage:
         """Snapshot a RUNNING sandbox into a reusable FirecrackerImage.
 
         POSTs to ``.../sandboxv2/{name}/snapshot``. The backend creates a
         FirecrackerImage named ``snapshot_name`` and captures the microVM into
         it ASYNCHRONOUSLY — this call returns as soon as the capture is
-        accepted, not once the image is ``Ready``; the sandbox keeps running
-        throughout. Launch a new sandbox from the (eventually Ready) image via
+        accepted, not once the image is ``Ready`` (poll via :meth:`snapshots`);
+        the sandbox keeps running throughout. Launch a new sandbox from the
+        (eventually Ready) image via
         :meth:`prokube.sandboxv2.sandbox.SandboxV2.from_snapshot`.
 
         Args:
@@ -315,10 +338,18 @@ class SandboxV2Client:
             if e.status_code == 409:
                 raise SandboxError(str(e), status_code=409) from e
             raise
-        return SnapshotInfo(
-            image=response.get("image", snapshot_name),
-            sandbox=response.get("sandbox", name),
-        )
+        return self._parse_snapshot_image(response)
+
+    def snapshots(self) -> list[SnapshotImage]:
+        """List snapshot FirecrackerImages in the configured workspace.
+
+        GETs ``.../sandboxv2-images``. Best-effort: the backend returns an
+        empty list (never an error) when snapshot listing is unavailable (CRD
+        missing, RBAC). Poll this for ``phase == "Ready"`` after :meth:`snapshot`.
+        """
+        response = self._http.get(self._images_path())
+        images = response.get("images", [])
+        return [self._parse_snapshot_image(i) for i in images]
 
     # -- exec -----------------------------------------------------------------
 

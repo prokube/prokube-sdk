@@ -40,6 +40,7 @@ from prokube.sandboxv2.models import (
     Lifecycle,
     Probe,
     SandboxV2Status,
+    SnapshotImage,
 )
 
 
@@ -300,9 +301,10 @@ class SandboxV2:
         The backend captures the microVM ASYNCHRONOUSLY: this call returns as
         soon as the capture request is accepted, not once the image is
         ``Ready``. This sandbox keeps running throughout — snapshotting does
-        not pause or kill it. There is currently no SDK-visible way to poll the
-        image for ``Ready`` (the backend exposes no GET route for
-        FirecrackerImage); use :meth:`from_snapshot` once you know it is ready.
+        not pause or kill it. Poll for readiness via
+        :meth:`SandboxV2.list_snapshots` (``phase == "Ready"``) or
+        :meth:`wait_for_snapshot_ready`; use :meth:`from_snapshot` once you
+        know it is ready.
 
         Args:
             name: Name for the new snapshot FirecrackerImage.
@@ -315,7 +317,7 @@ class SandboxV2:
         """
         self._check_not_killed()
         info = self._client.snapshot(self._name, name)
-        return info.image
+        return info.name
 
     def refresh(self) -> None:
         """Refresh sandbox information from the API."""
@@ -335,6 +337,7 @@ class SandboxV2:
         image: str | None = None,
         *,
         name: str | None = None,
+        snapshot_image: str | None = None,
         resources: dict | None = None,
         vcpus: int | None = None,
         mem_mib: int | None = None,
@@ -364,11 +367,16 @@ class SandboxV2:
         """Create a new Firecracker sandbox.
 
         Args:
-            image: Base OCI image. If None, the backend default (pk-sandbox-base)
-                is used. Always an OCI ref — to launch from a snapshot
-                FirecrackerImage (created via :meth:`snapshot`) use
-                :meth:`from_snapshot` instead.
+            image: Base OCI image. If None (and ``snapshot_image`` is also
+                None), the backend default (pk-sandbox-base) is used. Mutually
+                exclusive with ``snapshot_image``.
             name: Optional sandbox name (auto-generated if not provided).
+            snapshot_image: Name of an existing snapshot FirecrackerImage
+                (created via :meth:`snapshot`, once ``Ready``) to resume-clone
+                from instead of an OCI image (``spec.firecrackerImage.name``).
+                Mutually exclusive with ``image``. Prefer
+                :meth:`from_snapshot`, which wraps this with resume-oriented
+                defaults.
             resources: Optional ``{"vcpus": int, "mem_mib": int}`` shorthand.
                 Explicit ``vcpus`` / ``mem_mib`` kwargs take precedence.
             vcpus: Guest vCPUs (overrides ``resources['vcpus']``).
@@ -432,6 +440,7 @@ class SandboxV2:
             info = client.create(
                 image=image,
                 name=name,
+                snapshot_image=snapshot_image,
                 vcpus=vcpus,
                 mem_mib=mem_mib,
                 egress=egress,
@@ -555,6 +564,110 @@ class SandboxV2:
         return sandboxes
 
     @classmethod
+    def list_snapshots(
+        cls,
+        *,
+        api_url: str | None = None,
+        workspace: str | None = None,
+        user_id: str | None = None,
+        api_key: str | None = None,
+        timeout: int | None = None,
+    ) -> list[SnapshotImage]:
+        """List snapshot FirecrackerImages in the workspace.
+
+        Best-effort: returns an empty list (never raises) when snapshot
+        listing is unavailable backend-side (CRD missing, RBAC).
+        """
+        config = cls._build_config(
+            api_url=api_url,
+            workspace=workspace,
+            user_id=user_id,
+            api_key=api_key,
+            timeout=timeout,
+        )
+        client = SandboxV2Client(config)
+        try:
+            images = client.snapshots()
+        finally:
+            client.close()
+        return images
+
+    @classmethod
+    def wait_for_snapshot_ready(
+        cls,
+        image: str,
+        *,
+        timeout: int = 120,
+        poll_interval: float = 1.0,
+        api_url: str | None = None,
+        workspace: str | None = None,
+        user_id: str | None = None,
+        api_key: str | None = None,
+        request_timeout: int | None = None,
+    ) -> SnapshotImage:
+        """Block until the named snapshot FirecrackerImage reaches ``Ready``.
+
+        Polls :meth:`list_snapshots` (there is no server-side long-poll for
+        FirecrackerImage readiness, unlike :meth:`wait_until_ready`).
+
+        Args:
+            image: Name of the snapshot FirecrackerImage to wait for.
+            timeout: Maximum seconds to wait (default: 120).
+            poll_interval: Seconds between polls (default: 1.0).
+            api_url: API URL (default: PROKUBE_API_URL env var).
+            workspace: Workspace / Kubernetes namespace (default:
+                PROKUBE_WORKSPACE env var).
+            user_id: User ID (default: PROKUBE_USER_ID env var).
+            api_key: API key (default: PROKUBE_API_KEY env var).
+            request_timeout: Per-request timeout (default: PROKUBE_TIMEOUT env
+                var).
+
+        Returns:
+            The ``Ready`` :class:`~prokube.sandboxv2.models.SnapshotImage`.
+
+        Raises:
+            SandboxTimeoutError: If it does not become Ready in time (or is
+                never observed).
+            SandboxError: If it enters the ``Failed`` terminal state while
+                waiting.
+        """
+        config = cls._build_config(
+            api_url=api_url,
+            workspace=workspace,
+            user_id=user_id,
+            api_key=api_key,
+            timeout=request_timeout,
+        )
+        client = SandboxV2Client(config)
+        last: SnapshotImage | None = None
+        try:
+            deadline = time.monotonic() + timeout
+            while True:
+                for img in client.snapshots():
+                    if img.name != image:
+                        continue
+                    last = img
+                    if img.phase == "Ready":
+                        return img
+                    if img.phase == "Failed":
+                        detail = f": {img.message}" if img.message else ""
+                        raise SandboxError(
+                            f"Snapshot {image!r} entered terminal state "
+                            f"'Failed'{detail}"
+                        )
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                time.sleep(min(poll_interval, remaining))
+        finally:
+            client.close()
+
+        current = f" (current phase: {last.phase!r})" if last else " (not found)"
+        raise SandboxTimeoutError(
+            f"Snapshot {image!r} did not become Ready within {timeout}s{current}"
+        )
+
+    @classmethod
     def from_snapshot(
         cls,
         image: str,
@@ -579,13 +692,11 @@ class SandboxV2:
         """Launch a new sandbox by resume-cloning a snapshot FirecrackerImage.
 
         ``image`` must be the name of a FirecrackerImage created by
-        :meth:`snapshot` (once its ``status.phase`` reaches ``Ready``) — NOT an
-        OCI ref. The backend has no first-class "launch by image name" REST
-        knob yet; the only way to set ``spec.firecrackerImage.name`` (as
-        opposed to ``spec.firecrackerImage.image``, a fresh OCI pull) is via
-        the ``manifest`` escape hatch, which replaces ALL structured knobs —
-        so this builds the manifest for you from the common knobs below rather
-        than the full set :meth:`create` exposes.
+        :meth:`snapshot` (once its ``status.phase`` reaches ``Ready`` — see
+        :meth:`wait_for_snapshot_ready`) — NOT an OCI ref. Sets
+        ``snapshotImage`` on the create request, which the backend maps onto
+        ``spec.firecrackerImage.name`` (a structured knob, mutually exclusive
+        with ``image``); no ``manifest`` escape hatch needed.
 
         Args:
             image: Name of the snapshot FirecrackerImage to resume-clone from.
@@ -623,34 +734,19 @@ class SandboxV2:
             vcpus = vcpus if vcpus is not None else resources.get("vcpus")
             mem_mib = mem_mib if mem_mib is not None else resources.get("mem_mib")
 
-        spec: dict = {
-            "operatingMode": "Running",
-            "firecrackerImage": {"name": image, "terminal": terminal},
-            "resources": {
-                "vcpus": vcpus if vcpus is not None else 2,
-                "memMiB": mem_mib if mem_mib is not None else 2048,
-            },
-            "egress": egress,
-        }
-        if target_node is not None:
-            spec["targetNode"] = target_node
-        if mesh is not None:
-            spec["mesh"] = mesh
-        if snapshot_resume_policy is not None:
-            spec["snapshotResumePolicy"] = snapshot_resume_policy
-        if env_vars:
-            if isinstance(env_vars, dict):
-                spec["env"] = [
-                    {"name": k, "value": str(v)} for k, v in env_vars.items()
-                ]
-            else:
-                spec["env"] = list(env_vars)
-        if secret_refs:
-            spec["envFrom"] = [{"secretRef": {"name": s}} for s in secret_refs]
-
         return cls.create(
             name=name,
-            manifest={"spec": spec},
+            snapshot_image=image,
+            vcpus=vcpus if vcpus is not None else 2,
+            mem_mib=mem_mib if mem_mib is not None else 2048,
+            egress=egress,
+            terminal=terminal,
+            env_vars=env_vars,
+            secret_refs=secret_refs,
+            target_node=target_node,
+            operating_mode="Running",
+            mesh=mesh,
+            snapshot_resume_policy=snapshot_resume_policy,
             api_url=api_url,
             workspace=workspace,
             user_id=user_id,

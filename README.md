@@ -101,9 +101,9 @@ sbx.kill()
 Snapshots — capture a running sandbox into a reusable FirecrackerImage, then
 launch a new sandbox that resume-clones it (fast start instead of a cold boot).
 Capture is asynchronous: `snapshot()` returns as soon as the backend accepts
-the request, and the sandbox keeps running throughout — poll for the image's
-`Ready` status out of band (the SDK has no polling helper yet, since the
-backend exposes no GET route for FirecrackerImage):
+the request, and the sandbox keeps running throughout. Poll
+`SandboxV2.list_snapshots()` (or use `wait_for_snapshot_ready()`) for the
+image's `phase == "Ready"`:
 
 ```python
 from prokube.sandboxv2 import SandboxV2
@@ -113,8 +113,8 @@ sbx.wait_until_ready()
 sbx.commands.run("pip install numpy")   # bake state into the snapshot
 
 image_name = sbx.snapshot("my-warm-python")  # async: sandbox keeps running
+SandboxV2.wait_for_snapshot_ready(image_name, namespace="my-namespace")
 
-# ... once the FirecrackerImage `image_name` reaches Ready ...
 clone = SandboxV2.from_snapshot(image_name, namespace="my-namespace")
 clone.wait_until_ready()
 print(clone.run_code("import numpy; print(numpy.__version__)").stdout)

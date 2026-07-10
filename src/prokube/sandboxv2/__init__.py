@@ -19,6 +19,7 @@ from prokube.sandboxv2.models import (
     Lifecycle,
     LifecycleHandler,
     Probe,
+    SnapshotImage,
     TCPSocketAction,
 )
 from prokube.sandboxv2.sandbox import SandboxV2
@@ -35,4 +36,5 @@ __all__ = [
     "ExecAction",
     "DNSConfig",
     "DNSConfigOption",
+    "SnapshotImage",
 ]
