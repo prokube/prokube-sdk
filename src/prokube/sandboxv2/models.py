@@ -70,9 +70,7 @@ class SandboxV2Resources(BaseModel):
     """Guest compute request for a Firecracker sandbox."""
 
     vcpus: int | None = Field(default=None, ge=1, description="Guest vCPUs")
-    mem_mib: int | None = Field(
-        default=None, ge=128, description="Guest memory in MiB"
-    )
+    mem_mib: int | None = Field(default=None, ge=128, description="Guest memory in MiB")
 
 
 class EnvVar(BaseModel):
@@ -194,18 +192,10 @@ class Probe(BaseModel):
     initial_delay_seconds: int | None = Field(
         default=None, ge=0, alias="initialDelaySeconds"
     )
-    period_seconds: int | None = Field(
-        default=None, ge=1, alias="periodSeconds"
-    )
-    timeout_seconds: int | None = Field(
-        default=None, ge=1, alias="timeoutSeconds"
-    )
-    failure_threshold: int | None = Field(
-        default=None, ge=1, alias="failureThreshold"
-    )
-    success_threshold: int | None = Field(
-        default=None, ge=1, alias="successThreshold"
-    )
+    period_seconds: int | None = Field(default=None, ge=1, alias="periodSeconds")
+    timeout_seconds: int | None = Field(default=None, ge=1, alias="timeoutSeconds")
+    failure_threshold: int | None = Field(default=None, ge=1, alias="failureThreshold")
+    success_threshold: int | None = Field(default=None, ge=1, alias="successThreshold")
 
     @model_validator(mode="after")
     def _exactly_one_handler(self) -> Probe:
@@ -244,9 +234,7 @@ class Lifecycle(BaseModel):
 
     model_config = ConfigDict(populate_by_name=True)
 
-    post_start: LifecycleHandler | None = Field(
-        default=None, alias="postStart"
-    )
+    post_start: LifecycleHandler | None = Field(default=None, alias="postStart")
 
 
 # =============================================================================
@@ -325,11 +313,6 @@ class CreateSandboxV2Request(BaseModel):
         default=None,
         serialization_alias="imagePullSecrets",
         description="Registry pull secret names",
-    )
-    runtime_class_name: str | None = Field(
-        default=None,
-        serialization_alias="runtimeClassName",
-        description="spec.runtimeClassName (fc-host | fc-pod)",
     )
     operating_mode: str | None = Field(
         default=None,
@@ -482,86 +465,32 @@ class UploadFileV2Request(BaseModel):
 
 
 # =============================================================================
-# FirecrackerPool — warm pool of sandboxes (Hibernated or Running members)
-#
-# Mirrors the pkui backend ``modules/sandboxv2`` pool DTOs
-# (CreateHibernatedPoolRequest / HibernatedPoolInfo / HibernatedPoolMember).
-# The backend routes live at ``/api/namespaces/{ns}/sandboxv2-pools`` (note:
-# ``sandboxv2-pools``, a sibling collection of ``sandboxv2``, NOT a sub-path).
-# (The k8s kind was renamed FirecrackerHibernatedPool -> FirecrackerPool and
-# gained a ``warmState`` knob; the REST paths are unchanged.)
+# Snapshots — capture a RUNNING sandbox into a reusable FirecrackerImage, and
+# resume-clone from one on a later create. Mirrors the pkui backend
+# ``modules/sandboxv2`` snapshot DTOs (SnapshotSandboxRequest /
+# SnapshotSandboxResponse). The endpoint is
+# ``POST .../sandboxv2/{name}/snapshot`` (a sub-path of the sandbox, not a
+# sibling collection). Capture is ASYNC: the response confirms the request was
+# accepted, not that the image is Ready — the sandbox keeps running throughout.
 # =============================================================================
 
 
-class CreateHibernatedPoolRequest(BaseModel):
-    """Request body for ``POST .../sandboxv2-pools`` (mirrors backend model).
+class SnapshotSandboxRequest(BaseModel):
+    """Request body for ``POST .../sandboxv2/{name}/snapshot``."""
 
-    ``template`` is a full v2 sandbox create spec reused verbatim — the same
-    knobs as :class:`CreateSandboxV2Request` (image, resources, egress,
-    volumes/volumeMounts, targetNode). The backend forces the template to
-    ``runtimeClassName: fc-host`` and owns ``operatingMode`` (the pool
-    controller drives each member to the pool's ``warmState``), and ignores the
-    template's own ``name`` (members are named by the controller).
+    name: str = Field(
+        ..., min_length=1, max_length=63, description="Snapshot image name"
+    )
 
-    ``warm_state`` (serialised as ``warmState``) is how warm members are kept:
-    ``"Hibernated"`` (default — pre-snapshotted, a claim is a fast resume) or
-    ``"Running"`` (members kept hot). Editable post-create via ``set_warm_state``.
+
+class SnapshotInfo(BaseModel):
+    """Response body for ``POST .../sandboxv2/{name}/snapshot`` (201).
+
+    The backend creates a FirecrackerImage named ``image`` and asynchronously
+    captures ``sandbox`` into it; the image's ``status.phase`` reaches
+    ``Ready`` once the capture completes (there is no SDK-visible way to poll
+    this yet — the backend exposes no GET route for FirecrackerImage).
     """
 
-    name: str = Field(..., min_length=1, max_length=63, description="Pool name")
-    size: int = Field(..., ge=0, description="Desired number of warm members")
-    warm_state: str = Field(
-        default="Hibernated",
-        serialization_alias="warmState",
-        description="spec.warmState — 'Hibernated' (default) or 'Running'",
-    )
-    template: CreateSandboxV2Request = Field(
-        ..., description="Sandbox spec used as the pool member template"
-    )
-
-
-class UpdatePoolRequest(BaseModel):
-    """Request body for ``PATCH .../sandboxv2-pools/{name}`` — mutable fields.
-
-    Currently ``warm_state`` (serialised as ``warmState``) only."""
-
-    warm_state: str = Field(
-        ...,
-        serialization_alias="warmState",
-        description="spec.warmState — 'Hibernated' or 'Running'",
-    )
-
-
-class HibernatedPoolMember(BaseModel):
-    """One entry of FirecrackerPool ``status.members``."""
-
-    name: str = Field(..., description="Member FirecrackerSandbox name")
-    phase: str | None = Field(
-        default=None, description="Member FirecrackerSandbox status.phase"
-    )
-
-
-class HibernatedPoolInfo(BaseModel):
-    """A FirecrackerPool projected from the CR (mirrors backend)."""
-
-    name: str = Field(..., description="Pool (CR) name")
-    workspace: str = Field(..., description="Workspace (Kubernetes namespace)")
-    size: int = Field(default=0, description="spec.size — desired warm members")
-    warm_state: str = Field(
-        default="Hibernated",
-        description="spec.warmState — 'Hibernated' (default) or 'Running'",
-    )
-    ready_members: int = Field(
-        default=0, description="status.readyMembers — claimable warm members"
-    )
-    members: list[HibernatedPoolMember] = Field(
-        default_factory=list, description="status.members"
-    )
-    image: str | None = Field(default=None, description="Template base OCI image")
-    runtime_class_name: str | None = Field(
-        default=None, description="Template spec.runtimeClassName (fc-host)"
-    )
-    message: str | None = Field(
-        default=None, description="Human-readable status detail"
-    )
-    created_at: str | None = Field(default=None, description="Creation timestamp")
+    image: str = Field(..., description="Name of the created snapshot image")
+    sandbox: str = Field(..., description="Name of the sandbox that was snapshotted")

@@ -37,24 +37,21 @@ from prokube.sandbox.client import _parse_batch_file_write_response
 from prokube.sandbox.models import (
     BatchFileWriteRequest,
     BatchFileWriteResponse,
-    ClaimRequest,
     FileWriteRequest,
 )
 from prokube.sandboxv2.models import (
     CodeResult,
     CommandResult,
-    CreateHibernatedPoolRequest,
     CreateSandboxV2Request,
     DNSConfig,
     ExecV2Request,
     FileInfo,
-    HibernatedPoolInfo,
-    HibernatedPoolMember,
     Lifecycle,
     Probe,
     SandboxV2Info,
     SandboxV2Status,
-    UpdatePoolRequest,
+    SnapshotInfo,
+    SnapshotSandboxRequest,
     UploadFileV2Request,
 )
 
@@ -62,9 +59,7 @@ if TYPE_CHECKING:
     from prokube.common.config import Config
 
 
-def _parse_status(
-    status_str: str | None, default: SandboxV2Status
-) -> SandboxV2Status:
+def _parse_status(status_str: str | None, default: SandboxV2Status) -> SandboxV2Status:
     """Parse a phase string to SandboxV2Status, tolerating unknown values."""
     if not status_str:
         return default
@@ -98,7 +93,7 @@ class SandboxV2Client:
     # -- path helpers ---------------------------------------------------------
     #
     # Every path method branches on ``use_api_key`` exactly like v1's
-    # ``SandboxClient._sandboxes_path`` / ``PoolClient._pools_path``:
+    # ``SandboxClient._sandboxes_path``:
     #
     # * api-key -> top-level ORIGIN routes (``/sandboxv2/{ws}/...``). The shared
     #   ``HttpClient`` uses only the ``api_url`` origin under an api key, so NO
@@ -120,40 +115,13 @@ class SandboxV2Client:
     def _sandbox_sub_path(self, name: str, sub: str) -> str:
         return f"{self._sandbox_path(name)}/{sub}"
 
-    def _claim_path(self) -> str:
-        """POST target for claiming a warm-pool member.
-
-        Under api-key this is the ORIGIN route ``/sandboxv2/{ws}/sandboxes/claim``
-        (pool name travels in the JSON body, exactly as v1's
-        ``claim_from_pool``). In-cluster claims instead POST to
-        ``.../sandboxv2-pools/{pool}/claim`` (pool name in the URL); see
-        :meth:`claim`.
-        """
-        return f"{self._collection_path()}/claim"
-
-    def _pools_path(self) -> str:
-        ws = self._workspace()
-        if self.config.use_api_key:
-            # Pool CRUD is not part of the deployed api-key ORIGIN contract
-            # (only pool *claim* is exposed, via the sandboxes/claim route
-            # above). Provide a consistent top-level path for completeness.
-            return f"/sandboxv2/{ws}/pools"
-        # In-cluster: sibling collection of ``sandboxv2`` (``sandboxv2-pools``),
-        # NOT a sub-path of it — mirrors the pkui backend route registration.
-        return f"/api/namespaces/{ws}/sandboxv2-pools"
-
-    def _pool_path(self, name: str) -> str:
-        return f"{self._pools_path()}/{name}"
-
     # -- parsing --------------------------------------------------------------
 
     def _parse_info(self, response: dict[str, object]) -> SandboxV2Info:
         return SandboxV2Info(
             name=response.get("name", ""),
             workspace=response.get("namespace", self._workspace()),
-            status=_parse_status(
-                response.get("phase"), SandboxV2Status.UNKNOWN
-            ),
+            status=_parse_status(response.get("phase"), SandboxV2Status.UNKNOWN),
             image=response.get("image") or None,
             runtime_class=response.get("runtimeClassName"),
             operating_mode=response.get("operatingMode") or None,
@@ -170,7 +138,6 @@ class SandboxV2Client:
         self,
         image: str | None = None,
         name: str | None = None,
-        runtime_class: str = "fc-host",
         vcpus: int | None = None,
         mem_mib: int | None = None,
         egress: bool = False,
@@ -217,9 +184,15 @@ class SandboxV2Client:
         (spec.mesh).
 
         ``snapshot_resume_policy`` (spec.snapshotResumePolicy: Strict |
-        AllowStale) controls whether resuming from a pool member's snapshot
-        requires an exact recipe/base match. Omitted -> the executor Strict
-        default, so existing callers are unaffected.
+        AllowStale) controls whether resuming from a snapshot image requires an
+        exact recipe/base match. Omitted -> the executor Strict default, so
+        existing callers are unaffected.
+
+        ``image`` is always an OCI ref (or omitted for the backend default);
+        the backend has no by-name knob for launching from a snapshot
+        FirecrackerImage (created via :meth:`snapshot`) — that goes through
+        ``manifest.spec.firecrackerImage.name`` instead. See
+        :meth:`prokube.sandboxv2.sandbox.SandboxV2.from_snapshot`.
         """
         if name is None:
             name = f"sandbox-{uuid.uuid4().hex[:8]}"
@@ -227,7 +200,6 @@ class SandboxV2Client:
         request = CreateSandboxV2Request(
             name=name,
             image=image,
-            runtime_class_name=runtime_class,
             vcpus=vcpus,
             mem_mib=mem_mib,
             egress=egress,
@@ -313,129 +285,40 @@ class SandboxV2Client:
         """Delete a sandbox (deletes the CR; ephemeral PVC cleaned up)."""
         self._http.delete(self._sandbox_path(name))
 
-    # -- pools (FirecrackerHibernatedPool) ------------------------------------
+    def snapshot(self, name: str, snapshot_name: str) -> SnapshotInfo:
+        """Snapshot a RUNNING sandbox into a reusable FirecrackerImage.
 
-    def _parse_pool(self, response: dict[str, object]) -> HibernatedPoolInfo:
-        members = [
-            HibernatedPoolMember(name=m.get("name", ""), phase=m.get("phase"))
-            for m in (response.get("members") or [])
-            if m.get("name")
-        ]
-        return HibernatedPoolInfo(
-            name=response.get("name", ""),
-            workspace=response.get("namespace", self._workspace()),
-            size=response.get("size", 0) or 0,
-            warm_state=response.get("warmState") or "Hibernated",
-            ready_members=response.get("readyMembers", 0) or 0,
-            members=members,
-            image=response.get("image") or None,
-            runtime_class_name=response.get("runtimeClassName"),
-            message=response.get("message"),
-            created_at=response.get("createdAt"),
-        )
-
-    def create_pool(
-        self,
-        name: str,
-        size: int,
-        template: CreateSandboxV2Request,
-        warm_state: str = "Hibernated",
-    ) -> HibernatedPoolInfo:
-        """Create a warm pool of Firecracker sandboxes.
+        POSTs to ``.../sandboxv2/{name}/snapshot``. The backend creates a
+        FirecrackerImage named ``snapshot_name`` and captures the microVM into
+        it ASYNCHRONOUSLY — this call returns as soon as the capture is
+        accepted, not once the image is ``Ready``; the sandbox keeps running
+        throughout. Launch a new sandbox from the (eventually Ready) image via
+        :meth:`prokube.sandboxv2.sandbox.SandboxV2.from_snapshot`.
 
         Args:
-            name: Pool name.
-            size: Desired number of warm members.
-            template: The v2 sandbox create spec used as the member template
-                (same knobs as :meth:`create`). The backend forces the template
-                to ``runtimeClassName: fc-host`` and owns ``operatingMode``.
-            warm_state: How warm members are kept — ``"Hibernated"`` (default,
-                pre-snapshotted; a claim is a fast resume) or ``"Running"``
-                (members kept hot). Editable later via :meth:`set_pool_warm_state`.
-        """
-        request = CreateHibernatedPoolRequest(
-            name=name, size=size, warm_state=warm_state, template=template
-        )
-        response = self._http.post(
-            self._pools_path(),
-            json=request.model_dump(by_alias=True, exclude_none=True),
-        )
-        return self._parse_pool(response)
-
-    def set_pool_warm_state(
-        self, name: str, warm_state: str
-    ) -> HibernatedPoolInfo:
-        """Change a pool's ``warmState`` post-create (Hibernated <-> Running).
-
-        The fc controller reconciles every member to the new state.
-
-        Args:
-            name: Pool name.
-            warm_state: ``"Hibernated"`` or ``"Running"``.
-        """
-        request = UpdatePoolRequest(warm_state=warm_state)
-        response = self._http.patch(
-            self._pool_path(name),
-            json=request.model_dump(by_alias=True, exclude_none=True),
-        )
-        return self._parse_pool(response)
-
-    def list_pools(self) -> list[HibernatedPoolInfo]:
-        """List all warm pools in the configured workspace."""
-        response = self._http.get(self._pools_path())
-        pools = response.get("pools", [])
-        return [self._parse_pool(p) for p in pools]
-
-    def get_pool(self, name: str) -> HibernatedPoolInfo:
-        """Get information about a warm pool."""
-        response = self._http.get(self._pool_path(name))
-        return self._parse_pool(response)
-
-    def delete_pool(self, name: str) -> None:
-        """Delete a warm pool (the controller garbage-collects its members)."""
-        self._http.delete(self._pool_path(name))
-
-    def claim(
-        self, name: str, auto_idle_timeout_seconds: int | None = None
-    ) -> SandboxV2Info:
-        """Claim a ready member from a warm pool (fast resume, not cold boot).
-
-        Returns the now-resuming sandbox, detached from the pool. The pool
-        controller refills to keep ``spec.size`` warm.
-
-        Path/body mirror v1's ``claim_from_pool`` under api-key:
-
-        * api-key -> ``POST /sandboxv2/{ws}/sandboxes/claim`` with the pool name
-          in the JSON body (v1's :class:`ClaimRequest` shape: ``poolName`` +
-          optional ``autoIdleTimeoutSeconds``).
-        * in-cluster -> ``POST .../sandboxv2-pools/{pool}/claim`` (pool name in
-          the URL, no body — the existing warm-pool controller contract).
-
-        Args:
-            name: Name of the warm pool to claim from.
-            auto_idle_timeout_seconds: Per-claim auto-idle override in seconds
-                (only forwarded on the api-key origin route).
+            name: Name of the running sandbox to snapshot.
+            snapshot_name: Name for the new snapshot FirecrackerImage.
 
         Raises:
-            SandboxError: If no warm member is ready to claim (HTTP 409).
+            NotFoundError: If the sandbox does not exist (HTTP 404).
+            SandboxError: If the sandbox is not Running (HTTP 409).
+            ProKubeError: If the FirecrackerSandbox/FirecrackerImage CRDs are
+                not installed (HTTP 503), or any other backend error.
         """
+        request = SnapshotSandboxRequest(name=snapshot_name)
         try:
-            if self.config.use_api_key:
-                request = ClaimRequest(
-                    pool_name=name,
-                    auto_idle_timeout_seconds=auto_idle_timeout_seconds,
-                )
-                response = self._http.post(
-                    self._claim_path(),
-                    json=request.model_dump(by_alias=True, exclude_none=True),
-                )
-            else:
-                response = self._http.post(f"{self._pool_path(name)}/claim")
+            response = self._http.post(
+                self._sandbox_sub_path(name, "snapshot"),
+                json=request.model_dump(),
+            )
         except ProKubeError as e:
             if e.status_code == 409:
                 raise SandboxError(str(e), status_code=409) from e
             raise
-        return self._parse_info(response)
+        return SnapshotInfo(
+            image=response.get("image", snapshot_name),
+            sandbox=response.get("sandbox", name),
+        )
 
     # -- exec -----------------------------------------------------------------
 
@@ -495,9 +378,7 @@ class SandboxV2Client:
         )
         response = self._http.post(
             self._sandbox_sub_path(name, "exec"),
-            json=request.model_dump(
-                exclude={"session_id", "reset_session"}
-            ),
+            json=request.model_dump(exclude={"session_id", "reset_session"}),
         )
         return CommandResult(
             stdout=response.get("stdout", ""),

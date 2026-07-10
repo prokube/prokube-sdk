@@ -1,10 +1,12 @@
 """Main SandboxV2 class for Firecracker (Sandbox v2) microVMs.
 
 Mirrors the v1 :class:`prokube.sandbox.Sandbox` public surface, adapted to the
-v2 backend: creation takes a ``runtime_class`` (``fc-host`` / ``fc-pod``) and v2
-knobs (resources, egress, volumes), the same ``workspace`` param as v1, and the
-warm pool is a FirecrackerHibernatedPool (:meth:`SandboxV2.from_pool`
-claims a pre-hibernated member; see :class:`prokube.sandboxv2.pool.SandboxV2Pool`).
+v2 backend: every sandbox runs on ``fc-pod`` (the only runtime; there is no
+runtime choice), creation takes v2 knobs (resources, egress, volumes), and
+sandboxes are addressed by the same ``workspace`` param as v1. There is no warm
+pool — instead a RUNNING sandbox can be snapshotted into a reusable
+FirecrackerImage (:meth:`SandboxV2.snapshot`) and a later sandbox can
+resume-clone from it for a fast start (:meth:`SandboxV2.from_snapshot`).
 
 The stateful code / shell command / file helpers are the *same* v1 classes
 (:class:`CodeRunner` / :class:`CommandRunner` / :class:`FileManager`) — they are
@@ -47,7 +49,6 @@ class SandboxV2:
     Example:
         >>> sbx = SandboxV2.create(
         ...     image="pk-sandbox-base",
-        ...     runtime_class="fc-host",
         ...     resources={"vcpus": 2, "mem_mib": 2048},
         ...     egress=False,
         ... )
@@ -111,7 +112,8 @@ class SandboxV2:
 
     @property
     def runtime_class(self) -> str | None:
-        """The runtime class (fc-host | fc-pod)."""
+        """The runtime class reported by the backend (read-only; always
+        ``fc-pod`` — there is no runtime choice)."""
         return self._runtime_class
 
     @property
@@ -292,6 +294,29 @@ class SandboxV2:
         self._killed = True
         self._client.close()
 
+    def snapshot(self, name: str) -> str:
+        """Snapshot this RUNNING sandbox into a reusable FirecrackerImage.
+
+        The backend captures the microVM ASYNCHRONOUSLY: this call returns as
+        soon as the capture request is accepted, not once the image is
+        ``Ready``. This sandbox keeps running throughout — snapshotting does
+        not pause or kill it. There is currently no SDK-visible way to poll the
+        image for ``Ready`` (the backend exposes no GET route for
+        FirecrackerImage); use :meth:`from_snapshot` once you know it is ready.
+
+        Args:
+            name: Name for the new snapshot FirecrackerImage.
+
+        Returns:
+            The snapshot image name (echoed back by the backend).
+
+        Raises:
+            SandboxError: If this sandbox is not in Running state (HTTP 409).
+        """
+        self._check_not_killed()
+        info = self._client.snapshot(self._name, name)
+        return info.image
+
     def refresh(self) -> None:
         """Refresh sandbox information from the API."""
         self._check_not_killed()
@@ -309,7 +334,6 @@ class SandboxV2:
         cls,
         image: str | None = None,
         *,
-        runtime_class: str = "fc-host",
         name: str | None = None,
         resources: dict | None = None,
         vcpus: int | None = None,
@@ -341,9 +365,9 @@ class SandboxV2:
 
         Args:
             image: Base OCI image. If None, the backend default (pk-sandbox-base)
-                is used.
-            runtime_class: ``fc-host`` (VM, default) or ``fc-pod`` (pod-hosted).
-                Maps to ``spec.runtimeClassName``.
+                is used. Always an OCI ref — to launch from a snapshot
+                FirecrackerImage (created via :meth:`snapshot`) use
+                :meth:`from_snapshot` instead.
             name: Optional sandbox name (auto-generated if not provided).
             resources: Optional ``{"vcpus": int, "mem_mib": int}`` shorthand.
                 Explicit ``vcpus`` / ``mem_mib`` kwargs take precedence.
@@ -378,9 +402,9 @@ class SandboxV2:
             mesh: Optional: opt this sandbox into the Istio service mesh
                 (spec.mesh).
             snapshot_resume_policy: spec.snapshotResumePolicy (``Strict`` |
-                ``AllowStale``) — whether resuming from a pool member's
-                snapshot requires an exact recipe/base match. Omitted ->
-                executor Strict default.
+                ``AllowStale``) — whether resuming from a snapshot image
+                requires an exact recipe/base match. Omitted -> executor
+                Strict default.
             manifest: Full FirecrackerSandbox object; wins over structured knobs.
             api_url: API URL (default: PROKUBE_API_URL env var).
             workspace: Workspace / Kubernetes namespace (default:
@@ -408,7 +432,6 @@ class SandboxV2:
             info = client.create(
                 image=image,
                 name=name,
-                runtime_class=runtime_class,
                 vcpus=vcpus,
                 mem_mib=mem_mib,
                 egress=egress,
@@ -439,7 +462,7 @@ class SandboxV2:
             client=client,
             status=info.status,
             image=info.image or image,
-            runtime_class=info.runtime_class or runtime_class,
+            runtime_class=info.runtime_class,
         )
 
     @classmethod
@@ -532,85 +555,108 @@ class SandboxV2:
         return sandboxes
 
     @classmethod
-    def from_pool(
+    def from_snapshot(
         cls,
-        pool: str,
+        image: str,
         *,
+        name: str | None = None,
+        resources: dict | None = None,
+        vcpus: int | None = None,
+        mem_mib: int | None = None,
+        egress: bool = False,
+        terminal: bool = True,
+        env_vars: dict[str, str] | list[dict[str, str]] | None = None,
+        secret_refs: list[str] | None = None,
+        target_node: str | None = None,
+        mesh: bool | None = None,
+        snapshot_resume_policy: str | None = None,
         api_url: str | None = None,
         workspace: str | None = None,
         user_id: str | None = None,
         api_key: str | None = None,
-        auto_idle_timeout_seconds: int | None = None,
         timeout: int | None = None,
     ) -> Self:
-        """Claim a sandbox from a warm pool.
+        """Launch a new sandbox by resume-cloning a snapshot FirecrackerImage.
 
-        Signature-compatible with :meth:`prokube.sandbox.Sandbox.from_pool`, so
-        swapping ``Sandbox`` for ``SandboxV2`` needs no other change. Claims a
-        pre-hibernated member from a
-        :class:`~prokube.sandboxv2.pool.SandboxV2Pool` and returns a SandboxV2
-        bound to it. A claim is a fast VM resume (~1.4s); ``from_pool`` waits
-        for the member to reach Running (via :meth:`wait_until_ready`) before
-        returning, so the sandbox is ready to use immediately.
+        ``image`` must be the name of a FirecrackerImage created by
+        :meth:`snapshot` (once its ``status.phase`` reaches ``Ready``) — NOT an
+        OCI ref. The backend has no first-class "launch by image name" REST
+        knob yet; the only way to set ``spec.firecrackerImage.name`` (as
+        opposed to ``spec.firecrackerImage.image``, a fresh OCI pull) is via
+        the ``manifest`` escape hatch, which replaces ALL structured knobs —
+        so this builds the manifest for you from the common knobs below rather
+        than the full set :meth:`create` exposes.
 
         Args:
-            pool: Name of the warm pool to claim from.
+            image: Name of the snapshot FirecrackerImage to resume-clone from.
+            name: Optional sandbox name (auto-generated if not provided).
+            resources: ``{"vcpus": int, "mem_mib": int}`` shorthand.
+            vcpus: Guest vCPUs (overrides ``resources['vcpus']``; default 2).
+            mem_mib: Guest memory in MiB (overrides ``resources['mem_mib']``;
+                default 2048).
+            egress: Whether the microVM may reach the cluster/internet
+                (default: False — isolated).
+            terminal: Inject a ttyd Terminal (:7681) into the guest.
+            env_vars: Literal env vars baked into the guest. Accepts a
+                ``dict[str,str]`` or a list of ``{"name","value"}`` dicts.
+            secret_refs: Names of Secrets whose keys are injected as env vars.
+            target_node: Pin the microVM to a node.
+            mesh: Optional: opt this sandbox into the Istio service mesh.
+            snapshot_resume_policy: ``Strict`` | ``AllowStale`` — whether the
+                resume requires an exact recipe/base match with the snapshot.
             api_url: API URL (default: PROKUBE_API_URL env var).
             workspace: Workspace / Kubernetes namespace (default:
                 PROKUBE_WORKSPACE env var).
             user_id: User ID (default: PROKUBE_USER_ID env var).
             api_key: API key (default: PROKUBE_API_KEY env var).
-            auto_idle_timeout_seconds: Per-claim auto-idle override in seconds.
             timeout: Request timeout (default: PROKUBE_TIMEOUT env var).
 
         Returns:
-            A SandboxV2 instance bound to the claimed member.
-
-        Raises:
-            SandboxError: If the pool has no ready member to claim (HTTP 409).
+            A SandboxV2 instance (call ``wait_until_ready()`` before use).
 
         Example:
-            >>> sbx = SandboxV2.from_pool("python-pool")
+            >>> sbx = SandboxV2.from_snapshot("my-warm-python")
             >>> sbx.wait_until_ready()
             >>> sbx.run_code("print('hello')")
         """
-        config = cls._build_config(
+        if resources:
+            vcpus = vcpus if vcpus is not None else resources.get("vcpus")
+            mem_mib = mem_mib if mem_mib is not None else resources.get("mem_mib")
+
+        spec: dict = {
+            "operatingMode": "Running",
+            "firecrackerImage": {"name": image, "terminal": terminal},
+            "resources": {
+                "vcpus": vcpus if vcpus is not None else 2,
+                "memMiB": mem_mib if mem_mib is not None else 2048,
+            },
+            "egress": egress,
+        }
+        if target_node is not None:
+            spec["targetNode"] = target_node
+        if mesh is not None:
+            spec["mesh"] = mesh
+        if snapshot_resume_policy is not None:
+            spec["snapshotResumePolicy"] = snapshot_resume_policy
+        if env_vars:
+            if isinstance(env_vars, dict):
+                spec["env"] = [
+                    {"name": k, "value": str(v)} for k, v in env_vars.items()
+                ]
+            else:
+                spec["env"] = list(env_vars)
+        if secret_refs:
+            spec["envFrom"] = [{"secretRef": {"name": s}} for s in secret_refs]
+
+        return cls.create(
+            name=name,
+            manifest={"spec": spec},
             api_url=api_url,
             workspace=workspace,
             user_id=user_id,
             api_key=api_key,
             timeout=timeout,
         )
-        client = SandboxV2Client(config)
-        try:
-            info = client.claim(
-                pool, auto_idle_timeout_seconds=auto_idle_timeout_seconds
-            )
-        except Exception:
-            client.close()
-            raise
-
-        sbx = cls(
-            name=info.name,
-            workspace=info.workspace,
-            client=client,
-            status=info.status,
-            image=info.image,
-            runtime_class=info.runtime_class,
-        )
-        # Hand back a ready-to-use sandbox. A claim flips a Hibernated member to
-        # Running (a ~1.4s VM resume); wait_until_ready gates on that via the
-        # backend's server-side readiness long-poll. A pool-hot (warmState=Running)
-        # member is already Running, so this returns immediately (see the
-        # short-circuit in wait_until_ready). No guest-kernel probing/reset: the
-        # curated sandbox-agent's per-language session survives the snapshot, so
-        # once the VM is Running the session is intact.
-        try:
-            sbx.wait_until_ready()
-        except Exception:
-            client.close()
-            raise
-        return sbx
 
     @staticmethod
     def _build_config(

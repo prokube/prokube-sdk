@@ -1,9 +1,9 @@
 """Tests for the Sandbox v2 (Firecracker) client and facade.
 
 All HTTP is mocked (pytest_httpx) — no live cluster required. Mirrors the v1
-sandbox tests: covers create (fc-host AND fc-pod), run_code, commands, files,
-pause/resume, get, kill, wait_until_ready polling, the api-key path prefix, and
-claiming a warm-pool member via from_pool.
+sandbox tests: covers create, run_code, commands, files, pause/resume, get,
+kill, wait_until_ready polling, the api-key path prefix, and snapshotting a
+running sandbox / launching from a snapshot.
 """
 
 import base64
@@ -15,7 +15,7 @@ from pytest_httpx import HTTPXMock
 
 from prokube.common.config import Config
 from prokube.common.exceptions import SandboxError, SandboxTimeoutError
-from prokube.sandboxv2 import SandboxV2, SandboxV2Client, SandboxV2Pool
+from prokube.sandboxv2 import SandboxV2, SandboxV2Client
 from prokube.sandboxv2.models import (
     DNSConfig,
     DNSConfigOption,
@@ -51,7 +51,7 @@ def _mock_version(httpx_mock: HTTPXMock) -> None:
     )
 
 
-def _sandbox_json(name="sbx", phase="Running", runtime="fc-host"):
+def _sandbox_json(name="sbx", phase="Running", runtime="fc-pod"):
     return {
         "name": name,
         "namespace": NS,
@@ -69,19 +69,18 @@ def _sandbox_json(name="sbx", phase="Running", runtime="fc-host"):
 
 
 class TestCreate:
-    def test_create_fc_host_body_and_path(self, config, httpx_mock: HTTPXMock):
+    def test_create_body_and_path(self, config, httpx_mock: HTTPXMock):
         _mock_version(httpx_mock)
         httpx_mock.add_response(
             method="POST",
             url=COLL,
             status_code=201,
-            json=_sandbox_json(name="sbx-1", phase="Pending", runtime="fc-host"),
+            json=_sandbox_json(name="sbx-1", phase="Pending", runtime="fc-pod"),
         )
         client = SandboxV2Client(config)
         info = client.create(
             image="pk-sandbox-base",
             name="sbx-1",
-            runtime_class="fc-host",
             vcpus=2,
             mem_mib=2048,
             egress=False,
@@ -91,16 +90,16 @@ class TestCreate:
         body = json.loads(req.content)
         assert str(req.url) == COLL
         assert body["name"] == "sbx-1"
-        assert body["runtimeClassName"] == "fc-host"
+        assert "runtimeClassName" not in body
         assert body["vcpus"] == 2
         assert body["memMiB"] == 2048
         assert body["egress"] is False
         assert info.name == "sbx-1"
         assert info.status == SandboxV2Status.PENDING
-        assert info.runtime_class == "fc-host"
+        assert info.runtime_class == "fc-pod"
         client.close()
 
-    def test_create_fc_pod(self, config, httpx_mock: HTTPXMock):
+    def test_create_omits_image_when_absent(self, config, httpx_mock: HTTPXMock):
         _mock_version(httpx_mock)
         httpx_mock.add_response(
             method="POST",
@@ -109,12 +108,11 @@ class TestCreate:
             json=_sandbox_json(name="sbx-2", phase="Pending", runtime="fc-pod"),
         )
         client = SandboxV2Client(config)
-        info = client.create(name="sbx-2", runtime_class="fc-pod")
+        info = client.create(name="sbx-2")
 
         body = json.loads(
             [r for r in httpx_mock.get_requests() if r.method == "POST"][-1].content
         )
-        assert body["runtimeClassName"] == "fc-pod"
         # image omitted -> not sent (backend default applies)
         assert "image" not in body
         assert info.runtime_class == "fc-pod"
@@ -198,7 +196,10 @@ class TestCreate:
     def test_facade_create_resources_shorthand(self, mock_env, httpx_mock: HTTPXMock):
         _mock_version(httpx_mock)
         httpx_mock.add_response(
-            method="POST", url=COLL, status_code=201, json=_sandbox_json(phase="Pending")
+            method="POST",
+            url=COLL,
+            status_code=201,
+            json=_sandbox_json(phase="Pending"),
         )
         sbx = SandboxV2.create(
             image="pk-sandbox-base", resources={"vcpus": 4, "mem_mib": 4096}
@@ -208,7 +209,7 @@ class TestCreate:
         )
         assert body["vcpus"] == 4
         assert body["memMiB"] == 4096
-        assert sbx.runtime_class == "fc-host"
+        assert sbx.runtime_class == "fc-pod"
         assert sbx.status == "Pending"
 
 
@@ -447,7 +448,10 @@ class TestLifecycle:
     def test_wait_until_ready_polls(self, mock_env, httpx_mock: HTTPXMock):
         _mock_version(httpx_mock)
         httpx_mock.add_response(
-            method="POST", url=COLL, status_code=201, json=_sandbox_json(phase="Pending")
+            method="POST",
+            url=COLL,
+            status_code=201,
+            json=_sandbox_json(phase="Pending"),
         )
         # Prefers the server-side long-poll readiness endpoint, which returns
         # the moment the phase reaches Running.
@@ -463,7 +467,10 @@ class TestLifecycle:
     def test_wait_until_ready_failed_raises(self, mock_env, httpx_mock: HTTPXMock):
         _mock_version(httpx_mock)
         httpx_mock.add_response(
-            method="POST", url=COLL, status_code=201, json=_sandbox_json(phase="Pending")
+            method="POST",
+            url=COLL,
+            status_code=201,
+            json=_sandbox_json(phase="Pending"),
         )
         httpx_mock.add_response(
             method="GET",
@@ -477,7 +484,10 @@ class TestLifecycle:
     def test_wait_until_ready_timeout(self, mock_env, httpx_mock: HTTPXMock):
         _mock_version(httpx_mock)
         httpx_mock.add_response(
-            method="POST", url=COLL, status_code=201, json=_sandbox_json(phase="Pending")
+            method="POST",
+            url=COLL,
+            status_code=201,
+            json=_sandbox_json(phase="Pending"),
         )
         # timeout=0 → the deadline has already passed, so no readiness request
         # is issued before it raises.
@@ -491,7 +501,7 @@ class TestLifecycle:
 # ---------------------------------------------------------------------------
 
 
-class TestApiKeyAndPool:
+class TestApiKey:
     def test_api_key_uses_origin_route(self, httpx_mock: HTTPXMock):
         """Under api-key the client targets the top-level v2 ORIGIN route.
 
@@ -535,59 +545,150 @@ class TestApiKeyAndPool:
         assert f"{base}/files" in urls
         client.close()
 
-    def test_api_key_claim_uses_origin_route_with_body(self, httpx_mock: HTTPXMock):
-        """Under api-key, claim POSTs to the sandboxes ORIGIN /claim route with
-        the pool name in the JSON body (mirrors v1's ``claim_from_pool``)."""
+    def test_api_key_snapshot_origin_route(self, httpx_mock: HTTPXMock):
+        """snapshot also routes to the top-level ORIGIN sub-path."""
+        cfg = Config(api_url="https://prokube.ai/pkui", workspace=NS, api_key="k")
+        base = f"https://prokube.ai/sandboxv2/{NS}/sandboxes/sbx"
         httpx_mock.add_response(
             method="POST",
-            url=f"https://prokube.ai/sandboxv2/{NS}/sandboxes/claim",
-            json=_sandbox_json(name="member-1", phase="Running"),
+            url=f"{base}/snapshot",
+            status_code=201,
+            json={"image": "snap-1", "sandbox": "sbx"},
         )
-        sbx = SandboxV2.from_pool(
-            "python-pool",
-            api_url="https://prokube.ai/pkui",
-            workspace=NS,
-            api_key="k",
-        )
-        try:
-            assert sbx.name == "member-1"
-            req = [r for r in httpx_mock.get_requests() if r.method == "POST"][-1]
-            assert (
-                str(req.url)
-                == f"https://prokube.ai/sandboxv2/{NS}/sandboxes/claim"
-            )
-            body = json.loads(req.content)
-            assert body["poolName"] == "python-pool"
-        finally:
-            sbx._client.close()
+        client = SandboxV2Client(cfg)
+        info = client.snapshot("sbx", "snap-1")
+        assert info.image == "snap-1"
+        req = httpx_mock.get_requests()[-1]
+        assert str(req.url) == f"{base}/snapshot"
+        client.close()
 
-    def test_from_pool_signature_matches_v1(self):
-        """SandboxV2.from_pool must be drop-in for Sandbox.from_pool."""
-        import inspect
 
-        from prokube.sandbox import Sandbox
+# ---------------------------------------------------------------------------
+# Snapshots: capture a running sandbox into a reusable FirecrackerImage, and
+# launch a new sandbox by resume-cloning one.
+# ---------------------------------------------------------------------------
 
-        v1 = inspect.signature(Sandbox.from_pool)
-        v2 = inspect.signature(SandboxV2.from_pool)
-        assert list(v1.parameters) == list(v2.parameters)
 
-    def test_from_pool_claims_member(self, mock_env, httpx_mock: HTTPXMock):
+class TestSnapshot:
+    def test_snapshot_success(self, config, httpx_mock: HTTPXMock):
         _mock_version(httpx_mock)
         httpx_mock.add_response(
             method="POST",
-            url=f"{BASE}/api/namespaces/{NS}/sandboxv2-pools/python-pool/claim",
-            json=_sandbox_json(name="member-1", phase="Running"),
+            url=f"{COLL}/sbx/snapshot",
+            status_code=201,
+            json={"image": "my-snapshot", "sandbox": "sbx"},
         )
-        sbx = SandboxV2.from_pool("python-pool")
+        client = SandboxV2Client(config)
+        info = client.snapshot("sbx", "my-snapshot")
+        req = [r for r in httpx_mock.get_requests() if r.method == "POST"][-1]
+        body = json.loads(req.content)
+        assert str(req.url) == f"{COLL}/sbx/snapshot"
+        assert body == {"name": "my-snapshot"}
+        assert info.image == "my-snapshot"
+        assert info.sandbox == "sbx"
+        client.close()
+
+    def test_snapshot_not_running_raises_sandbox_error(
+        self, config, httpx_mock: HTTPXMock
+    ):
+        _mock_version(httpx_mock)
+        httpx_mock.add_response(
+            method="POST",
+            url=f"{COLL}/sbx/snapshot",
+            status_code=409,
+            json={"detail": "sandbox is not Running"},
+        )
+        client = SandboxV2Client(config)
+        with pytest.raises(SandboxError):
+            client.snapshot("sbx", "my-snapshot")
+        client.close()
+
+    def test_snapshot_missing_sandbox_raises_not_found(
+        self, config, httpx_mock: HTTPXMock
+    ):
+        from prokube.common.exceptions import NotFoundError
+
+        _mock_version(httpx_mock)
+        httpx_mock.add_response(
+            method="POST",
+            url=f"{COLL}/sbx/snapshot",
+            status_code=404,
+            json={"detail": "not found"},
+        )
+        client = SandboxV2Client(config)
+        with pytest.raises(NotFoundError):
+            client.snapshot("sbx", "my-snapshot")
+        client.close()
+
+    def test_facade_snapshot_returns_image_name(self, config, httpx_mock: HTTPXMock):
+        _mock_version(httpx_mock)
+        httpx_mock.add_response(
+            method="GET", url=f"{COLL}/sbx", json=_sandbox_json(phase="Running")
+        )
+        httpx_mock.add_response(
+            method="POST",
+            url=f"{COLL}/sbx/snapshot",
+            status_code=201,
+            json={"image": "warm-py", "sandbox": "sbx"},
+        )
+        sbx = SandboxV2.get("sbx", api_url=BASE, workspace=NS)
+        image_name = sbx.snapshot("warm-py")
+        assert image_name == "warm-py"
+        sbx._client.close()
+
+    def test_snapshot_killed_sandbox_raises(self, mock_env, httpx_mock: HTTPXMock):
+        _mock_version(httpx_mock)
+        httpx_mock.add_response(
+            method="GET", url=f"{COLL}/sbx", json=_sandbox_json(phase="Running")
+        )
+        httpx_mock.add_response(method="DELETE", url=f"{COLL}/sbx", status_code=204)
+        sbx = SandboxV2.get("sbx")
+        sbx.kill()
+        with pytest.raises(SandboxError, match="has been killed"):
+            sbx.snapshot("warm-py")
+
+    def test_from_snapshot_launches_with_firecracker_image_name(
+        self, mock_env, httpx_mock: HTTPXMock
+    ):
+        """from_snapshot sets spec.firecrackerImage.name (not .image) via the
+        manifest escape hatch — the backend has no by-name structured knob."""
+        _mock_version(httpx_mock)
+        httpx_mock.add_response(
+            method="POST",
+            url=COLL,
+            status_code=201,
+            json=_sandbox_json(name="sbx-3", phase="Pending"),
+        )
+        sbx = SandboxV2.from_snapshot("warm-py", name="sbx-3", vcpus=4, mem_mib=4096)
         try:
-            assert sbx.name == "member-1"
-            assert sbx.status == "Running"
-            assert sbx.runtime_class == "fc-host"
-            assert sbx.workspace == NS
-            req = [r for r in httpx_mock.get_requests() if r.method == "POST"][-1]
-            assert str(req.url).endswith(
-                f"/api/namespaces/{NS}/sandboxv2-pools/python-pool/claim"
+            body = json.loads(
+                [r for r in httpx_mock.get_requests() if r.method == "POST"][-1].content
             )
+            manifest = body["manifest"]
+            assert manifest["spec"]["firecrackerImage"] == {
+                "name": "warm-py",
+                "terminal": True,
+            }
+            assert manifest["spec"]["resources"] == {"vcpus": 4, "memMiB": 4096}
+            assert manifest["spec"]["operatingMode"] == "Running"
+            assert sbx.name == "sbx-3"
+        finally:
+            sbx._client.close()
+
+    def test_from_snapshot_defaults_resources(self, mock_env, httpx_mock: HTTPXMock):
+        _mock_version(httpx_mock)
+        httpx_mock.add_response(
+            method="POST", url=COLL, status_code=201, json=_sandbox_json()
+        )
+        sbx = SandboxV2.from_snapshot("warm-py")
+        try:
+            body = json.loads(
+                [r for r in httpx_mock.get_requests() if r.method == "POST"][-1].content
+            )
+            assert body["manifest"]["spec"]["resources"] == {
+                "vcpus": 2,
+                "memMiB": 2048,
+            }
         finally:
             sbx._client.close()
 
@@ -595,22 +696,6 @@ class TestApiKeyAndPool:
 # ---------------------------------------------------------------------------
 # Declarative startupProbe + lifecycle (RFC declarative-probes-lifecycle)
 # ---------------------------------------------------------------------------
-
-
-POOLS = f"{BASE}/api/namespaces/{NS}/sandboxv2-pools"
-
-
-def _pool_json(name="pool", size=1, warm_state="Hibernated"):
-    return {
-        "name": name,
-        "namespace": NS,
-        "size": size,
-        "warmState": warm_state,
-        "readyMembers": 0,
-        "members": [],
-        "image": "pk-sandbox-base",
-        "runtimeClassName": "fc-host",
-    }
 
 
 def _last_post_body(httpx_mock: HTTPXMock):
@@ -778,47 +863,6 @@ class TestProbesAndLifecycle:
         assert body["startupProbe"] == {"tcpSocket": {"port": 7681}}
         sbx._client.close()
 
-    def test_pool_template_carries_probe_and_lifecycle(
-        self, mock_env, httpx_mock: HTTPXMock
-    ):
-        """Pool members declare their own probe/warm-up via the template."""
-        _mock_version(httpx_mock)
-        httpx_mock.add_response(
-            method="POST", url=POOLS, status_code=201, json=_pool_json(name="p")
-        )
-        pool = SandboxV2Pool.create(
-            name="p",
-            size=2,
-            startup_probe=Probe(
-                http_get=HTTPGetAction(port=44772, path="/ping"),
-                failure_threshold=120,
-            ),
-            lifecycle=Lifecycle(
-                post_start=LifecycleHandler(
-                    http_get=HTTPGetAction(
-                        port=44772, path="/code", method="POST", body="{}"
-                    )
-                )
-            ),
-        )
-        body = _last_post_body(httpx_mock)
-        template = body["template"]
-        assert template["startupProbe"] == {
-            "httpGet": {"port": 44772, "path": "/ping"},
-            "failureThreshold": 120,
-        }
-        assert template["lifecycle"] == {
-            "postStart": {
-                "httpGet": {
-                    "port": 44772,
-                    "path": "/code",
-                    "method": "POST",
-                    "body": "{}",
-                }
-            }
-        }
-        pool._client.close()
-
 
 # ---------------------------------------------------------------------------
 # Pod-mirrored guest DNS (spec.dnsPolicy + spec.dnsConfig)
@@ -890,9 +934,7 @@ class TestGuestDNS:
         assert body["dnsConfig"] == {"options": [{"name": "edns0"}]}
         client.close()
 
-    def test_create_accepts_cr_shaped_dns_dict(
-        self, config, httpx_mock: HTTPXMock
-    ):
+    def test_create_accepts_cr_shaped_dns_dict(self, config, httpx_mock: HTTPXMock):
         """A camelCase CR-shaped dnsConfig dict passes through verbatim."""
         _mock_version(httpx_mock)
         httpx_mock.add_response(
@@ -943,30 +985,6 @@ class TestGuestDNS:
         assert body["dnsPolicy"] == "None"
         assert body["dnsConfig"] == {"nameservers": ["9.9.9.9"]}
         sbx._client.close()
-
-    def test_pool_template_carries_dns(self, mock_env, httpx_mock: HTTPXMock):
-        """Pool members declare their own DNS via the template."""
-        _mock_version(httpx_mock)
-        httpx_mock.add_response(
-            method="POST", url=POOLS, status_code=201, json=_pool_json(name="p")
-        )
-        pool = SandboxV2Pool.create(
-            name="p",
-            size=2,
-            dns_policy="ClusterFirst",
-            dns_config=DNSConfig(
-                searches=["team.svc.cluster.local"],
-                options=[DNSConfigOption(name="ndots", value="3")],
-            ),
-        )
-        body = _last_post_body(httpx_mock)
-        template = body["template"]
-        assert template["dnsPolicy"] == "ClusterFirst"
-        assert template["dnsConfig"] == {
-            "searches": ["team.svc.cluster.local"],
-            "options": [{"name": "ndots", "value": "3"}],
-        }
-        pool._client.close()
 
 
 # ---------------------------------------------------------------------------
@@ -1021,18 +1039,6 @@ class TestMesh:
         assert body["mesh"] is True
         sbx._client.close()
 
-    def test_pool_template_carries_mesh(self, mock_env, httpx_mock: HTTPXMock):
-        """Pool members declare their own mesh opt-in via the template."""
-        _mock_version(httpx_mock)
-        httpx_mock.add_response(
-            method="POST", url=POOLS, status_code=201, json=_pool_json(name="p")
-        )
-        pool = SandboxV2Pool.create(name="p", size=2, mesh=True)
-        body = _last_post_body(httpx_mock)
-        template = body["template"]
-        assert template["mesh"] is True
-        pool._client.close()
-
 
 # ---------------------------------------------------------------------------
 # Pod-mirrored snapshot resume policy (spec.snapshotResumePolicy)
@@ -1080,23 +1086,6 @@ class TestSnapshotResumePolicy:
         body = _last_post_body(httpx_mock)
         assert body["snapshotResumePolicy"] == "AllowStale"
         sbx._client.close()
-
-    def test_pool_template_carries_snapshot_resume_policy(
-        self, mock_env, httpx_mock: HTTPXMock
-    ):
-        """Pool members declare their own snapshot resume policy via the
-        template."""
-        _mock_version(httpx_mock)
-        httpx_mock.add_response(
-            method="POST", url=POOLS, status_code=201, json=_pool_json(name="p")
-        )
-        pool = SandboxV2Pool.create(
-            name="p", size=2, snapshot_resume_policy="AllowStale"
-        )
-        body = _last_post_body(httpx_mock)
-        template = body["template"]
-        assert template["snapshotResumePolicy"] == "AllowStale"
-        pool._client.close()
 
 
 # ---------------------------------------------------------------------------
