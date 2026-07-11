@@ -177,21 +177,22 @@ class TestCreate:
         assert info.runtime_class == "fc-pod"
         client.close()
 
-    def test_create_passthrough_volumes(self, config, httpx_mock: HTTPXMock):
+    def test_create_omits_volumes(self, config, httpx_mock: HTTPXMock):
+        # spec.volumes / spec.volumeMounts were removed from the stack entirely
+        # (2026-07-11): the SDK must never emit them.
         _mock_version(httpx_mock)
         httpx_mock.add_response(
             method="POST", url=COLL, status_code=201, json=_sandbox_json()
         )
         client = SandboxV2Client(config)
-        vols = [{"name": "ws", "ephemeral": {"storageClassName": "mayastor"}}]
-        mounts = [{"name": "ws", "mountPath": "/workspace"}]
-        client.create(name="sbx", volumes=vols, volume_mounts=mounts)
+        client.create(name="sbx")
 
         body = json.loads(
             [r for r in httpx_mock.get_requests() if r.method == "POST"][-1].content
         )
-        assert body["volumes"] == vols
-        assert body["volumeMounts"] == mounts
+        assert "volumes" not in body
+        assert "volumeMounts" not in body
+        assert "workspaceSize" not in body
         client.close()
 
     def test_create_env_vars_and_secret_refs(self, config, httpx_mock: HTTPXMock):

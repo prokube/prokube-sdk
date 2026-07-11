@@ -364,11 +364,6 @@ class CreateSandboxV2Request(BaseModel):
     terminal: bool = Field(
         default=True, description="Inject a ttyd Terminal (:7681) into the guest"
     )
-    workspace_size: str | None = Field(
-        default=None,
-        serialization_alias="workspaceSize",
-        description="Ephemeral /workspace volume size (e.g. 10Gi)",
-    )
     target_node: str | None = Field(
         default=None,
         serialization_alias="targetNode",
@@ -396,14 +391,6 @@ class CreateSandboxV2Request(BaseModel):
         default=None,
         serialization_alias="envFrom",
         description="spec.envFrom — inject all keys from the named Secret(s)",
-    )
-    volumes: list[dict[str, Any]] | None = Field(
-        default=None, description="spec.volumes pass-through (CR-shaped dicts)"
-    )
-    volume_mounts: list[dict[str, Any]] | None = Field(
-        default=None,
-        serialization_alias="volumeMounts",
-        description="spec.volumeMounts pass-through (CR-shaped dicts)",
     )
     startup_probe: Probe | None = Field(
         default=None,
