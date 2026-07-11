@@ -398,6 +398,7 @@ class SandboxV2:
         resources: dict | None = None,
         vcpus: int | None = None,
         mem_mib: int | None = None,
+        overlay_mib: int | None = None,
         egress: bool = False,
         terminal: bool = True,
         env_vars: dict[str, str] | list[dict[str, str]] | None = None,
@@ -434,10 +435,14 @@ class SandboxV2:
                 Mutually exclusive with ``image``. Prefer
                 :meth:`from_snapshot`, which wraps this with resume-oriented
                 defaults.
-            resources: Optional ``{"vcpus": int, "mem_mib": int}`` shorthand.
-                Explicit ``vcpus`` / ``mem_mib`` kwargs take precedence.
+            resources: Optional ``{"vcpus": int, "mem_mib": int, "overlay_mib":
+                int}`` shorthand. Explicit ``vcpus`` / ``mem_mib`` /
+                ``overlay_mib`` kwargs take precedence.
             vcpus: Guest vCPUs (overrides ``resources['vcpus']``).
             mem_mib: Guest memory in MiB (overrides ``resources['mem_mib']``).
+            overlay_mib: Writable-overlay (rootfs scratch) cap in MiB. Sparse, so
+                a ceiling not a reservation (overrides ``resources['overlay_mib']``).
+                Omitted -> CRD default (512).
             egress: Whether the microVM may reach the cluster/internet
                 (default: False — isolated).
             terminal: Inject a ttyd Terminal (:7681) into the guest.
@@ -484,6 +489,10 @@ class SandboxV2:
         if resources:
             vcpus = vcpus if vcpus is not None else resources.get("vcpus")
             mem_mib = mem_mib if mem_mib is not None else resources.get("mem_mib")
+            overlay_mib = (
+                overlay_mib if overlay_mib is not None
+                else resources.get("overlay_mib")
+            )
 
         config = cls._build_config(
             api_url=api_url,
@@ -500,6 +509,7 @@ class SandboxV2:
                 snapshot=snapshot,
                 vcpus=vcpus,
                 mem_mib=mem_mib,
+                overlay_mib=overlay_mib,
                 egress=egress,
                 terminal=terminal,
                 env_vars=env_vars,
@@ -739,6 +749,7 @@ class SandboxV2:
         resources: dict | None = None,
         vcpus: int | None = None,
         mem_mib: int | None = None,
+        overlay_mib: int | None = None,
         egress: bool = False,
         terminal: bool = True,
         env_vars: dict[str, str] | list[dict[str, str]] | None = None,
@@ -764,10 +775,13 @@ class SandboxV2:
         Args:
             image: Name of the FirecrackerSnapshot to resume-clone from.
             name: Optional sandbox name (auto-generated if not provided).
-            resources: ``{"vcpus": int, "mem_mib": int}`` shorthand.
+            resources: ``{"vcpus": int, "mem_mib": int, "overlay_mib": int}``
+                shorthand.
             vcpus: Guest vCPUs (overrides ``resources['vcpus']``; default 2).
             mem_mib: Guest memory in MiB (overrides ``resources['mem_mib']``;
                 default 2048).
+            overlay_mib: Writable-overlay cap in MiB (sparse ceiling; overrides
+                ``resources['overlay_mib']``). Omitted -> CRD default (512).
             egress: Whether the microVM may reach the cluster/internet
                 (default: False — isolated).
             terminal: Inject a ttyd Terminal (:7681) into the guest.
@@ -796,12 +810,17 @@ class SandboxV2:
         if resources:
             vcpus = vcpus if vcpus is not None else resources.get("vcpus")
             mem_mib = mem_mib if mem_mib is not None else resources.get("mem_mib")
+            overlay_mib = (
+                overlay_mib if overlay_mib is not None
+                else resources.get("overlay_mib")
+            )
 
         return cls.create(
             name=name,
             snapshot=image,
             vcpus=vcpus if vcpus is not None else 2,
             mem_mib=mem_mib if mem_mib is not None else 2048,
+            overlay_mib=overlay_mib,
             egress=egress,
             terminal=terminal,
             env_vars=env_vars,

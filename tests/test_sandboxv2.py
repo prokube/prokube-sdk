@@ -125,6 +125,39 @@ class TestCreate:
         assert info.runtime_class == "fc-pod"
         client.close()
 
+    def test_create_omits_overlay_mib_when_absent(self, config, httpx_mock: HTTPXMock):
+        _mock_version(httpx_mock)
+        httpx_mock.add_response(
+            method="POST",
+            url=COLL,
+            status_code=201,
+            json=_sandbox_json(name="sbx-o0", phase="Pending", runtime="fc-pod"),
+        )
+        client = SandboxV2Client(config)
+        client.create(image="pk-sandbox-base", name="sbx-o0")
+        body = json.loads(
+            [r for r in httpx_mock.get_requests() if r.method == "POST"][-1].content
+        )
+        # Omitted -> not sent (CRD default 512 applies server-side).
+        assert "overlayMiB" not in body
+        client.close()
+
+    def test_create_serializes_overlay_mib(self, config, httpx_mock: HTTPXMock):
+        _mock_version(httpx_mock)
+        httpx_mock.add_response(
+            method="POST",
+            url=COLL,
+            status_code=201,
+            json=_sandbox_json(name="sbx-o1", phase="Pending", runtime="fc-pod"),
+        )
+        client = SandboxV2Client(config)
+        client.create(image="pk-sandbox-base", name="sbx-o1", overlay_mib=16384)
+        body = json.loads(
+            [r for r in httpx_mock.get_requests() if r.method == "POST"][-1].content
+        )
+        assert body["overlayMiB"] == 16384
+        client.close()
+
     def test_create_omits_image_when_absent(self, config, httpx_mock: HTTPXMock):
         _mock_version(httpx_mock)
         httpx_mock.add_response(
@@ -228,13 +261,15 @@ class TestCreate:
             json=_sandbox_json(phase="Pending"),
         )
         sbx = SandboxV2.create(
-            image="pk-sandbox-base", resources={"vcpus": 4, "mem_mib": 4096}
+            image="pk-sandbox-base",
+            resources={"vcpus": 4, "mem_mib": 4096, "overlay_mib": 8192},
         )
         body = json.loads(
             [r for r in httpx_mock.get_requests() if r.method == "POST"][-1].content
         )
         assert body["vcpus"] == 4
         assert body["memMiB"] == 4096
+        assert body["overlayMiB"] == 8192
         assert sbx.runtime_class == "fc-pod"
         assert sbx.status == "Pending"
 

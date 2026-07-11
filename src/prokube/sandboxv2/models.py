@@ -112,6 +112,13 @@ class SandboxV2Resources(BaseModel):
 
     vcpus: int | None = Field(default=None, ge=1, description="Guest vCPUs")
     mem_mib: int | None = Field(default=None, ge=128, description="Guest memory in MiB")
+    overlay_mib: int | None = Field(
+        default=None,
+        ge=64,
+        le=262144,
+        description="Writable-overlay (rootfs scratch) cap in MiB. Sparse/thin-"
+        "provisioned, so a ceiling not a reservation. Omitted -> CRD default (512).",
+    )
 
 
 class EnvVar(BaseModel):
@@ -345,6 +352,14 @@ class CreateSandboxV2Request(BaseModel):
     vcpus: int | None = Field(default=None, ge=1, description="Guest vCPUs")
     mem_mib: int | None = Field(
         default=None, ge=128, serialization_alias="memMiB", description="Guest MiB"
+    )
+    overlay_mib: int | None = Field(
+        default=None,
+        ge=64,
+        le=262144,
+        serialization_alias="overlayMiB",
+        description="Writable-overlay (rootfs scratch) cap in MiB. Sparse -> a "
+        "ceiling, not a reservation. Omitted -> CRD default (512).",
     )
     terminal: bool = Field(
         default=True, description="Inject a ttyd Terminal (:7681) into the guest"
