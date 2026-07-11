@@ -48,6 +48,7 @@ from prokube.sandboxv2.models import (
     FileInfo,
     Lifecycle,
     Probe,
+    SandboxV2Condition,
     SandboxV2Info,
     SandboxV2Status,
     Snapshot,
@@ -67,6 +68,30 @@ def _parse_status(status_str: str | None, default: SandboxV2Status) -> SandboxV2
         return SandboxV2Status(status_str)
     except ValueError:
         return SandboxV2Status.UNKNOWN
+
+
+def _parse_conditions(raw: object) -> list[SandboxV2Condition]:
+    """Parse the API's ``conditions`` array into models, tolerating absence.
+
+    Older API responses omit ``conditions`` entirely; malformed entries are
+    skipped rather than raising so a status read never fails on a stray field.
+    """
+    if not isinstance(raw, list):
+        return []
+    conditions: list[SandboxV2Condition] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        try:
+            conditions.append(SandboxV2Condition.model_validate(entry))
+        except ValueError:
+            continue
+    return conditions
+
+
+def _ready_from_conditions(conditions: list[SandboxV2Condition]) -> bool:
+    """Whether the ``Ready`` condition is present with status ``"True"``."""
+    return any(c.type == "Ready" and c.is_true for c in conditions)
 
 
 class SandboxV2Client:
@@ -128,10 +153,22 @@ class SandboxV2Client:
     # -- parsing --------------------------------------------------------------
 
     def _parse_info(self, response: dict[str, object]) -> SandboxV2Info:
+        conditions = _parse_conditions(response.get("conditions"))
+        # Prefer the API's flattened ``ready`` boolean; fall back to deriving it
+        # from the Ready condition. phase == Running is NOT sufficient (it now
+        # means only the VM process started).
+        raw_ready = response.get("ready")
+        ready = (
+            bool(raw_ready)
+            if isinstance(raw_ready, bool)
+            else _ready_from_conditions(conditions)
+        )
         return SandboxV2Info(
             name=response.get("name", ""),
             workspace=response.get("namespace", self._workspace()),
             status=_parse_status(response.get("phase"), SandboxV2Status.UNKNOWN),
+            conditions=conditions,
+            ready=ready,
             image=response.get("image") or None,
             runtime_class=response.get("runtimeClassName"),
             operating_mode=response.get("operatingMode") or None,

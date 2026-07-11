@@ -51,7 +51,31 @@ def _mock_version(httpx_mock: HTTPXMock) -> None:
     )
 
 
-def _sandbox_json(name="sbx", phase="Running", runtime="fc-pod"):
+def _sandbox_json(
+    name="sbx", phase="Running", runtime="fc-pod", ready=None, conditions=None
+):
+    """Build an API sandbox response.
+
+    By default the Pod-shaped ``conditions`` and flattened ``ready`` mirror the
+    phase: a ``Running`` sandbox is fully ready (VMStarted + Ready both True), any
+    other phase is not. Pass ``ready`` / ``conditions`` explicitly to model the
+    "VM started but image still booting" window (phase Running, Ready False).
+    """
+    if ready is None:
+        ready = phase == "Running"
+    if conditions is None:
+        conditions = [
+            {
+                "type": "VMStarted",
+                "status": "True" if phase == "Running" else "False",
+                "lastTransitionTime": "2026-07-11T00:00:00Z",
+            },
+            {
+                "type": "Ready",
+                "status": "True" if ready else "False",
+                "lastTransitionTime": "2026-07-11T00:00:02Z",
+            },
+        ]
     return {
         "name": name,
         "namespace": NS,
@@ -60,6 +84,8 @@ def _sandbox_json(name="sbx", phase="Running", runtime="fc-pod"):
         "phase": phase,
         "operatingMode": "Running",
         "terminalEnabled": True,
+        "ready": ready,
+        "conditions": conditions,
     }
 
 
@@ -494,6 +520,103 @@ class TestLifecycle:
         sbx = SandboxV2.create(image="pk-sandbox-base", name="sbx")
         with pytest.raises(SandboxTimeoutError):
             sbx.wait_until_ready(timeout=0)
+
+    def test_wait_until_ready_gates_on_ready_condition(
+        self, mock_env, httpx_mock: HTTPXMock
+    ):
+        """phase==Running is NOT enough: wait blocks until the Ready condition
+        (surfaced as the flattened ``ready``) flips True — the VM-started window
+        where the guest image is still booting must not count as ready."""
+        _mock_version(httpx_mock)
+        httpx_mock.add_response(
+            method="POST",
+            url=COLL,
+            status_code=201,
+            json=_sandbox_json(phase="Pending"),
+        )
+        # First readiness resolution: VM process up (phase Running) but the image
+        # is still booting (Ready False) — must NOT satisfy wait_until_ready.
+        httpx_mock.add_response(
+            method="GET",
+            url=re.compile(rf"{re.escape(COLL)}/sbx/wait_ready(\?.*)?$"),
+            json=_sandbox_json(name="sbx", phase="Running", ready=False),
+        )
+        # Second resolution: image finished booting (Ready True).
+        httpx_mock.add_response(
+            method="GET",
+            url=re.compile(rf"{re.escape(COLL)}/sbx/wait_ready(\?.*)?$"),
+            json=_sandbox_json(name="sbx", phase="Running", ready=True),
+        )
+        sbx = SandboxV2.create(image="pk-sandbox-base", name="sbx")
+        sbx.wait_until_ready(timeout=10)
+        assert sbx._ready is True
+        # Both readiness responses were consumed → it did not return on the first
+        # Running-but-not-ready reply.
+        assert len(httpx_mock.get_requests()) == 4  # version, POST, 2x wait_ready
+
+    def test_wait_until_ready_running_not_ready_times_out(
+        self, mock_env, httpx_mock: HTTPXMock
+    ):
+        """A sandbox stuck Running-but-not-Ready (e.g. a failing startupProbe)
+        must time out, not be treated as ready."""
+        _mock_version(httpx_mock)
+        httpx_mock.add_response(
+            method="POST",
+            url=COLL,
+            status_code=201,
+            json=_sandbox_json(phase="Pending"),
+        )
+        httpx_mock.add_response(
+            method="GET",
+            url=re.compile(rf"{re.escape(COLL)}/sbx/wait_ready(\?.*)?$"),
+            json=_sandbox_json(name="sbx", phase="Running", ready=False),
+            is_reusable=True,
+        )
+        sbx = SandboxV2.create(image="pk-sandbox-base", name="sbx")
+        with pytest.raises(SandboxTimeoutError):
+            sbx.wait_until_ready(timeout=0.3)
+
+    def test_get_surfaces_conditions_and_timestamps(
+        self, mock_env, httpx_mock: HTTPXMock
+    ):
+        """get() projects the Pod-shaped conditions + flattened ready, and the
+        two condition timestamps are exposed for boot-timing readouts."""
+        _mock_version(httpx_mock)
+        httpx_mock.add_response(
+            method="GET",
+            url=f"{COLL}/sbx",
+            json=_sandbox_json(name="sbx", phase="Running", ready=True),
+        )
+        sbx = SandboxV2.get("sbx")
+        assert sbx._ready is True
+        assert {c.type for c in sbx._conditions} == {"VMStarted", "Ready"}
+        assert sbx.vm_started_at == "2026-07-11T00:00:00Z"
+        assert sbx.ready_at == "2026-07-11T00:00:02Z"
+
+    def test_ready_derived_from_conditions_without_flat_flag(self):
+        """When the API omits the flattened ``ready``, it is derived from the
+        Ready condition; malformed condition entries are skipped."""
+        from prokube.sandboxv2.client import (
+            _parse_conditions,
+            _ready_from_conditions,
+        )
+
+        conds = _parse_conditions(
+            [
+                {"type": "VMStarted", "status": "True"},
+                {"type": "Ready", "status": "True"},
+                "garbage",  # tolerated / skipped
+            ]
+        )
+        assert {c.type for c in conds} == {"VMStarted", "Ready"}
+        assert _ready_from_conditions(conds) is True
+        assert _parse_conditions(None) == []
+        assert (
+            _ready_from_conditions(
+                _parse_conditions([{"type": "Ready", "status": "False"}])
+            )
+            is False
+        )
 
 
 # ---------------------------------------------------------------------------

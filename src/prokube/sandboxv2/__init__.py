@@ -19,6 +19,9 @@ from prokube.sandboxv2.models import (
     Lifecycle,
     LifecycleHandler,
     Probe,
+    SandboxV2Condition,
+    SandboxV2Info,
+    SandboxV2Status,
     Snapshot,
     TCPSocketAction,
 )
@@ -27,6 +30,9 @@ from prokube.sandboxv2.sandbox import SandboxV2
 __all__ = [
     "SandboxV2",
     "SandboxV2Client",
+    "SandboxV2Condition",
+    "SandboxV2Info",
+    "SandboxV2Status",
     "Probe",
     "Lifecycle",
     "LifecycleHandler",

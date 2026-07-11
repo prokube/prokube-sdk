@@ -39,6 +39,8 @@ from prokube.sandboxv2.models import (
     DNSConfig,
     Lifecycle,
     Probe,
+    SandboxV2Condition,
+    SandboxV2Info,
     SandboxV2Status,
     Snapshot,
 )
@@ -73,6 +75,8 @@ class SandboxV2:
         status: SandboxV2Status = SandboxV2Status.PENDING,
         image: str | None = None,
         runtime_class: str | None = None,
+        ready: bool = False,
+        conditions: list[SandboxV2Condition] | None = None,
     ) -> None:
         """Initialize a SandboxV2 instance.
 
@@ -84,6 +88,8 @@ class SandboxV2:
         self._status = status
         self._image = image
         self._runtime_class = runtime_class
+        self._ready = ready
+        self._conditions: list[SandboxV2Condition] = conditions or []
         self._killed = False
 
         self._commands = CommandRunner(client, name, self._check_not_killed)
@@ -95,6 +101,16 @@ class SandboxV2:
             raise SandboxError(
                 f"Sandbox {self._name} has been killed and cannot be used anymore"
             )
+
+    def _apply_info(self, info: SandboxV2Info) -> None:
+        """Fold a fresh :class:`SandboxV2Info` into the cached local state."""
+        self._status = info.status
+        self._ready = info.ready
+        self._conditions = info.conditions
+        if info.runtime_class is not None:
+            self._runtime_class = info.runtime_class
+        if info.image is not None:
+            self._image = info.image
 
     @property
     def name(self) -> str:
@@ -127,6 +143,44 @@ class SandboxV2:
         """Current phase, refreshed from the API."""
         self.refresh()
         return self._status.value
+
+    @property
+    def ready(self) -> bool:
+        """Whether the sandbox is fully ready (the ``Ready`` condition is True),
+        refreshed from the API.
+
+        ``phase == 'Running'`` is NOT sufficient — it now means only that the VM
+        process started; ``Ready`` additionally requires the guest image to have
+        passed its (optional) startupProbe.
+        """
+        self.refresh()
+        return self._ready
+
+    @property
+    def conditions(self) -> list[SandboxV2Condition]:
+        """The sandbox's Pod-shaped status conditions (VMStarted / Ready),
+        refreshed from the API."""
+        self.refresh()
+        return self._conditions
+
+    def _condition_time(self, cond_type: str) -> str | None:
+        """The ``lastTransitionTime`` of a cached condition, if present."""
+        for c in self._conditions:
+            if c.type == cond_type:
+                return c.last_transition_time
+        return None
+
+    @property
+    def vm_started_at(self) -> str | None:
+        """RFC3339 stamp when the VM process started (VMStarted → True), from the
+        last-known conditions (does not refresh)."""
+        return self._condition_time("VMStarted")
+
+    @property
+    def ready_at(self) -> str | None:
+        """RFC3339 stamp when the sandbox became Ready (Ready → True), from the
+        last-known conditions (does not refresh)."""
+        return self._condition_time("Ready")
 
     @property
     def commands(self) -> CommandRunner:
@@ -179,11 +233,12 @@ class SandboxV2:
         """
         self._check_not_killed()
         info = self._client.pause(self._name)
-        self._status = (
-            info.status
-            if info.status != SandboxV2Status.UNKNOWN
-            else SandboxV2Status.PAUSED
-        )
+        self._apply_info(info)
+        # A paused (hibernated) sandbox is never ready; if the backend has not yet
+        # published the Paused phase, assume it.
+        self._ready = False
+        if info.status == SandboxV2Status.UNKNOWN:
+            self._status = SandboxV2Status.PAUSED
 
     def resume(self) -> None:
         """Resume a paused sandbox (native VM restore).
@@ -196,36 +251,40 @@ class SandboxV2:
             SandboxError: If the sandbox is not in Paused state (HTTP 409).
         """
         self._check_not_killed()
-        info = self._client.resume(self._name)
-        self._status = info.status
+        self._apply_info(self._client.resume(self._name))
 
     def wait_until_ready(self, timeout: int = 120) -> None:
-        """Block until the sandbox phase is Running.
+        """Block until the sandbox is Ready (the ``Ready`` status condition is
+        True — the guest image passed its optional startupProbe).
+
+        ``status.phase == Running`` alone is NO LONGER sufficient: it now flips
+        the instant the VM *process* starts, before the guest image has warmed
+        up. Readiness gates on the ``Ready`` condition (surfaced as the API's
+        flattened ``ready`` boolean). With no startupProbe the image is Ready
+        almost immediately after the VM starts.
 
         A ready microVM resumes in well under a second, so this prefers the
-        backend's server-side long-poll readiness endpoint (a single request the
-        backend resolves in-cluster the instant ``status.phase`` flips to
-        Running) and otherwise falls back to a tight local ``get`` poll (~100ms,
-        gently backing off to 1s). Both paths supersede the old flat 2s poll that
-        quantized a sub-second resume into multi-second waits.
+        backend's server-side long-poll readiness endpoint and otherwise falls
+        back to a tight local ``get`` poll (~100ms, gently backing off to 1s).
 
         Args:
             timeout: Maximum seconds to wait (default: 120).
 
         Raises:
-            SandboxTimeoutError: If it does not become Running in time.
+            SandboxTimeoutError: If it does not become Ready in time.
             SandboxError: If it enters the Failed terminal state while waiting.
         """
         self._check_not_killed()
-        # Fast path: a pool-hot (warmState=Running) member is handed over already
-        # Running, so skip the readiness round-trip entirely.
-        if self._status == SandboxV2Status.RUNNING:
+        # Fast path: an already-ready sandbox (e.g. a resumed one whose Ready
+        # condition is already True) skips the readiness round-trip entirely.
+        if self._ready:
             return
         deadline = time.monotonic() + timeout
         use_long_poll = True
-        # Local-poll fallback cadence: start tight (matches the ~0.4s
-        # control-plane lag) and back off so a slow-to-ready sandbox does not
-        # hammer the backend for the full timeout window.
+        # Poll cadence: start tight (matches the ~0.4s control-plane lag) and
+        # back off so a slow-to-ready sandbox does not hammer the backend for the
+        # full timeout window. Also throttles the long-poll path when the server
+        # resolves on phase==Running before the Ready condition has flipped.
         poll_interval = 0.1
 
         while True:
@@ -247,12 +306,8 @@ class SandboxV2:
                     # not-found error if the sandbox truly does not exist.
                     use_long_poll = False
                     continue
-                self._status = info.status
-                if info.runtime_class is not None:
-                    self._runtime_class = info.runtime_class
-                if info.image is not None:
-                    self._image = info.image
-                if self._status == SandboxV2Status.RUNNING:
+                self._apply_info(info)
+                if self._ready:
                     return
                 if self._status == SandboxV2Status.FAILED:
                     raise SandboxError(
@@ -260,11 +315,18 @@ class SandboxV2:
                         f"{self._status.value!r} while waiting for it to become "
                         f"ready"
                     )
-                # Server-side timeout below Running: loop (re-checks deadline).
+                # The endpoint may resolve on phase==Running while the guest image
+                # is still warming (Ready not yet True). Sleep before re-polling so
+                # we do not busy-spin waiting on the Ready condition.
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                time.sleep(min(poll_interval, remaining))
+                poll_interval = min(poll_interval * 1.5, 1.0)
                 continue
 
             self.refresh()
-            if self._status == SandboxV2Status.RUNNING:
+            if self._ready:
                 return
             if self._status == SandboxV2Status.FAILED:
                 raise SandboxError(
@@ -279,7 +341,7 @@ class SandboxV2:
 
         raise SandboxTimeoutError(
             f"Sandbox {self._name} did not become ready within {timeout}s "
-            f"(current phase: {self._status.value!r})"
+            f"(current phase: {self._status.value!r}, ready={self._ready})"
         )
 
     def kill(self) -> None:
@@ -322,12 +384,7 @@ class SandboxV2:
     def refresh(self) -> None:
         """Refresh sandbox information from the API."""
         self._check_not_killed()
-        info = self._client.get(self._name)
-        self._status = info.status
-        if info.runtime_class is not None:
-            self._runtime_class = info.runtime_class
-        if info.image is not None:
-            self._image = info.image
+        self._apply_info(self._client.get(self._name))
 
     # -- constructors ---------------------------------------------------------
 
@@ -472,6 +529,8 @@ class SandboxV2:
             status=info.status,
             image=info.image or image,
             runtime_class=info.runtime_class,
+            ready=info.ready,
+            conditions=info.conditions,
         )
 
     @classmethod
@@ -507,6 +566,8 @@ class SandboxV2:
             status=info.status,
             image=info.image,
             runtime_class=info.runtime_class,
+            ready=info.ready,
+            conditions=info.conditions,
         )
 
     # Alias: SandboxV2.connect() is the same as SandboxV2.get()
@@ -555,6 +616,8 @@ class SandboxV2:
                         status=info.status,
                         image=info.image,
                         runtime_class=info.runtime_class,
+                        ready=info.ready,
+                        conditions=info.conditions,
                     )
                 )
         except Exception:

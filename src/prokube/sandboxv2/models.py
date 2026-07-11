@@ -38,6 +38,35 @@ class SandboxV2Status(str, Enum):
     UNKNOWN = "Unknown"
 
 
+class SandboxV2Condition(BaseModel):
+    """A Pod-shaped status condition (FirecrackerSandbox ``status.conditions[]``).
+
+    The stack surfaces two types:
+
+    - ``VMStarted`` — the microVM process is up.
+    - ``Ready`` — the guest image passed its (optional) ``startupProbe``; the
+      sandbox is fully usable. With no probe, ``Ready`` flips ~immediately after
+      ``VMStarted``. Hibernated → both are ``False`` (reason ``Hibernated``).
+    """
+
+    type: str = Field(..., description="Condition type (VMStarted | Ready)")
+    status: str = Field(..., description='Condition status ("True" | "False")')
+    reason: str | None = Field(default=None, description="Machine-readable reason")
+    message: str | None = Field(default=None, description="Human-readable detail")
+    last_transition_time: str | None = Field(
+        default=None,
+        alias="lastTransitionTime",
+        description="RFC3339 timestamp of the last status change",
+    )
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    @property
+    def is_true(self) -> bool:
+        """Whether ``status`` is exactly ``"True"``."""
+        return self.status == "True"
+
+
 class SandboxV2Info(BaseModel):
     """Information about a Firecracker sandbox (projected from the CR)."""
 
@@ -45,6 +74,18 @@ class SandboxV2Info(BaseModel):
     workspace: str = Field(..., description="Workspace (Kubernetes namespace)")
     status: SandboxV2Status = Field(
         default=SandboxV2Status.UNKNOWN, description="User-facing phase"
+    )
+    conditions: list[SandboxV2Condition] = Field(
+        default_factory=list,
+        description="Pod-shaped status conditions (VMStarted / Ready)",
+    )
+    ready: bool = Field(
+        default=False,
+        description=(
+            "Whether the sandbox is fully ready (the Ready condition is True). "
+            "phase == Running alone is NOT sufficient — it means only that the "
+            "VM process started."
+        ),
     )
     image: str | None = Field(default=None, description="Base OCI image")
     runtime_class: str | None = Field(
