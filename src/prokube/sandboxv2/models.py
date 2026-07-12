@@ -364,11 +364,6 @@ class CreateSandboxV2Request(BaseModel):
     terminal: bool = Field(
         default=True, description="Inject a ttyd Terminal (:7681) into the guest"
     )
-    target_node: str | None = Field(
-        default=None,
-        serialization_alias="targetNode",
-        description="Pin the microVM to a node (spec.targetNode)",
-    )
     image_pull_secrets: list[str] | None = Field(
         default=None,
         serialization_alias="imagePullSecrets",

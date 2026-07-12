@@ -404,7 +404,6 @@ class SandboxV2:
         env_vars: dict[str, str] | list[dict[str, str]] | None = None,
         secret_refs: list[str] | None = None,
         image_pull_secrets: list[str] | None = None,
-        target_node: str | None = None,
         operating_mode: str | None = None,
         startup_probe: Probe | dict | None = None,
         lifecycle: Lifecycle | dict | None = None,
@@ -449,7 +448,6 @@ class SandboxV2:
             secret_refs: Names of Secrets (in the sandbox namespace) whose keys
                 are injected as env vars; serializes to CRD ``spec.envFrom``.
             image_pull_secrets: Registry pull secret names.
-            target_node: Pin the microVM to a node.
             operating_mode: ``Running`` or ``Hibernated``.
             startup_probe: spec.startupProbe (core/v1 Probe) gating boot
                 readiness. A :class:`~prokube.sandboxv2.models.Probe` or a
@@ -509,7 +507,6 @@ class SandboxV2:
                 env_vars=env_vars,
                 secret_refs=secret_refs,
                 image_pull_secrets=image_pull_secrets,
-                target_node=target_node,
                 operating_mode=operating_mode,
                 startup_probe=startup_probe,
                 lifecycle=lifecycle,
@@ -745,7 +742,6 @@ class SandboxV2:
         terminal: bool = True,
         env_vars: dict[str, str] | list[dict[str, str]] | None = None,
         secret_refs: list[str] | None = None,
-        target_node: str | None = None,
         mesh: bool | None = None,
         snapshot_resume_policy: str | None = None,
         api_url: str | None = None,
@@ -779,7 +775,6 @@ class SandboxV2:
             env_vars: Literal env vars baked into the guest. Accepts a
                 ``dict[str,str]`` or a list of ``{"name","value"}`` dicts.
             secret_refs: Names of Secrets whose keys are injected as env vars.
-            target_node: Pin the microVM to a node.
             mesh: Optional: opt this sandbox into the Istio service mesh.
             snapshot_resume_policy: ``Strict`` | ``AllowStale`` — whether the
                 resume requires an exact recipe/base match with the snapshot.
@@ -816,7 +811,6 @@ class SandboxV2:
             terminal=terminal,
             env_vars=env_vars,
             secret_refs=secret_refs,
-            target_node=target_node,
             operating_mode="Running",
             mesh=mesh,
             snapshot_resume_policy=snapshot_resume_policy,
