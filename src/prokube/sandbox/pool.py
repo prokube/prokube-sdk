@@ -22,7 +22,7 @@ class SandboxPool:
     Example:
         >>> pool = SandboxPool.create(
         ...     name="python-pool",
-        ...     image="pk-sandbox-base:latest",
+        ...     image="europe-west3-docker.pkg.dev/prokube-internal/prokube-customer/pk-sandbox-base:v14-05-2026",
         ...     pool_size=3,
         ...     cpu="2",
         ...     memory="4Gi",
@@ -211,7 +211,7 @@ class SandboxPool:
         Example:
             >>> pool = SandboxPool.create(
             ...     name="my-pool",
-            ...     image="pk-sandbox-base:pr-5",
+            ...     image="europe-west3-docker.pkg.dev/prokube-internal/prokube-customer/pk-sandbox-base:v14-05-2026",
             ...     pool_size=3,
             ...     cpu="2",
             ...     memory="4Gi",
