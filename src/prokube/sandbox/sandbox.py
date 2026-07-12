@@ -606,7 +606,7 @@ class Sandbox:
 
         Example:
             >>> sbx = Sandbox.create(
-            ...     image="pk-sandbox:python-datascience",
+            ...     image="europe-west3-docker.pkg.dev/prokube-internal/prokube-customer/pk-sandbox-base:v14-05-2026",
             ...     cpu="2",
             ...     memory="4Gi",
             ...     allow_internet_access=True,

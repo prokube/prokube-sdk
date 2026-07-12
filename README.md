@@ -26,7 +26,9 @@ from prokube.sandbox import Sandbox
 sbx = Sandbox.from_pool("python-pool")
 
 # Or create directly (cold start, ~10-30s)
-sbx = Sandbox.create(image="pk-sandbox:python-datascience")
+sbx = Sandbox.create(
+    image="europe-west3-docker.pkg.dev/prokube-internal/prokube-customer/pk-sandbox-base:v14-05-2026"
+)
 
 # Execute code (stateful - variables persist between calls)
 sbx.run_code("import pandas as pd")
