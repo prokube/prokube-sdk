@@ -430,7 +430,7 @@ class SandboxV2:
             name: Optional sandbox name (auto-generated if not provided).
             template: Name of an existing FirecrackerTemplate (created via
                 :meth:`make_template`, once ``Ready``) to resume-clone from
-                instead of an OCI image (``spec.firecrackerTemplate``).
+                instead of an OCI image (``spec.template``).
                 Mutually exclusive with ``image``. Prefer
                 :meth:`from_template`, which wraps this with resume-oriented
                 defaults.
@@ -759,7 +759,7 @@ class SandboxV2:
         :meth:`make_template` (once its ``status.phase`` reaches ``Ready`` — see
         :meth:`wait_for_template_ready`) — NOT an OCI ref. Sets ``template``
         on the create request, which the backend maps onto
-        ``spec.firecrackerTemplate`` (a structured knob, mutually exclusive
+        ``spec.template`` (a structured knob, mutually exclusive
         with ``image``); no ``manifest`` escape hatch needed.
 
         Args:

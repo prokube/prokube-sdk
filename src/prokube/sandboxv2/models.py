@@ -10,7 +10,7 @@ phase) are v2-specific and defined here.
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -345,7 +345,7 @@ class CreateSandboxV2Request(BaseModel):
     template: str | None = Field(
         default=None,
         description="Name of an existing FirecrackerTemplate to resume-clone "
-        "from (spec.firecrackerTemplate), instead of building from an OCI "
+        "from (spec.template), instead of building from an OCI "
         "image. Mutually exclusive with image; when both are omitted image "
         "defaults to pk-sandbox-base.",
     )
@@ -524,42 +524,56 @@ class UploadFileV2Request(BaseModel):
 
 
 # =============================================================================
-# Templates — capture a RUNNING sandbox into a reusable, NAMESPACED
-# FirecrackerTemplate, and resume-clone from one on a later create (via
-# ``snapshot``, see :class:`CreateSandboxV2Request`). Mirrors the pkui backend
-# ``modules/sandboxv2`` snapshot DTOs (MakeTemplateRequest / Template /
+# Templates — capture a RUNNING sandbox into a reusable FirecrackerTemplate,
+# and resume-clone from one on a later create (via ``template``, see
+# :class:`CreateSandboxV2Request`). Mirrors the pkui backend
+# ``modules/sandboxv2`` template DTOs (MakeTemplateRequest / Template /
 # TemplateListResponse). Capture is ASYNC: the create response confirms the
-# request was accepted, not that the snapshot is Ready — the sandbox keeps
-# running throughout; poll :meth:`SandboxV2Client.snapshots` for
+# request was accepted, not that the template is Ready — the sandbox keeps
+# running throughout; poll :meth:`SandboxV2Client.templates` for
 # ``phase == "Ready"``.
 #
 # Endpoints:
-#   POST .../sandboxv2/{name}/snapshot  -> Template (201; a sub-path of the
-#       sandbox, not a sibling collection)
-#   GET  .../sandboxv2-templates        -> {snapshots: [Template], total}
-#       (namespaced; best-effort — empty list if unavailable)
+#   POST .../sandboxv2/{name}/template  -> Template (201; a sub-path of the
+#       sandbox, not a sibling collection). Always NAMESPACE-scoped.
+#   GET  .../sandboxv2-templates        -> {templates: [Template], total}
+#       (best-effort — empty list if unavailable). MERGED view: namespaced
+#       FirecrackerTemplates + cluster-scoped FirecrackerClusterTemplates,
+#       each entry tagged with ``scope`` (server resolves shadowing).
 # =============================================================================
 
 
 class MakeTemplateRequest(BaseModel):
-    """Request body for ``POST .../sandboxv2/{name}/snapshot``."""
+    """Request body for ``POST .../sandboxv2/{name}/template``."""
 
     name: str = Field(..., min_length=1, max_length=63, description="Template name")
 
 
 class Template(BaseModel):
-    """A namespaced FirecrackerTemplate (``Template`` in the backend contract).
+    """A FirecrackerTemplate (``Template`` in the backend contract).
 
-    Returned both by the live-snapshot POST (the newly-created snapshot) and
-    the ``sandboxv2-templates`` list endpoint. FirecrackerTemplate is
-    NAMESPACE-SCOPED, so ``namespace`` here is ``metadata.namespace``.
-    ``phase`` reaches ``"Ready"`` once the async capture completes; it may be
-    ``None`` right after creation, before status is populated.
+    Returned both by the live-capture POST (the newly-created, always
+    namespace-scoped template) and the ``sandboxv2-templates`` list endpoint
+    (a MERGED view of namespaced FirecrackerTemplates + cluster-scoped
+    FirecrackerClusterTemplates). ``scope`` says which kind an entry came
+    from; for a namespace template ``namespace`` is ``metadata.namespace``,
+    and it is ``None`` for a cluster template. ``phase`` reaches ``"Ready"``
+    once the async capture completes; it may be ``None`` right after creation,
+    before status is populated.
     """
 
     name: str = Field(..., description="FirecrackerTemplate (CR) name")
+    scope: Literal["namespace", "cluster"] = Field(
+        ...,
+        description="Resolution scope of this template — 'namespace' (a "
+        "namespaced FirecrackerTemplate) or 'cluster' (a cluster-scoped "
+        "FirecrackerClusterTemplate). Set by the merged listing endpoint; "
+        "shadowing (a namespace template hiding a same-named cluster one) is "
+        "resolved server-side.",
+    )
     namespace: str | None = Field(
-        default=None, description="FirecrackerTemplate namespace"
+        default=None,
+        description="FirecrackerTemplate namespace (None for cluster-scoped)",
     )
     phase: str | None = Field(
         default=None,

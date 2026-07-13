@@ -715,6 +715,7 @@ class TestApiKey:
             json={
                 "name": "snap-1",
                 "namespace": NS,
+                "scope": "namespace",
                 "fromSandbox": "sbx",
                 "snapshotId": "snap-id-1",
             },
@@ -744,6 +745,7 @@ class TestSnapshot:
             json={
                 "name": "my-snapshot",
                 "namespace": NS,
+                "scope": "namespace",
                 "phase": None,
                 "fromSandbox": "sbx",
                 "snapshotId": None,
@@ -809,6 +811,7 @@ class TestSnapshot:
             json={
                 "name": "warm-py",
                 "namespace": NS,
+                "scope": "namespace",
                 "fromSandbox": "sbx",
                 "snapshotId": "snap-id-2",
             },
@@ -832,8 +835,9 @@ class TestSnapshot:
     def test_from_template_launches_with_snapshot_field(
         self, mock_env, httpx_mock: HTTPXMock
     ):
-        """from_template sends snapshot (not a manifest) — the backend maps
-        it onto spec.firecrackerTemplate as a structured knob."""
+        """from_template sends a plain template name (not a manifest) — the
+        backend resolves it and maps it onto spec.template as a structured
+        knob."""
         _mock_version(httpx_mock)
         httpx_mock.add_response(
             method="POST",
@@ -881,6 +885,7 @@ class TestSnapshot:
                     {
                         "name": "warm-py",
                         "namespace": NS,
+                        "scope": "namespace",
                         "phase": "Ready",
                         "fromSandbox": "sbx",
                         "snapshotId": "snap-id-1",
@@ -890,6 +895,7 @@ class TestSnapshot:
                     {
                         "name": "warm-node",
                         "namespace": NS,
+                        "scope": "namespace",
                         "phase": "Pending",
                         "fromSandbox": "sbx-2",
                         "snapshotId": None,
@@ -920,6 +926,46 @@ class TestSnapshot:
         assert client.templates() == []
         client.close()
 
+    def test_templates_list_surfaces_scope(self, config, httpx_mock: HTTPXMock):
+        """The merged listing carries a per-entry ``scope`` ('namespace' |
+        'cluster'); the SDK surfaces it verbatim (server owns shadowing)."""
+        _mock_version(httpx_mock)
+        httpx_mock.add_response(
+            method="GET",
+            url=f"{BASE}/api/namespaces/{NS}/sandboxv2-templates",
+            json={
+                "templates": [
+                    {
+                        "name": "warm-py",
+                        "namespace": NS,
+                        "phase": "Ready",
+                        "scope": "namespace",
+                    },
+                    {
+                        "name": "org-base",
+                        "namespace": None,
+                        "phase": "Ready",
+                        "scope": "cluster",
+                    },
+                ],
+                "total": 2,
+            },
+        )
+        client = SandboxV2Client(config)
+        templates = client.templates()
+        assert [t.scope for t in templates] == ["namespace", "cluster"]
+        client.close()
+
+    def test_template_scope_is_required(self):
+        """``scope`` is part of the contract — a template payload missing it
+        must fail loudly rather than silently default."""
+        from pydantic import ValidationError
+
+        from prokube.sandboxv2.models import Template
+
+        with pytest.raises(ValidationError):
+            Template(name="warm-py", phase="Ready")  # type: ignore[call-arg]
+
     def test_facade_list_templates(self, mock_env, httpx_mock: HTTPXMock):
         _mock_version(httpx_mock)
         httpx_mock.add_response(
@@ -930,6 +976,7 @@ class TestSnapshot:
                     {
                         "name": "warm-py",
                         "namespace": NS,
+                        "scope": "namespace",
                         "phase": "Ready",
                         "fromSandbox": "sbx",
                     }
@@ -951,7 +998,14 @@ class TestSnapshot:
             method="GET",
             url=url,
             json={
-                "templates": [{"name": "warm-py", "namespace": NS, "phase": "Pending"}],
+                "templates": [
+                    {
+                        "name": "warm-py",
+                        "namespace": NS,
+                        "scope": "namespace",
+                        "phase": "Pending",
+                    }
+                ],
                 "total": 1,
             },
         )
@@ -959,7 +1013,14 @@ class TestSnapshot:
             method="GET",
             url=url,
             json={
-                "templates": [{"name": "warm-py", "namespace": NS, "phase": "Ready"}],
+                "templates": [
+                    {
+                        "name": "warm-py",
+                        "namespace": NS,
+                        "scope": "namespace",
+                        "phase": "Ready",
+                    }
+                ],
                 "total": 1,
             },
         )
@@ -980,6 +1041,7 @@ class TestSnapshot:
                     {
                         "name": "warm-py",
                         "namespace": NS,
+                        "scope": "namespace",
                         "phase": "Failed",
                         "message": "capture failed",
                     }

@@ -182,6 +182,7 @@ class SandboxV2Client:
     def _parse_template(self, response: dict[str, object]) -> Template:
         return Template(
             name=response.get("name", ""),
+            scope=response.get("scope"),  # type: ignore[arg-type]
             namespace=response.get("namespace", self._workspace()),
             phase=response.get("phase"),
             from_sandbox=response.get("fromSandbox"),
@@ -247,7 +248,7 @@ class SandboxV2Client:
         ``image`` is an OCI ref (or omitted for the backend default);
         ``template`` is the name of an existing FirecrackerTemplate (created
         via :meth:`make_template`) to resume-clone from instead
-        (``spec.firecrackerTemplate``). The two are mutually exclusive. See
+        (``spec.template``). The two are mutually exclusive. See
         :meth:`prokube.sandboxv2.sandbox.SandboxV2.from_template`.
         """
         if name is None:
