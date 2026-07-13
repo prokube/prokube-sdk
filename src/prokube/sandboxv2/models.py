@@ -340,12 +340,12 @@ class CreateSandboxV2Request(BaseModel):
     image: str | None = Field(
         default=None,
         description="Base OCI image (defaults to pk-sandbox-base). Mutually "
-        "exclusive with snapshot.",
+        "exclusive with template.",
     )
-    snapshot: str | None = Field(
+    template: str | None = Field(
         default=None,
-        description="Name of an existing FirecrackerSnapshot to resume-clone "
-        "from (spec.firecrackerSnapshot), instead of building from an OCI "
+        description="Name of an existing FirecrackerTemplate to resume-clone "
+        "from (spec.firecrackerTemplate), instead of building from an OCI "
         "image. Mutually exclusive with image; when both are omitted image "
         "defaults to pk-sandbox-base.",
     )
@@ -431,14 +431,14 @@ class CreateSandboxV2Request(BaseModel):
     )
 
     @model_validator(mode="after")
-    def _image_xor_snapshot(self) -> CreateSandboxV2Request:
+    def _image_xor_template(self) -> CreateSandboxV2Request:
         if self.manifest is not None:
             return self
-        if self.image is not None and self.snapshot is not None:
+        if self.image is not None and self.template is not None:
             raise ValueError(
-                "image and snapshot are mutually exclusive — set at most one "
-                "(image for an OCI ref, snapshot to resume-clone an existing "
-                "FirecrackerSnapshot by name)"
+                "image and template are mutually exclusive — set at most one "
+                "(image for an OCI ref, template to resume-clone an existing "
+                "FirecrackerTemplate by name)"
             )
         return self
 
@@ -524,46 +524,46 @@ class UploadFileV2Request(BaseModel):
 
 
 # =============================================================================
-# Snapshots — capture a RUNNING sandbox into a reusable, NAMESPACED
-# FirecrackerSnapshot, and resume-clone from one on a later create (via
+# Templates — capture a RUNNING sandbox into a reusable, NAMESPACED
+# FirecrackerTemplate, and resume-clone from one on a later create (via
 # ``snapshot``, see :class:`CreateSandboxV2Request`). Mirrors the pkui backend
-# ``modules/sandboxv2`` snapshot DTOs (SnapshotSandboxRequest / Snapshot /
-# SnapshotListResponse). Capture is ASYNC: the create response confirms the
+# ``modules/sandboxv2`` snapshot DTOs (MakeTemplateRequest / Template /
+# TemplateListResponse). Capture is ASYNC: the create response confirms the
 # request was accepted, not that the snapshot is Ready — the sandbox keeps
 # running throughout; poll :meth:`SandboxV2Client.snapshots` for
 # ``phase == "Ready"``.
 #
 # Endpoints:
-#   POST .../sandboxv2/{name}/snapshot  -> Snapshot (201; a sub-path of the
+#   POST .../sandboxv2/{name}/snapshot  -> Template (201; a sub-path of the
 #       sandbox, not a sibling collection)
-#   GET  .../sandboxv2-snapshots        -> {snapshots: [Snapshot], total}
+#   GET  .../sandboxv2-templates        -> {snapshots: [Template], total}
 #       (namespaced; best-effort — empty list if unavailable)
 # =============================================================================
 
 
-class SnapshotSandboxRequest(BaseModel):
+class MakeTemplateRequest(BaseModel):
     """Request body for ``POST .../sandboxv2/{name}/snapshot``."""
 
-    name: str = Field(..., min_length=1, max_length=63, description="Snapshot name")
+    name: str = Field(..., min_length=1, max_length=63, description="Template name")
 
 
-class Snapshot(BaseModel):
-    """A namespaced FirecrackerSnapshot (``Snapshot`` in the backend contract).
+class Template(BaseModel):
+    """A namespaced FirecrackerTemplate (``Template`` in the backend contract).
 
     Returned both by the live-snapshot POST (the newly-created snapshot) and
-    the ``sandboxv2-snapshots`` list endpoint. FirecrackerSnapshot is
+    the ``sandboxv2-templates`` list endpoint. FirecrackerTemplate is
     NAMESPACE-SCOPED, so ``namespace`` here is ``metadata.namespace``.
     ``phase`` reaches ``"Ready"`` once the async capture completes; it may be
     ``None`` right after creation, before status is populated.
     """
 
-    name: str = Field(..., description="FirecrackerSnapshot (CR) name")
+    name: str = Field(..., description="FirecrackerTemplate (CR) name")
     namespace: str | None = Field(
-        default=None, description="FirecrackerSnapshot namespace"
+        default=None, description="FirecrackerTemplate namespace"
     )
     phase: str | None = Field(
         default=None,
-        description="FirecrackerSnapshot status.phase (Pending | Building | "
+        description="FirecrackerTemplate status.phase (Pending | Building | "
         "Ready | Failed), or None before status is populated",
     )
     from_sandbox: str | None = Field(

@@ -47,12 +47,12 @@ from prokube.sandboxv2.models import (
     ExecV2Request,
     FileInfo,
     Lifecycle,
+    MakeTemplateRequest,
     Probe,
     SandboxV2Condition,
     SandboxV2Info,
     SandboxV2Status,
-    Snapshot,
-    SnapshotSandboxRequest,
+    Template,
     UploadFileV2Request,
 )
 
@@ -140,15 +140,15 @@ class SandboxV2Client:
     def _sandbox_sub_path(self, name: str, sub: str) -> str:
         return f"{self._sandbox_path(name)}/{sub}"
 
-    def _snapshots_path(self) -> str:
+    def _templates_path(self) -> str:
         # Sibling of the collection path (not a sandbox sub-path): mirrors the
-        # in-cluster ``sandboxv2`` -> ``sandboxv2-snapshots`` naming transform
+        # in-cluster ``sandboxv2`` -> ``sandboxv2-templates`` naming transform
         # for the api-key ORIGIN route too, matching every other path helper's
         # api-key vs in-cluster branch.
         ws = self._workspace()
         if self.config.use_api_key:
-            return f"/sandboxv2/{ws}/sandboxes-snapshots"
-        return f"/api/namespaces/{ws}/sandboxv2-snapshots"
+            return f"/sandboxv2/{ws}/sandboxes-templates"
+        return f"/api/namespaces/{ws}/sandboxv2-templates"
 
     # -- parsing --------------------------------------------------------------
 
@@ -179,8 +179,8 @@ class SandboxV2Client:
             created_at=response.get("createdAt"),
         )
 
-    def _parse_snapshot(self, response: dict[str, object]) -> Snapshot:
-        return Snapshot(
+    def _parse_template(self, response: dict[str, object]) -> Template:
+        return Template(
             name=response.get("name", ""),
             namespace=response.get("namespace", self._workspace()),
             phase=response.get("phase"),
@@ -196,7 +196,7 @@ class SandboxV2Client:
         self,
         image: str | None = None,
         name: str | None = None,
-        snapshot: str | None = None,
+        template: str | None = None,
         vcpus: int | None = None,
         mem_mib: int | None = None,
         overlay_mib: int | None = None,
@@ -245,10 +245,10 @@ class SandboxV2Client:
         existing callers are unaffected.
 
         ``image`` is an OCI ref (or omitted for the backend default);
-        ``snapshot`` is the name of an existing FirecrackerSnapshot (created
-        via :meth:`snapshot`) to resume-clone from instead
-        (``spec.firecrackerSnapshot``). The two are mutually exclusive. See
-        :meth:`prokube.sandboxv2.sandbox.SandboxV2.from_snapshot`.
+        ``template`` is the name of an existing FirecrackerTemplate (created
+        via :meth:`make_template`) to resume-clone from instead
+        (``spec.firecrackerTemplate``). The two are mutually exclusive. See
+        :meth:`prokube.sandboxv2.sandbox.SandboxV2.from_template`.
         """
         if name is None:
             name = f"sandbox-{uuid.uuid4().hex[:8]}"
@@ -256,7 +256,7 @@ class SandboxV2Client:
         request = CreateSandboxV2Request(
             name=name,
             image=image,
-            snapshot=snapshot,
+            template=template,
             vcpus=vcpus,
             mem_mib=mem_mib,
             overlay_mib=overlay_mib,
@@ -339,49 +339,49 @@ class SandboxV2Client:
         """Delete a sandbox (deletes the CR; ephemeral PVC cleaned up)."""
         self._http.delete(self._sandbox_path(name))
 
-    def snapshot(self, name: str, snapshot_name: str) -> Snapshot:
-        """Snapshot a RUNNING sandbox into a reusable FirecrackerSnapshot.
+    def make_template(self, name: str, template_name: str) -> Template:
+        """Capture a RUNNING sandbox into a reusable FirecrackerTemplate.
 
-        POSTs to ``.../sandboxv2/{name}/snapshot``. The backend creates a
-        namespaced FirecrackerSnapshot named ``snapshot_name`` and captures the
+        POSTs to ``.../sandboxv2/{name}/template``. The backend creates a
+        namespaced FirecrackerTemplate named ``template_name`` and captures the
         microVM into it ASYNCHRONOUSLY — this call returns as soon as the
-        capture is accepted, not once the snapshot is ``Ready`` (poll via
-        :meth:`snapshots`); the sandbox keeps running throughout. Launch a new
-        sandbox from the (eventually Ready) snapshot via
-        :meth:`prokube.sandboxv2.sandbox.SandboxV2.from_snapshot`.
+        capture is accepted, not once the template is ``Ready`` (poll via
+        :meth:`templates`); the sandbox keeps running throughout. Launch a new
+        sandbox from the (eventually Ready) template via
+        :meth:`prokube.sandboxv2.sandbox.SandboxV2.from_template`.
 
         Args:
-            name: Name of the running sandbox to snapshot.
-            snapshot_name: Name for the new FirecrackerSnapshot.
+            name: Name of the running sandbox to capture.
+            template_name: Name for the new FirecrackerTemplate.
 
         Raises:
             NotFoundError: If the sandbox does not exist (HTTP 404).
             SandboxError: If the sandbox is not Running (HTTP 409).
-            ProKubeError: If the FirecrackerSandbox/FirecrackerSnapshot CRDs
+            ProKubeError: If the FirecrackerSandbox/FirecrackerTemplate CRDs
                 are not installed (HTTP 503), or any other backend error.
         """
-        request = SnapshotSandboxRequest(name=snapshot_name)
+        request = MakeTemplateRequest(name=template_name)
         try:
             response = self._http.post(
-                self._sandbox_sub_path(name, "snapshot"),
+                self._sandbox_sub_path(name, "template"),
                 json=request.model_dump(),
             )
         except ProKubeError as e:
             if e.status_code == 409:
                 raise SandboxError(str(e), status_code=409) from e
             raise
-        return self._parse_snapshot(response)
+        return self._parse_template(response)
 
-    def snapshots(self) -> list[Snapshot]:
-        """List FirecrackerSnapshots in the configured workspace.
+    def templates(self) -> list[Template]:
+        """List FirecrackerTemplates in the configured workspace.
 
-        GETs ``.../sandboxv2-snapshots``. Best-effort: the backend returns an
-        empty list (never an error) when snapshot listing is unavailable (CRD
-        missing, RBAC). Poll this for ``phase == "Ready"`` after :meth:`snapshot`.
+        GETs ``.../sandboxv2-templates``. Best-effort: the backend returns an
+        empty list (never an error) when template listing is unavailable (CRD
+        missing, RBAC). Poll this for ``phase == "Ready"`` after :meth:`make_template`.
         """
-        response = self._http.get(self._snapshots_path())
-        snapshots = response.get("snapshots", [])
-        return [self._parse_snapshot(s) for s in snapshots]
+        response = self._http.get(self._templates_path())
+        templates = response.get("templates", [])
+        return [self._parse_template(s) for s in templates]
 
     # -- exec -----------------------------------------------------------------
 

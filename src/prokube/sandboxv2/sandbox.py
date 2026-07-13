@@ -4,9 +4,9 @@ Mirrors the v1 :class:`prokube.sandbox.Sandbox` public surface, adapted to the
 v2 backend: every sandbox runs on ``fc-pod`` (the only runtime; there is no
 runtime choice), creation takes v2 knobs (resources, egress, env), and
 sandboxes are addressed by the same ``workspace`` param as v1. There is no warm
-pool — instead a RUNNING sandbox can be snapshotted into a reusable
-FirecrackerSnapshot (:meth:`SandboxV2.snapshot`) and a later sandbox can
-resume-clone from it for a fast start (:meth:`SandboxV2.from_snapshot`).
+pool — instead a RUNNING sandbox can be captured into a reusable
+FirecrackerTemplate (:meth:`SandboxV2.make_template`) and a later sandbox can
+resume-clone from it for a fast start (:meth:`SandboxV2.from_template`).
 
 The stateful code / shell command / file helpers are the *same* v1 classes
 (:class:`CodeRunner` / :class:`CommandRunner` / :class:`FileManager`) — they are
@@ -42,7 +42,7 @@ from prokube.sandboxv2.models import (
     SandboxV2Condition,
     SandboxV2Info,
     SandboxV2Status,
-    Snapshot,
+    Template,
 )
 
 
@@ -360,28 +360,28 @@ class SandboxV2:
         self._killed = True
         self._client.close()
 
-    def snapshot(self, name: str) -> str:
-        """Snapshot this RUNNING sandbox into a reusable FirecrackerSnapshot.
+    def make_template(self, name: str) -> str:
+        """Capture this RUNNING sandbox into a reusable FirecrackerTemplate.
 
         The backend captures the microVM ASYNCHRONOUSLY: this call returns as
-        soon as the capture request is accepted, not once the snapshot is
-        ``Ready``. This sandbox keeps running throughout — snapshotting does
+        soon as the capture request is accepted, not once the template is
+        ``Ready``. This sandbox keeps running throughout — capturing does
         not pause or kill it. Poll for readiness via
-        :meth:`SandboxV2.list_snapshots` (``phase == "Ready"``) or
-        :meth:`wait_for_snapshot_ready`; use :meth:`from_snapshot` once you
+        :meth:`SandboxV2.list_templates` (``phase == "Ready"``) or
+        :meth:`wait_for_template_ready`; use :meth:`from_template` once you
         know it is ready.
 
         Args:
-            name: Name for the new FirecrackerSnapshot.
+            name: Name for the new FirecrackerTemplate.
 
         Returns:
-            The snapshot name (echoed back by the backend).
+            The template name (echoed back by the backend).
 
         Raises:
             SandboxError: If this sandbox is not in Running state (HTTP 409).
         """
         self._check_not_killed()
-        info = self._client.snapshot(self._name, name)
+        info = self._client.make_template(self._name, name)
         return info.name
 
     def refresh(self) -> None:
@@ -397,7 +397,7 @@ class SandboxV2:
         image: str | None = None,
         *,
         name: str | None = None,
-        snapshot: str | None = None,
+        template: str | None = None,
         resources: dict | None = None,
         vcpus: int | None = None,
         mem_mib: int | None = None,
@@ -424,15 +424,15 @@ class SandboxV2:
         """Create a new Firecracker sandbox.
 
         Args:
-            image: Base OCI image. If None (and ``snapshot`` is also None),
+            image: Base OCI image. If None (and ``template`` is also None),
                 the backend default (pk-sandbox-base) is used. Mutually
-                exclusive with ``snapshot``.
+                exclusive with ``template``.
             name: Optional sandbox name (auto-generated if not provided).
-            snapshot: Name of an existing FirecrackerSnapshot (created via
-                :meth:`snapshot`, once ``Ready``) to resume-clone from
-                instead of an OCI image (``spec.firecrackerSnapshot``).
+            template: Name of an existing FirecrackerTemplate (created via
+                :meth:`make_template`, once ``Ready``) to resume-clone from
+                instead of an OCI image (``spec.firecrackerTemplate``).
                 Mutually exclusive with ``image``. Prefer
-                :meth:`from_snapshot`, which wraps this with resume-oriented
+                :meth:`from_template`, which wraps this with resume-oriented
                 defaults.
             resources: Optional ``{"vcpus": int, "mem_mib": int, "overlay_mib":
                 int}`` shorthand. Explicit ``vcpus`` / ``mem_mib`` /
@@ -467,7 +467,7 @@ class SandboxV2:
             mesh: Optional: opt this sandbox into the Istio service mesh
                 (spec.mesh).
             snapshot_resume_policy: spec.snapshotResumePolicy (``Strict`` |
-                ``AllowStale``) — whether resuming from a snapshot image
+                ``AllowStale``) — whether resuming from a template
                 requires an exact recipe/base match. Omitted -> executor
                 Strict default.
             manifest: Full FirecrackerSandbox object; wins over structured knobs.
@@ -501,7 +501,7 @@ class SandboxV2:
             info = client.create(
                 image=image,
                 name=name,
-                snapshot=snapshot,
+                template=template,
                 vcpus=vcpus,
                 mem_mib=mem_mib,
                 overlay_mib=overlay_mib,
@@ -628,7 +628,7 @@ class SandboxV2:
         return sandboxes
 
     @classmethod
-    def list_snapshots(
+    def list_templates(
         cls,
         *,
         api_url: str | None = None,
@@ -636,10 +636,10 @@ class SandboxV2:
         user_id: str | None = None,
         api_key: str | None = None,
         timeout: int | None = None,
-    ) -> list[Snapshot]:
-        """List FirecrackerSnapshots in the workspace.
+    ) -> list[Template]:
+        """List FirecrackerTemplates in the workspace.
 
-        Best-effort: returns an empty list (never raises) when snapshot
+        Best-effort: returns an empty list (never raises) when template
         listing is unavailable backend-side (CRD missing, RBAC).
         """
         config = cls._build_config(
@@ -651,13 +651,13 @@ class SandboxV2:
         )
         client = SandboxV2Client(config)
         try:
-            snapshots = client.snapshots()
+            templates = client.templates()
         finally:
             client.close()
-        return snapshots
+        return templates
 
     @classmethod
-    def wait_for_snapshot_ready(
+    def wait_for_template_ready(
         cls,
         image: str,
         *,
@@ -668,14 +668,14 @@ class SandboxV2:
         user_id: str | None = None,
         api_key: str | None = None,
         request_timeout: int | None = None,
-    ) -> Snapshot:
-        """Block until the named FirecrackerSnapshot reaches ``Ready``.
+    ) -> Template:
+        """Block until the named FirecrackerTemplate reaches ``Ready``.
 
-        Polls :meth:`list_snapshots` (there is no server-side long-poll for
-        FirecrackerSnapshot readiness, unlike :meth:`wait_until_ready`).
+        Polls :meth:`list_templates` (there is no server-side long-poll for
+        FirecrackerTemplate readiness, unlike :meth:`wait_until_ready`).
 
         Args:
-            image: Name of the FirecrackerSnapshot to wait for.
+            image: Name of the FirecrackerTemplate to wait for.
             timeout: Maximum seconds to wait (default: 120).
             poll_interval: Seconds between polls (default: 1.0).
             api_url: API URL (default: PROKUBE_API_URL env var).
@@ -687,7 +687,7 @@ class SandboxV2:
                 var).
 
         Returns:
-            The ``Ready`` :class:`~prokube.sandboxv2.models.Snapshot`.
+            The ``Ready`` :class:`~prokube.sandboxv2.models.Template`.
 
         Raises:
             SandboxTimeoutError: If it does not become Ready in time (or is
@@ -703,11 +703,11 @@ class SandboxV2:
             timeout=request_timeout,
         )
         client = SandboxV2Client(config)
-        last: Snapshot | None = None
+        last: Template | None = None
         try:
             deadline = time.monotonic() + timeout
             while True:
-                for img in client.snapshots():
+                for img in client.templates():
                     if img.name != image:
                         continue
                     last = img
@@ -716,7 +716,7 @@ class SandboxV2:
                     if img.phase == "Failed":
                         detail = f": {img.message}" if img.message else ""
                         raise SandboxError(
-                            f"Snapshot {image!r} entered terminal state "
+                            f"Template {image!r} entered terminal state "
                             f"'Failed'{detail}"
                         )
                 remaining = deadline - time.monotonic()
@@ -728,11 +728,11 @@ class SandboxV2:
 
         current = f" (current phase: {last.phase!r})" if last else " (not found)"
         raise SandboxTimeoutError(
-            f"Snapshot {image!r} did not become Ready within {timeout}s{current}"
+            f"Template {image!r} did not become Ready within {timeout}s{current}"
         )
 
     @classmethod
-    def from_snapshot(
+    def from_template(
         cls,
         image: str,
         *,
@@ -753,17 +753,17 @@ class SandboxV2:
         api_key: str | None = None,
         timeout: int | None = None,
     ) -> Self:
-        """Launch a new sandbox by resume-cloning a FirecrackerSnapshot.
+        """Launch a new sandbox by resume-cloning a FirecrackerTemplate.
 
-        ``image`` must be the name of a FirecrackerSnapshot created by
-        :meth:`snapshot` (once its ``status.phase`` reaches ``Ready`` — see
-        :meth:`wait_for_snapshot_ready`) — NOT an OCI ref. Sets ``snapshot``
+        ``image`` must be the name of a FirecrackerTemplate created by
+        :meth:`make_template` (once its ``status.phase`` reaches ``Ready`` — see
+        :meth:`wait_for_template_ready`) — NOT an OCI ref. Sets ``template``
         on the create request, which the backend maps onto
-        ``spec.firecrackerSnapshot`` (a structured knob, mutually exclusive
+        ``spec.firecrackerTemplate`` (a structured knob, mutually exclusive
         with ``image``); no ``manifest`` escape hatch needed.
 
         Args:
-            image: Name of the FirecrackerSnapshot to resume-clone from.
+            image: Name of the FirecrackerTemplate to resume-clone from.
             name: Optional sandbox name (auto-generated if not provided).
             resources: ``{"vcpus": int, "mem_mib": int, "overlay_mib": int}``
                 shorthand.
@@ -780,7 +780,7 @@ class SandboxV2:
             secret_refs: Names of Secrets whose keys are injected as env vars.
             mesh: Optional: opt this sandbox into the Istio service mesh.
             snapshot_resume_policy: ``Strict`` | ``AllowStale`` — whether the
-                resume requires an exact recipe/base match with the snapshot.
+                resume requires an exact recipe/base match with the template.
             api_url: API URL (default: PROKUBE_API_URL env var).
             workspace: Workspace / Kubernetes namespace (default:
                 PROKUBE_WORKSPACE env var).
@@ -792,7 +792,7 @@ class SandboxV2:
             A SandboxV2 instance (call ``wait_until_ready()`` before use).
 
         Example:
-            >>> sbx = SandboxV2.from_snapshot("my-warm-python")
+            >>> sbx = SandboxV2.from_template("my-warm-python")
             >>> sbx.wait_until_ready()
             >>> sbx.run_code("print('hello')")
         """
@@ -806,7 +806,7 @@ class SandboxV2:
 
         return cls.create(
             name=name,
-            snapshot=image,
+            template=image,
             vcpus=vcpus if vcpus is not None else 2,
             mem_mib=mem_mib if mem_mib is not None else 2048,
             overlay_mib=overlay_mib,

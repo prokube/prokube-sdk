@@ -710,7 +710,7 @@ class TestApiKey:
         base = f"https://prokube.ai/sandboxv2/{NS}/sandboxes/sbx"
         httpx_mock.add_response(
             method="POST",
-            url=f"{base}/snapshot",
+            url=f"{base}/template",
             status_code=201,
             json={
                 "name": "snap-1",
@@ -720,11 +720,11 @@ class TestApiKey:
             },
         )
         client = SandboxV2Client(cfg)
-        info = client.snapshot("sbx", "snap-1")
+        info = client.make_template("sbx", "snap-1")
         assert info.name == "snap-1"
         assert info.snapshot_id == "snap-id-1"
         req = httpx_mock.get_requests()[-1]
-        assert str(req.url) == f"{base}/snapshot"
+        assert str(req.url) == f"{base}/template"
         client.close()
 
 
@@ -739,7 +739,7 @@ class TestSnapshot:
         _mock_version(httpx_mock)
         httpx_mock.add_response(
             method="POST",
-            url=f"{COLL}/sbx/snapshot",
+            url=f"{COLL}/sbx/template",
             status_code=201,
             json={
                 "name": "my-snapshot",
@@ -752,10 +752,10 @@ class TestSnapshot:
             },
         )
         client = SandboxV2Client(config)
-        info = client.snapshot("sbx", "my-snapshot")
+        info = client.make_template("sbx", "my-snapshot")
         req = [r for r in httpx_mock.get_requests() if r.method == "POST"][-1]
         body = json.loads(req.content)
-        assert str(req.url) == f"{COLL}/sbx/snapshot"
+        assert str(req.url) == f"{COLL}/sbx/template"
         assert body == {"name": "my-snapshot"}
         assert info.name == "my-snapshot"
         assert info.namespace == NS
@@ -771,13 +771,13 @@ class TestSnapshot:
         _mock_version(httpx_mock)
         httpx_mock.add_response(
             method="POST",
-            url=f"{COLL}/sbx/snapshot",
+            url=f"{COLL}/sbx/template",
             status_code=409,
             json={"detail": "sandbox is not Running"},
         )
         client = SandboxV2Client(config)
         with pytest.raises(SandboxError):
-            client.snapshot("sbx", "my-snapshot")
+            client.make_template("sbx", "my-snapshot")
         client.close()
 
     def test_snapshot_missing_sandbox_raises_not_found(
@@ -788,13 +788,13 @@ class TestSnapshot:
         _mock_version(httpx_mock)
         httpx_mock.add_response(
             method="POST",
-            url=f"{COLL}/sbx/snapshot",
+            url=f"{COLL}/sbx/template",
             status_code=404,
             json={"detail": "not found"},
         )
         client = SandboxV2Client(config)
         with pytest.raises(NotFoundError):
-            client.snapshot("sbx", "my-snapshot")
+            client.make_template("sbx", "my-snapshot")
         client.close()
 
     def test_facade_snapshot_returns_image_name(self, config, httpx_mock: HTTPXMock):
@@ -804,7 +804,7 @@ class TestSnapshot:
         )
         httpx_mock.add_response(
             method="POST",
-            url=f"{COLL}/sbx/snapshot",
+            url=f"{COLL}/sbx/template",
             status_code=201,
             json={
                 "name": "warm-py",
@@ -814,7 +814,7 @@ class TestSnapshot:
             },
         )
         sbx = SandboxV2.get("sbx", api_url=BASE, workspace=NS)
-        snapshot_name = sbx.snapshot("warm-py")
+        snapshot_name = sbx.make_template("warm-py")
         assert snapshot_name == "warm-py"
         sbx._client.close()
 
@@ -827,13 +827,13 @@ class TestSnapshot:
         sbx = SandboxV2.get("sbx")
         sbx.kill()
         with pytest.raises(SandboxError, match="has been killed"):
-            sbx.snapshot("warm-py")
+            sbx.make_template("warm-py")
 
-    def test_from_snapshot_launches_with_snapshot_field(
+    def test_from_template_launches_with_snapshot_field(
         self, mock_env, httpx_mock: HTTPXMock
     ):
-        """from_snapshot sends snapshot (not a manifest) — the backend maps
-        it onto spec.firecrackerSnapshot as a structured knob."""
+        """from_template sends snapshot (not a manifest) — the backend maps
+        it onto spec.firecrackerTemplate as a structured knob."""
         _mock_version(httpx_mock)
         httpx_mock.add_response(
             method="POST",
@@ -841,13 +841,13 @@ class TestSnapshot:
             status_code=201,
             json=_sandbox_json(name="sbx-3", phase="Pending"),
         )
-        sbx = SandboxV2.from_snapshot("warm-py", name="sbx-3", vcpus=4, mem_mib=4096)
+        sbx = SandboxV2.from_template("warm-py", name="sbx-3", vcpus=4, mem_mib=4096)
         try:
             body = json.loads(
                 [r for r in httpx_mock.get_requests() if r.method == "POST"][-1].content
             )
             assert "manifest" not in body
-            assert body["snapshot"] == "warm-py"
+            assert body["template"] == "warm-py"
             assert "image" not in body
             assert body["vcpus"] == 4
             assert body["memMiB"] == 4096
@@ -856,12 +856,12 @@ class TestSnapshot:
         finally:
             sbx._client.close()
 
-    def test_from_snapshot_defaults_resources(self, mock_env, httpx_mock: HTTPXMock):
+    def test_from_template_defaults_resources(self, mock_env, httpx_mock: HTTPXMock):
         _mock_version(httpx_mock)
         httpx_mock.add_response(
             method="POST", url=COLL, status_code=201, json=_sandbox_json()
         )
-        sbx = SandboxV2.from_snapshot("warm-py")
+        sbx = SandboxV2.from_template("warm-py")
         try:
             body = json.loads(
                 [r for r in httpx_mock.get_requests() if r.method == "POST"][-1].content
@@ -875,9 +875,9 @@ class TestSnapshot:
         _mock_version(httpx_mock)
         httpx_mock.add_response(
             method="GET",
-            url=f"{BASE}/api/namespaces/{NS}/sandboxv2-snapshots",
+            url=f"{BASE}/api/namespaces/{NS}/sandboxv2-templates",
             json={
-                "snapshots": [
+                "templates": [
                     {
                         "name": "warm-py",
                         "namespace": NS,
@@ -901,7 +901,7 @@ class TestSnapshot:
             },
         )
         client = SandboxV2Client(config)
-        snapshots = client.snapshots()
+        snapshots = client.templates()
         assert [s.name for s in snapshots] == ["warm-py", "warm-node"]
         assert snapshots[0].phase == "Ready"
         assert snapshots[0].from_sandbox == "sbx"
@@ -913,20 +913,20 @@ class TestSnapshot:
         _mock_version(httpx_mock)
         httpx_mock.add_response(
             method="GET",
-            url=f"{BASE}/api/namespaces/{NS}/sandboxv2-snapshots",
-            json={"snapshots": [], "total": 0},
+            url=f"{BASE}/api/namespaces/{NS}/sandboxv2-templates",
+            json={"templates": [], "total": 0},
         )
         client = SandboxV2Client(config)
-        assert client.snapshots() == []
+        assert client.templates() == []
         client.close()
 
-    def test_facade_list_snapshots(self, mock_env, httpx_mock: HTTPXMock):
+    def test_facade_list_templates(self, mock_env, httpx_mock: HTTPXMock):
         _mock_version(httpx_mock)
         httpx_mock.add_response(
             method="GET",
-            url=f"{BASE}/api/namespaces/{NS}/sandboxv2-snapshots",
+            url=f"{BASE}/api/namespaces/{NS}/sandboxv2-templates",
             json={
-                "snapshots": [
+                "templates": [
                     {
                         "name": "warm-py",
                         "namespace": NS,
@@ -937,21 +937,21 @@ class TestSnapshot:
                 "total": 1,
             },
         )
-        snapshots = SandboxV2.list_snapshots()
+        snapshots = SandboxV2.list_templates()
         assert len(snapshots) == 1
         assert snapshots[0].name == "warm-py"
         assert snapshots[0].phase == "Ready"
 
-    def test_wait_for_snapshot_ready_polls_until_ready(
+    def test_wait_for_template_ready_polls_until_ready(
         self, mock_env, httpx_mock: HTTPXMock
     ):
         _mock_version(httpx_mock)
-        url = f"{BASE}/api/namespaces/{NS}/sandboxv2-snapshots"
+        url = f"{BASE}/api/namespaces/{NS}/sandboxv2-templates"
         httpx_mock.add_response(
             method="GET",
             url=url,
             json={
-                "snapshots": [{"name": "warm-py", "namespace": NS, "phase": "Pending"}],
+                "templates": [{"name": "warm-py", "namespace": NS, "phase": "Pending"}],
                 "total": 1,
             },
         )
@@ -959,24 +959,24 @@ class TestSnapshot:
             method="GET",
             url=url,
             json={
-                "snapshots": [{"name": "warm-py", "namespace": NS, "phase": "Ready"}],
+                "templates": [{"name": "warm-py", "namespace": NS, "phase": "Ready"}],
                 "total": 1,
             },
         )
-        snap = SandboxV2.wait_for_snapshot_ready("warm-py", timeout=5, poll_interval=0)
+        snap = SandboxV2.wait_for_template_ready("warm-py", timeout=5, poll_interval=0)
         assert snap.phase == "Ready"
         assert snap.name == "warm-py"
 
-    def test_wait_for_snapshot_ready_raises_on_failed(
+    def test_wait_for_template_ready_raises_on_failed(
         self, mock_env, httpx_mock: HTTPXMock
     ):
         _mock_version(httpx_mock)
-        url = f"{BASE}/api/namespaces/{NS}/sandboxv2-snapshots"
+        url = f"{BASE}/api/namespaces/{NS}/sandboxv2-templates"
         httpx_mock.add_response(
             method="GET",
             url=url,
             json={
-                "snapshots": [
+                "templates": [
                     {
                         "name": "warm-py",
                         "namespace": NS,
@@ -988,18 +988,18 @@ class TestSnapshot:
             },
         )
         with pytest.raises(SandboxError, match="capture failed"):
-            SandboxV2.wait_for_snapshot_ready("warm-py", timeout=5)
+            SandboxV2.wait_for_template_ready("warm-py", timeout=5)
 
-    def test_wait_for_snapshot_ready_times_out(self, mock_env, httpx_mock: HTTPXMock):
+    def test_wait_for_template_ready_times_out(self, mock_env, httpx_mock: HTTPXMock):
         _mock_version(httpx_mock)
-        url = f"{BASE}/api/namespaces/{NS}/sandboxv2-snapshots"
+        url = f"{BASE}/api/namespaces/{NS}/sandboxv2-templates"
         httpx_mock.add_response(
             method="GET",
             url=url,
-            json={"snapshots": [], "total": 0},
+            json={"templates": [], "total": 0},
         )
         with pytest.raises(SandboxTimeoutError):
-            SandboxV2.wait_for_snapshot_ready("warm-py", timeout=0)
+            SandboxV2.wait_for_template_ready("warm-py", timeout=0)
 
 
 # ---------------------------------------------------------------------------
