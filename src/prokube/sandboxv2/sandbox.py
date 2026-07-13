@@ -322,7 +322,10 @@ class SandboxV2:
                 if remaining <= 0:
                     break
                 time.sleep(min(poll_interval, remaining))
-                poll_interval = min(poll_interval * 1.5, 1.0)
+                # Cap the backoff low (0.25s): an older backend resolves this
+                # long-poll on phase==Running (before Ready), so the cap bounds
+                # how far past the true Ready moment we can overshoot here.
+                poll_interval = min(poll_interval * 1.5, 0.25)
                 continue
 
             self.refresh()
