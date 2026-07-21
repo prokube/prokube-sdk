@@ -316,16 +316,25 @@ class SandboxClient:
             for s in sandboxes
         ]
 
-    def get(self, name: str) -> SandboxInfo:
+    def get(self, name: str, request_timeout: float | None = None) -> SandboxInfo:
         """Get information about a sandbox.
 
         Args:
             name: Sandbox name.
+            request_timeout: Optional per-request timeout override, in
+                seconds. Passing ``None`` (the default) leaves the client's
+                configured timeout in place; callers polling toward a
+                deadline (e.g. ``wait_until_ready``) should pass the
+                remaining budget so a single stalled request cannot outlast
+                the caller's overall timeout.
 
         Returns:
             Information about the sandbox.
         """
-        response = self._http.get(self._sandbox_path(name))
+        kwargs: dict[str, float] = {}
+        if request_timeout is not None:
+            kwargs["timeout"] = request_timeout
+        response = self._http.get(self._sandbox_path(name), **kwargs)
         return SandboxInfo(
             name=response["name"],
             workspace=self.config.workspace,
