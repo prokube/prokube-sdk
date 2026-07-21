@@ -623,10 +623,13 @@ class TestWaitUntilReady:
         tick = {"n": 0}
 
         def fake_monotonic() -> float:
-            # Advance virtual time by 1s on every call after the first few,
-            # so a timeout=2 budget is exhausted after a handful of probes.
+            # Advance virtual time by 0.1s on every call, so a timeout=2
+            # budget is exhausted after a handful of probes without being so
+            # coarse that the extra monotonic() reads wait_until_ready takes
+            # per-iteration (to bound each poll's request timeout) trip the
+            # deadline before a single probe attempt happens.
             tick["n"] += 1
-            return start + tick["n"] * 1.0
+            return start + tick["n"] * 0.1
 
         monkeypatch.setattr("time.monotonic", fake_monotonic)
         monkeypatch.setattr("time.sleep", lambda _: None)
@@ -801,6 +804,86 @@ class TestWaitUntilReady:
             method="GET",
             url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/sandbox-test",
             json={"name": "sandbox-test", "phase": "Pending"},
+        )
+
+        sbx = Sandbox.from_pool("python-pool")
+        with pytest.raises(SandboxTimeoutError, match="did not become ready"):
+            sbx.wait_until_ready(timeout=1)
+
+        sbx._client.close()
+
+    def test_wait_until_ready_bounds_get_to_remaining_budget(
+        self, mock_env, monkeypatch, httpx_mock: HTTPXMock
+    ):
+        """Each readiness poll's GET must be capped at the remaining budget.
+
+        PROKUBE_TIMEOUT defaults to 300s and is used as the httpx client's
+        per-request timeout. Without an explicit per-call override, a single
+        stalled poll could block up to 300s even though the caller asked for
+        a much shorter wait_until_ready(timeout=...) budget.
+        """
+        monkeypatch.setattr("time.sleep", lambda _: None)
+        _mock_version(httpx_mock)
+        _mock_claim(httpx_mock)
+
+        captured_timeouts: list[dict[str, float] | None] = []
+
+        def _get_callback(request: httpx.Request) -> httpx.Response:
+            captured_timeouts.append(request.extensions.get("timeout"))
+            return httpx.Response(
+                200, json={"name": "sandbox-test", "phase": "Pending"}
+            )
+
+        httpx_mock.add_callback(
+            _get_callback,
+            method="GET",
+            url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/sandbox-test",
+            is_reusable=True,
+        )
+
+        sbx = Sandbox.from_pool("python-pool")
+        with pytest.raises(SandboxTimeoutError):
+            sbx.wait_until_ready(timeout=3)
+
+        assert captured_timeouts, "expected at least one GET poll"
+        for sent_timeout in captured_timeouts:
+            assert sent_timeout is not None, (
+                "GET poll had no per-request timeout override, so it falls "
+                "back to the client's 300s default instead of the caller's "
+                "3s readiness budget"
+            )
+            assert sent_timeout["read"] <= 3, (
+                f"GET poll allowed a {sent_timeout['read']}s read timeout, "
+                f"but only 3s remained in the readiness budget"
+            )
+
+        sbx._client.close()
+
+    def test_wait_until_ready_get_timeout_raises_sandbox_timeout_error(
+        self, mock_env, monkeypatch, httpx_mock: HTTPXMock
+    ):
+        """A stalled poll must surface SandboxTimeoutError, not the raw httpx
+        timeout exception, once the readiness budget is exhausted."""
+        call_count = 0
+        real_monotonic = __import__("time").monotonic
+
+        def fake_monotonic():
+            nonlocal call_count
+            call_count += 1
+            if call_count <= 2:
+                return real_monotonic()
+            return real_monotonic() + 1000
+
+        monkeypatch.setattr("time.monotonic", fake_monotonic)
+        monkeypatch.setattr("time.sleep", lambda _: None)
+
+        _mock_version(httpx_mock)
+        _mock_claim(httpx_mock)
+        httpx_mock.add_exception(
+            httpx.ReadTimeout("simulated stalled backend"),
+            method="GET",
+            url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/sandbox-test",
+            is_reusable=True,
         )
 
         sbx = Sandbox.from_pool("python-pool")

@@ -7,6 +7,8 @@ import sys
 import time
 import uuid
 
+import httpx
+
 if sys.version_info >= (3, 11):
     from typing import Self
 else:
@@ -242,7 +244,22 @@ class Sandbox:
         poll_interval = 2
         deadline = time.monotonic() + timeout
         while True:
-            self.refresh()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            try:
+                # Cap the GET at the remaining budget so a single stalled
+                # poll cannot block past the caller's deadline: without this,
+                # the request falls back to the client's default timeout
+                # (PROKUBE_TIMEOUT, 300s), which can vastly exceed a short
+                # wait_until_ready(timeout=...) call.
+                self.refresh(request_timeout=remaining)
+            except httpx.TimeoutException:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                time.sleep(min(poll_interval, remaining))
+                continue
             if self._status == SandboxStatus.RUNNING:
                 if self._skip_next_warmup:
                     self._skip_next_warmup = False
@@ -354,10 +371,15 @@ class Sandbox:
         self._killed = True
         self._client.close()
 
-    def refresh(self) -> None:
-        """Refresh sandbox information from the API."""
+    def refresh(self, request_timeout: float | None = None) -> None:
+        """Refresh sandbox information from the API.
+
+        Args:
+            request_timeout: Optional per-request timeout override, in
+                seconds. See :meth:`SandboxClient.get`.
+        """
         self._check_not_killed()
-        info = self._client.get(self._name)
+        info = self._client.get(self._name, request_timeout=request_timeout)
         self._status = info.status
         if info.auto_idle_timeout_seconds is not None:
             self._auto_idle_timeout_seconds = info.auto_idle_timeout_seconds
