@@ -90,8 +90,6 @@ class Sandbox:
         self._image = image
         self._auto_idle_timeout_seconds = auto_idle_timeout_seconds
         self._killed = False
-        self._skip_next_warmup = False
-
         # Initialize helpers with killed-state check callback
         self._commands = CommandRunner(client, name, self._check_not_killed)
         self._files = FileManager(client, name, self._check_not_killed)
@@ -206,9 +204,9 @@ class Sandbox:
         self._check_not_killed()
         self._client.pause(self._name)
         self._status = SandboxStatus.PAUSED
-        # Pausing deletes the underlying pod, so any existing Jupyter session
-        # is no longer valid. Reset so next run_code() starts a fresh kernel.
-        self._code.reset_session()
+        # Pausing deletes the pod. Forget its session without asking the new pod
+        # to restart the kernel it just created.
+        self._code.discard_session()
 
     def resume(self) -> None:
         """Resume a paused sandbox.
@@ -225,9 +223,8 @@ class Sandbox:
         self._status = info.status
         if info.auto_idle_timeout_seconds is not None:
             self._auto_idle_timeout_seconds = info.auto_idle_timeout_seconds
-        self._skip_next_warmup = info.resumed_from_pool
         # New pod means previous Jupyter session is invalid.
-        self._code.reset_session()
+        self._code.discard_session()
 
     def wait_until_ready(self, timeout: int = 120) -> None:
         """Block until sandbox phase is Running. Useful after resume().
@@ -241,7 +238,7 @@ class Sandbox:
                 while waiting for it to become ready.
         """
         self._check_not_killed()
-        poll_interval = 2
+        poll_interval = 0.5
         deadline = time.monotonic() + timeout
         while True:
             remaining = deadline - time.monotonic()
@@ -261,9 +258,6 @@ class Sandbox:
                 time.sleep(min(poll_interval, remaining))
                 continue
             if self._status == SandboxStatus.RUNNING:
-                if self._skip_next_warmup:
-                    self._skip_next_warmup = False
-                    return
                 self._warmup_kernel(deadline)
                 return
             if self._status in (SandboxStatus.FAILED, SandboxStatus.SUCCEEDED):

@@ -331,7 +331,7 @@ class TestSandboxResume:
 
         sbx._client.close()
 
-    def test_resume_from_pool_skips_wait_warmup(
+    def test_resume_from_pool_still_confirms_kernel_readiness(
         self, mock_env, monkeypatch, httpx_mock: HTTPXMock
     ):
         monkeypatch.setattr("time.sleep", lambda _: None)
@@ -352,6 +352,7 @@ class TestSandboxResume:
             url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/sandbox-test",
             json={"name": "sandbox-test", "phase": "Running"},
         )
+        _mock_warmup_probe_success(httpx_mock)
 
         sbx = Sandbox.from_pool("python-pool")
         sbx.pause()
@@ -373,7 +374,76 @@ class TestSandboxResume:
             and str(r.url).endswith("/sandboxes/sandbox-test/exec")
         ]
         assert len(get_requests) == 1
-        assert not exec_requests
+        assert len(exec_requests) == 1
+        assert _extract_marker(exec_requests[0]) is not None
+
+        sbx._client.close()
+
+    def test_cold_resume_warmup_does_not_restart_new_kernel(
+        self, mock_env, monkeypatch, httpx_mock: HTTPXMock
+    ):
+        monkeypatch.setattr("time.sleep", lambda _: None)
+        _mock_version(httpx_mock)
+        _mock_claim(httpx_mock)
+        httpx_mock.add_response(
+            method="POST",
+            url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/sandbox-test/exec",
+            json={
+                "stdout": "ready\n",
+                "stderr": "",
+                "success": True,
+                "execution_time_ms": 1,
+                "session_id": "old-session",
+            },
+        )
+        httpx_mock.add_response(
+            method="POST",
+            url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/sandbox-test/pause",
+            json={"status": "ok"},
+        )
+        httpx_mock.add_response(
+            method="POST",
+            url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/sandbox-test/resume",
+            json={"name": "sandbox-test", "phase": "Pending", "resumedFromPool": False},
+        )
+        httpx_mock.add_response(
+            method="GET",
+            url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/sandbox-test",
+            json={"name": "sandbox-test", "phase": "Running"},
+        )
+
+        warmup_requests = []
+
+        def _warmup_callback(request: httpx.Request) -> httpx.Response:
+            warmup_requests.append(request)
+            marker = _extract_marker(request) or ""
+            return httpx.Response(
+                200,
+                json={
+                    "stdout": f"{marker}\n",
+                    "stderr": "",
+                    "success": True,
+                    "execution_time_ms": 1,
+                    "session_id": "new-session",
+                },
+            )
+
+        httpx_mock.add_callback(
+            _warmup_callback,
+            method="POST",
+            url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/sandbox-test/exec",
+        )
+
+        sbx = Sandbox.from_pool("python-pool")
+        sbx.run_code("print('ready')")
+        sbx.pause()
+        sbx.resume()
+        sbx.wait_until_ready(timeout=10)
+
+        assert len(warmup_requests) == 1
+        body = json.loads(warmup_requests[0].content)
+        assert "session_id" not in body
+        assert body["reset_session"] is False
 
         sbx._client.close()
 
@@ -443,7 +513,8 @@ class TestWaitUntilReady:
     def test_wait_until_ready_after_pending(
         self, mock_env, monkeypatch, httpx_mock: HTTPXMock
     ):
-        monkeypatch.setattr("time.sleep", lambda _: None)
+        sleeps = []
+        monkeypatch.setattr("time.sleep", sleeps.append)
         _mock_version(httpx_mock)
         _mock_claim(httpx_mock)
         # First poll: Pending
@@ -464,6 +535,7 @@ class TestWaitUntilReady:
         sbx = Sandbox.from_pool("python-pool")
         sbx.wait_until_ready(timeout=10)
         assert sbx.status == "Running"
+        assert sleeps == [0.5]
 
         sbx._client.close()
 
@@ -488,6 +560,7 @@ class TestWaitUntilReady:
             url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/sandbox-test",
             json={"name": "sandbox-test", "phase": "Running"},
         )
+        _mock_warmup_probe_success(httpx_mock)
         sbx = Sandbox.from_pool("python-pool")
         sbx.pause()
         sbx.resume()
@@ -499,7 +572,14 @@ class TestWaitUntilReady:
             for r in requests
             if r.method == "GET" and "/sandboxes/sandbox-test" in str(r.url)
         ]
+        exec_requests = [
+            r
+            for r in requests
+            if r.method == "POST"
+            and str(r.url).endswith("/sandboxes/sandbox-test/exec")
+        ]
         assert len(get_requests) == 1
+        assert len(exec_requests) == 1
         sbx._client.close()
 
     def test_wait_until_ready_warms_kernel_on_cold_start(

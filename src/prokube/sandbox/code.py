@@ -114,6 +114,11 @@ class CodeRunner:
         self._session_id = None
         self._reset_on_next_exec = True
 
+    def discard_session(self) -> None:
+        """Discard local state without requesting a kernel restart."""
+        self._session_id = None
+        self._reset_on_next_exec = False
+
     @property
     def session_id(self) -> str | None:
         """Get the current session ID, if any."""
