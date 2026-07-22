@@ -601,16 +601,17 @@ class TestWaitUntilReady:
             json={"name": "sandbox-test", "phase": "Running"},
         )
 
-        # First probe call: empty stdout (cold kernel).
-        # Subsequent probe calls: echo the marker back (warm).
+        # First probe call: empty stdout while the new kernel connects.
+        # Subsequent probes must reuse that session instead of restarting it.
         call_counter = {"n": 0}
+        session_id = "cold-kernel-session"
 
         def _probe_callback(request: httpx.Request) -> httpx.Response:
             call_counter["n"] += 1
             body = json.loads(request.content)
             if call_counter["n"] > 1:
-                assert "session_id" not in body
-                assert body.get("reset_session") is True
+                assert body.get("session_id") == session_id
+                assert body.get("reset_session") is False
             marker = _extract_marker(request) or ""
             if call_counter["n"] == 1:
                 return httpx.Response(
@@ -620,6 +621,7 @@ class TestWaitUntilReady:
                         "stderr": "",
                         "success": True,
                         "execution_time_ms": 1,
+                        "session_id": session_id,
                     },
                 )
             return httpx.Response(
@@ -629,6 +631,7 @@ class TestWaitUntilReady:
                     "stderr": "",
                     "success": True,
                     "execution_time_ms": 1,
+                    "session_id": session_id,
                 },
             )
 
