@@ -2,6 +2,7 @@
 
 import json
 import re
+import time
 
 import httpx
 import pytest
@@ -649,6 +650,64 @@ class TestWaitUntilReady:
         # Probe should have been called at least twice (one empty, then success)
         assert call_counter["n"] >= 2
 
+        sbx._client.close()
+
+    def test_wait_until_ready_resets_persistently_silent_session_once(
+        self, mock_env, monkeypatch, httpx_mock: HTTPXMock
+    ):
+        """A stale session is reset once without restarting its replacement."""
+        real_monotonic = time.monotonic
+        started = real_monotonic()
+        tick = {"n": 0}
+
+        def fake_monotonic() -> float:
+            tick["n"] += 1
+            return started + tick["n"]
+
+        monkeypatch.setattr("time.monotonic", fake_monotonic)
+        monkeypatch.setattr("time.sleep", lambda _: None)
+        _mock_version(httpx_mock)
+        _mock_claim(httpx_mock)
+        httpx_mock.add_response(
+            method="GET",
+            url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/sandbox-test",
+            json={"name": "sandbox-test", "phase": "Running"},
+        )
+
+        reset_requests = []
+
+        def _probe_callback(request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.content)
+            marker = _extract_marker(request) or ""
+            if body.get("reset_session"):
+                reset_requests.append(request)
+                stdout = f"{marker}\n"
+                session_id = "replacement-session"
+            else:
+                stdout = ""
+                session_id = "stale-session"
+            return httpx.Response(
+                200,
+                json={
+                    "stdout": stdout,
+                    "stderr": "",
+                    "success": True,
+                    "execution_time_ms": 1,
+                    "session_id": session_id,
+                },
+            )
+
+        httpx_mock.add_callback(
+            _probe_callback,
+            method="POST",
+            url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/sandbox-test/exec",
+            is_reusable=True,
+        )
+
+        sbx = Sandbox.from_pool("python-pool")
+        sbx.wait_until_ready(timeout=30)
+
+        assert len(reset_requests) == 1
         sbx._client.close()
 
     def test_wait_until_ready_warm_kernel_no_extra_latency(

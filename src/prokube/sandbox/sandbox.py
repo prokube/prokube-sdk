@@ -298,6 +298,10 @@ class Sandbox:
             * Empty output is expected while a newly created kernel connects
               its iopub channel. Reuse that session while retrying; resetting
               it here restarts the cold-kernel pipeline on every probe.
+            * A session that stays silent for five seconds may be stale (for
+              example, a warm-pool kernel inherited across a pod lifecycle).
+              Reset it once, then allow the replacement kernel to finish
+              starting without further resets.
 
         Args:
             deadline: ``time.monotonic()`` value after which the probe gives
@@ -313,6 +317,8 @@ class Sandbox:
         # 0.5s retry loop.
         max_probe_timeout = 5
         attempts = 0
+        empty_since: float | None = None
+        reset_attempted = False
         while True:
             remaining = deadline - time.monotonic()
             # run_code expects an integer second timeout, so we cannot probe
@@ -341,6 +347,12 @@ class Sandbox:
                 continue
             if result.stdout.strip() == marker:
                 return
+            now = time.monotonic()
+            if empty_since is None:
+                empty_since = now
+            elif not reset_attempted and now - empty_since >= 5:
+                self._code.reset_session()
+                reset_attempted = True
             # Loop top will recompute remaining and exit if deadline passed.
             sleep_for = min(0.5, max(0.0, deadline - time.monotonic()))
             time.sleep(sleep_for)
