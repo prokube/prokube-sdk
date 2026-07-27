@@ -26,7 +26,9 @@ from prokube.sandbox import Sandbox
 sbx = Sandbox.from_pool("python-pool")
 
 # Or create directly (cold start, ~10-30s)
-sbx = Sandbox.create(image="pk-sandbox:python-datascience")
+sbx = Sandbox.create(
+    image="europe-west3-docker.pkg.dev/prokube-internal/prokube-customer/pk-sandbox-base:v14-05-2026"
+)
 
 # Execute code (stateful - variables persist between calls)
 sbx.run_code("import pandas as pd")
@@ -62,6 +64,74 @@ with Sandbox.from_pool("python-pool") as sbx:
     print(result.stdout)
 # Sandbox is automatically cleaned up
 ```
+
+### Sandboxes v2 (Firecracker)
+
+`prokube.sandboxv2.SandboxV2` is a parallel client for Firecracker-backed microVM
+sandboxes. It mirrors the v1 `Sandbox` surface (`run_code` / `commands` / `files` /
+`pause` / `resume` / `kill`), adapted for v2: pick a `runtime_class`
+(`fc-host` — a real microVM, default — or `fc-pod`), sandboxes are addressed by
+`namespace` (the v1 `workspace`), and the warm pool is a
+**FirecrackerPool** (`SandboxV2Pool` + `SandboxV2.from_pool`), which claims a
+warm member via a fast VM resume rather than a cold boot. A pool's `warm_state`
+(`"Hibernated"`, default, or `"Running"`) sets whether members are kept
+pre-snapshotted or hot.
+
+```python
+from prokube.sandboxv2 import SandboxV2
+
+# Create a Firecracker microVM (cold start)
+sbx = SandboxV2.create(
+    image="pk-sandbox-base",
+    runtime_class="fc-host",            # or "fc-pod"
+    resources={"vcpus": 2, "mem_mib": 2048},
+    egress=False,                       # default: isolated (no outbound network)
+    namespace="my-namespace",
+)
+sbx.wait_until_ready()                  # polls until phase == "Running"
+
+# Stateful code, shell commands and files work exactly like v1
+print(sbx.run_code("print(2 + 2)").stdout)
+sbx.commands.run("pip install numpy")
+sbx.files.write("/workspace/x.txt", "hello")
+print(sbx.files.read("/workspace/x.txt").decode())
+
+# Pause == native VM snapshot; resume == restore
+sbx.pause()
+sbx.resume()
+
+sbx.kill()
+```
+
+Warm pool (FirecrackerPool) — maintain warm members and claim one via a fast VM
+resume instead of a cold boot:
+
+```python
+from prokube.sandboxv2 import SandboxV2, SandboxV2Pool
+
+# Create a pool of 3 warm fc-host members (pools are fc-host only)
+pool = SandboxV2Pool.create(
+    name="python-pool",
+    size=3,
+    image="pk-sandbox-base",
+    warm_state="Hibernated",            # or "Running" to keep members hot
+    resources={"vcpus": 2, "mem_mib": 2048},
+    namespace="my-namespace",
+)
+
+# Flip the pool between hibernated and hot at any time
+pool.set_warm_state("Running")
+
+# Claim a warm member (fast resume ~1.4s); the controller refills the pool
+sbx = SandboxV2.from_pool("python-pool", namespace="my-namespace")
+sbx.wait_until_ready()
+print(sbx.run_code("print('hi')").stdout)
+
+pool.delete()
+```
+
+`SandboxV2` reuses the same `x-api-key` auth, HTTP client, and configuration as
+v1, so the environment variables below apply unchanged.
 
 ## Configuration
 
