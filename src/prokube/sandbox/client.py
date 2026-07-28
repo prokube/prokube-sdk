@@ -336,7 +336,7 @@ class SandboxClient:
             "limit": limit,
             "lifecycle": lifecycle,
         }
-        if continue_token:
+        if continue_token is not None:
             params["continueToken"] = continue_token
         response = self._http.get(self._sandboxes_path(), params=params)
         sandboxes = response.get("sandboxes", [])

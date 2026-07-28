@@ -172,6 +172,31 @@ class TestListSandboxes:
             client.list_page(limit=101)
         client.close()
 
+    def test_list_page_forwards_empty_continuation_token(
+        self, config, httpx_mock: HTTPXMock
+    ):
+        httpx_mock.add_response(
+            method="GET",
+            url="https://test.example.com/api/version",
+            json={"version": "0.1.0"},
+        )
+        httpx_mock.add_response(
+            method="GET",
+            url=(
+                "https://test.example.com/_platform/sandbox/test-ws/sandboxes"
+                "?limit=25&lifecycle=active&continueToken="
+            ),
+            json={"sandboxes": [], "loaded": 0, "hasMore": False},
+        )
+
+        client = SandboxClient(config)
+        client.list_page(continue_token="")
+
+        request = httpx_mock.get_requests()[-1]
+        assert "continueToken" in request.url.params
+        assert request.url.params["continueToken"] == ""
+        client.close()
+
     def test_claim_sends_auto_idle_timeout(self, config, httpx_mock: HTTPXMock):
         """claim_from_pool sends per-claim auto-idle override."""
         import json
