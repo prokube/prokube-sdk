@@ -197,6 +197,12 @@ class Sandbox:
 
 Paginate large sandbox collections without loading the full workspace history:
 
+- `active` (default): user sandboxes in `Running` or `Pending` phase.
+- `inactive`: user sandboxes in `Paused`, `Succeeded`, or `Failed` phase.
+
+Idle warm-pool capacity is internal infrastructure and is excluded from both
+lifecycles.
+
 ```python
 page = Sandbox.list_page(lifecycle="inactive", limit=10)
 for sandbox in page.sandboxes:
