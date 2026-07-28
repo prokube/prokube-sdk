@@ -5,7 +5,7 @@ from __future__ import annotations
 import base64
 import re
 from collections.abc import Sequence
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from prokube.common.compat import check_backend_compatibility
 from prokube.common.exceptions import NotFoundError, ProKubeError, SandboxError
@@ -22,6 +22,7 @@ from prokube.sandbox.models import (
     FileInfo,
     FileWriteRequest,
     SandboxInfo,
+    SandboxInfoPage,
     SandboxStatus,
     parse_auto_idle_timeout,
 )
@@ -315,6 +316,50 @@ class SandboxClient:
             )
             for s in sandboxes
         ]
+
+    def list_page(
+        self,
+        *,
+        lifecycle: Literal["active", "inactive"] = "active",
+        limit: int = 25,
+        continue_token: str | None = None,
+    ) -> SandboxInfoPage:
+        """List one bounded page of sandboxes.
+
+        The continuation token is opaque and must be reused with the same
+        lifecycle and limit values that produced it.
+        """
+        if not 1 <= limit <= 100:
+            raise ValueError("limit must be between 1 and 100")
+
+        params: dict[str, str | int] = {
+            "limit": limit,
+            "lifecycle": lifecycle,
+        }
+        if continue_token:
+            params["continueToken"] = continue_token
+        response = self._http.get(self._sandboxes_path(), params=params)
+        sandboxes = response.get("sandboxes", [])
+        infos = [
+            SandboxInfo(
+                name=s["name"],
+                workspace=self.config.workspace,
+                status=_parse_status(
+                    s.get("status") or s.get("phase"), SandboxStatus.UNKNOWN
+                ),
+                image=s.get("image") or None,
+                pool=s.get("poolName") or s.get("pool"),
+                created_at=s.get("createdAt") or s.get("created_at"),
+                auto_idle_timeout_seconds=parse_auto_idle_timeout(s),
+            )
+            for s in sandboxes
+        ]
+        return SandboxInfoPage(
+            sandboxes=infos,
+            loaded=response.get("loaded", len(infos)),
+            has_more=response.get("hasMore", False),
+            continue_token=response.get("continueToken"),
+        )
 
     def get(self, name: str, request_timeout: float | None = None) -> SandboxInfo:
         """Get information about a sandbox.

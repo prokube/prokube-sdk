@@ -6,7 +6,7 @@ import pytest
 from pytest_httpx import HTTPXMock
 
 from prokube.common.exceptions import PoolExhaustedError, SandboxError
-from prokube.sandbox import Sandbox
+from prokube.sandbox import Sandbox, SandboxPage
 
 
 @pytest.fixture
@@ -112,6 +112,38 @@ class TestSandboxList:
         assert isinstance(sandboxes[0], Sandbox)
 
         sandboxes[0]._client.close()
+
+    def test_list_page_returns_ready_to_use_sandboxes(
+        self, mock_env, httpx_mock: HTTPXMock
+    ):
+        httpx_mock.add_response(
+            method="GET",
+            url="https://test.example.com/api/version",
+            json={"version": "0.1.0"},
+        )
+        httpx_mock.add_response(
+            method="GET",
+            url=(
+                "https://test.example.com/_platform/sandbox/test-ws/sandboxes"
+                "?limit=10&lifecycle=inactive"
+            ),
+            json={
+                "sandboxes": [{"name": "paused-1", "phase": "Paused"}],
+                "loaded": 1,
+                "hasMore": True,
+                "continueToken": "next-token",
+            },
+        )
+
+        page = Sandbox.list_page(lifecycle="inactive", limit=10)
+
+        assert isinstance(page, SandboxPage)
+        assert [sandbox.name for sandbox in page.sandboxes] == ["paused-1"]
+        assert page.sandboxes[0].status == "Paused"
+        assert page.loaded == 1
+        assert page.has_more is True
+        assert page.continue_token == "next-token"
+        page.sandboxes[0]._client.close()
 
 
 class TestSandboxFromPool:

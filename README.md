@@ -169,6 +169,16 @@ class Sandbox:
     @classmethod
     def create(cls, image: str, **config) -> Sandbox:
         """Create sandbox directly (cold start)."""
+
+    @classmethod
+    def list_page(
+        cls,
+        lifecycle: Literal["active", "inactive"] = "active",
+        limit: int = 25,
+        continue_token: str | None = None,
+        **config,
+    ) -> SandboxPage:
+        """List one bounded page of sandboxes."""
     
     def run_code(self, code: str, language: str = "python", timeout: int = 300) -> CodeResult:
         """Execute code with stateful Jupyter kernel."""
@@ -183,6 +193,21 @@ class Sandbox:
     @property
     def files(self) -> FileManager:
         """Access file operations."""
+```
+
+Paginate large sandbox collections without loading the full workspace history:
+
+```python
+page = Sandbox.list_page(lifecycle="inactive", limit=10)
+for sandbox in page.sandboxes:
+    print(sandbox.name)
+
+if page.has_more:
+    page = Sandbox.list_page(
+        lifecycle="inactive",
+        limit=10,
+        continue_token=page.continue_token,
+    )
 ```
 
 ### CommandRunner

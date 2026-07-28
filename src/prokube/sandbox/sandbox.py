@@ -6,6 +6,8 @@ import logging
 import sys
 import time
 import uuid
+from dataclasses import dataclass
+from typing import Literal
 
 import httpx
 
@@ -23,6 +25,16 @@ from prokube.sandbox.files import FileManager
 from prokube.sandbox.models import CodeResult, SandboxStatus
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class SandboxPage:
+    """One bounded page of ready-to-use sandboxes."""
+
+    sandboxes: list[Sandbox]
+    loaded: int
+    has_more: bool
+    continue_token: str | None = None
 
 
 class Sandbox:
@@ -522,6 +534,67 @@ class Sandbox:
             raise
 
         return sandboxes
+
+    @classmethod
+    def list_page(
+        cls,
+        *,
+        lifecycle: Literal["active", "inactive"] = "active",
+        limit: int = 25,
+        continue_token: str | None = None,
+        api_url: str | None = None,
+        workspace: str | None = None,
+        user_id: str | None = None,
+        api_key: str | None = None,
+        timeout: int | None = None,
+    ) -> SandboxPage:
+        """List one bounded page of sandboxes.
+
+        Pass ``continue_token`` from the previous page together with the same
+        ``lifecycle`` and ``limit`` values to fetch the next page.
+        """
+        config = cls._build_config(
+            api_url=api_url,
+            workspace=workspace,
+            user_id=user_id,
+            api_key=api_key,
+            timeout=timeout,
+        )
+        client = SandboxClient(config)
+        try:
+            page = client.list_page(
+                lifecycle=lifecycle,
+                limit=limit,
+                continue_token=continue_token,
+            )
+        finally:
+            client.close()
+
+        sandboxes: list[Self] = []
+        try:
+            for info in page.sandboxes:
+                sandboxes.append(
+                    cls(
+                        name=info.name,
+                        workspace=info.workspace,
+                        client=SandboxClient(config, check_version=False),
+                        status=info.status,
+                        pool=info.pool,
+                        image=info.image,
+                        auto_idle_timeout_seconds=info.auto_idle_timeout_seconds,
+                    )
+                )
+        except Exception:
+            for sandbox in sandboxes:
+                sandbox._client.close()
+            raise
+
+        return SandboxPage(
+            sandboxes=sandboxes,
+            loaded=page.loaded,
+            has_more=page.has_more,
+            continue_token=page.continue_token,
+        )
 
     @classmethod
     def get(

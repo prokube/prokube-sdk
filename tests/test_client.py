@@ -118,6 +118,60 @@ class TestListSandboxes:
         assert result[1].pool is None
         client.close()
 
+    def test_list_page_preserves_pagination_metadata(
+        self, config, httpx_mock: HTTPXMock
+    ):
+        httpx_mock.add_response(
+            method="GET",
+            url="https://test.example.com/api/version",
+            json={"version": "0.1.0"},
+        )
+        httpx_mock.add_response(
+            method="GET",
+            url=(
+                "https://test.example.com/_platform/sandbox/test-ws/sandboxes"
+                "?limit=10&lifecycle=inactive&continueToken=opaque-token"
+            ),
+            json={
+                "sandboxes": [
+                    {
+                        "name": "paused-1",
+                        "phase": "Paused",
+                        "createdAt": "2026-01-01T00:00:00Z",
+                    }
+                ],
+                "loaded": 1,
+                "hasMore": True,
+                "continueToken": "next-token",
+            },
+        )
+
+        client = SandboxClient(config)
+        page = client.list_page(
+            lifecycle="inactive",
+            limit=10,
+            continue_token="opaque-token",
+        )
+
+        assert [sandbox.name for sandbox in page.sandboxes] == ["paused-1"]
+        assert page.sandboxes[0].status == SandboxStatus.PAUSED
+        assert page.loaded == 1
+        assert page.has_more is True
+        assert page.continue_token == "next-token"
+        client.close()
+
+    def test_list_page_validates_limit(self, config, httpx_mock: HTTPXMock):
+        httpx_mock.add_response(
+            method="GET",
+            url="https://test.example.com/api/version",
+            json={"version": "0.1.0"},
+        )
+
+        client = SandboxClient(config)
+        with pytest.raises(ValueError, match="between 1 and 100"):
+            client.list_page(limit=101)
+        client.close()
+
     def test_claim_sends_auto_idle_timeout(self, config, httpx_mock: HTTPXMock):
         """claim_from_pool sends per-claim auto-idle override."""
         import json
