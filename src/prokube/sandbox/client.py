@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import base64
 import re
+import uuid
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from prokube.common.compat import check_backend_compatibility
 from prokube.common.exceptions import NotFoundError, ProKubeError, SandboxError
@@ -229,10 +230,24 @@ class SandboxClient:
             pool_name=pool,
             auto_idle_timeout_seconds=auto_idle_timeout_seconds,
         )
-        response = self._http.post(
-            f"{self._sandboxes_path()}/claim",
-            json=request.model_dump(by_alias=True, exclude_none=True),
-        )
+        payload = request.model_dump(by_alias=True, exclude_none=True)
+        path = f"{self._sandboxes_path()}/claim"
+        # Invariant: exactly ONE idempotency key per logical claim_from_pool
+        # call. It is generated here, outside _send, so that every transport
+        # attempt (retries, if a retry layer is ever added around _send)
+        # re-sends the same key. The backend treats a repeated key with the
+        # same request hash as a replay of the same claim instead of handing
+        # out a second sandbox, which is what makes a lost response safe.
+        idempotency_key = str(uuid.uuid4())
+
+        def _send() -> dict[str, Any]:
+            return self._http.post(
+                path,
+                json=payload,
+                headers={"Idempotency-Key": idempotency_key},
+            )
+
+        response = _send()
         # API returns sandboxName for claim endpoint
         sandbox_name = response.get("sandboxName") or response["name"]
         response_auto_idle_timeout = parse_auto_idle_timeout(response)
