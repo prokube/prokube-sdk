@@ -5,7 +5,7 @@ from __future__ import annotations
 import base64
 import re
 from collections.abc import Sequence
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from prokube.common.compat import check_backend_compatibility
 from prokube.common.exceptions import NotFoundError, ProKubeError, SandboxError
@@ -22,6 +22,7 @@ from prokube.sandbox.models import (
     FileInfo,
     FileWriteRequest,
     SandboxInfo,
+    SandboxInfoPage,
     SandboxStatus,
     parse_auto_idle_timeout,
 )
@@ -47,6 +48,26 @@ def _parse_status(status_str: str | None, default: SandboxStatus) -> SandboxStat
         return SandboxStatus(status_str)
     except ValueError:
         return SandboxStatus.UNKNOWN
+
+
+def _parse_sandbox_info(raw: dict, workspace: str) -> SandboxInfo:
+    """Build a SandboxInfo from one raw sandbox list entry.
+
+    The backend has used both camelCase and snake_case spellings for these
+    fields, and reports the phase as either ``status`` or ``phase``; accept
+    every spelling so both listing endpoints stay in sync.
+    """
+    return SandboxInfo(
+        name=raw["name"],
+        workspace=workspace,
+        status=_parse_status(
+            raw.get("status") or raw.get("phase"), SandboxStatus.UNKNOWN
+        ),
+        image=raw.get("image") or None,
+        pool=raw.get("poolName") or raw.get("pool"),
+        created_at=raw.get("createdAt") or raw.get("created_at"),
+        auto_idle_timeout_seconds=parse_auto_idle_timeout(raw),
+    )
 
 
 def _parse_batch_file_write_response(
@@ -301,20 +322,40 @@ class SandboxClient:
             self._sandboxes_path(),
         )
         sandboxes = response.get("sandboxes", [])
-        return [
-            SandboxInfo(
-                name=s["name"],
-                workspace=self.config.workspace,
-                status=_parse_status(
-                    s.get("status") or s.get("phase"), SandboxStatus.UNKNOWN
-                ),
-                image=s.get("image") or None,
-                pool=s.get("poolName") or s.get("pool"),
-                created_at=s.get("createdAt") or s.get("created_at"),
-                auto_idle_timeout_seconds=parse_auto_idle_timeout(s),
-            )
-            for s in sandboxes
-        ]
+        return [_parse_sandbox_info(s, self.config.workspace) for s in sandboxes]
+
+    def list_page(
+        self,
+        *,
+        lifecycle: Literal["active", "inactive"] = "active",
+        limit: int = 25,
+        continue_token: str | None = None,
+    ) -> SandboxInfoPage:
+        """List one bounded page of sandboxes.
+
+        The continuation token is opaque and must be reused with the same
+        lifecycle and limit values that produced it. An empty token means
+        "no token": the backend rejects ``continueToken=`` with HTTP 422, so
+        it is treated the same as ``None`` and requests the first page.
+        """
+        if not 1 <= limit <= 100:
+            raise ValueError("limit must be between 1 and 100")
+
+        params: dict[str, str | int] = {
+            "limit": limit,
+            "lifecycle": lifecycle,
+        }
+        if continue_token:
+            params["continueToken"] = continue_token
+        response = self._http.get(self._sandboxes_path(), params=params)
+        sandboxes = response.get("sandboxes", [])
+        infos = [_parse_sandbox_info(s, self.config.workspace) for s in sandboxes]
+        return SandboxInfoPage(
+            sandboxes=infos,
+            loaded=response.get("loaded", len(infos)),
+            has_more=response.get("hasMore", False),
+            continue_token=response.get("continueToken"),
+        )
 
     def get(self, name: str, request_timeout: float | None = None) -> SandboxInfo:
         """Get information about a sandbox.

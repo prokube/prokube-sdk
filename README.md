@@ -169,6 +169,21 @@ class Sandbox:
     @classmethod
     def create(cls, image: str, **config) -> Sandbox:
         """Create sandbox directly (cold start)."""
+
+    @classmethod
+    def list_page(
+        cls,
+        *,
+        lifecycle: Literal["active", "inactive"] = "active",
+        limit: int = 25,
+        continue_token: str | None = None,
+        api_url: str | None = None,
+        workspace: str | None = None,
+        user_id: str | None = None,
+        api_key: str | None = None,
+        timeout: int | None = None,
+    ) -> SandboxPage:
+        """List one bounded page of sandboxes."""
     
     def run_code(self, code: str, language: str = "python", timeout: int = 300) -> CodeResult:
         """Execute code with stateful Jupyter kernel."""
@@ -183,6 +198,34 @@ class Sandbox:
     @property
     def files(self) -> FileManager:
         """Access file operations."""
+```
+
+Paginate large sandbox collections without loading the full workspace history:
+
+- `active` (default): user sandboxes in `Running` or `Pending` phase.
+- `inactive`: user sandboxes in every other phase — `Paused`, `Succeeded`,
+  `Failed`, or `Unknown`.
+
+Idle warm-pool capacity is internal infrastructure and is excluded from both
+lifecycles.
+
+Each sandbox on a page owns its own HTTP client. Use the page as a context
+manager (or call `page.close()`) to release them without destroying the remote
+sandboxes:
+
+```python
+with Sandbox.list_page(lifecycle="inactive", limit=10) as page:
+    for sandbox in page.sandboxes:
+        print(sandbox.name)
+    next_token = page.continue_token if page.has_more else None
+
+if next_token:
+    with Sandbox.list_page(
+        lifecycle="inactive",
+        limit=10,
+        continue_token=next_token,
+    ) as page:
+        ...
 ```
 
 ### CommandRunner

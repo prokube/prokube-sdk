@@ -49,6 +49,15 @@ class SandboxInfo(BaseModel):
     )
 
 
+class SandboxInfoPage(BaseModel):
+    """One bounded page of sandbox information."""
+
+    sandboxes: list[SandboxInfo]
+    loaded: int
+    has_more: bool
+    continue_token: str | None = None
+
+
 class CommandResult(BaseModel):
     """Result of a shell command execution."""
 
