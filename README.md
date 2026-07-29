@@ -173,10 +173,15 @@ class Sandbox:
     @classmethod
     def list_page(
         cls,
+        *,
         lifecycle: Literal["active", "inactive"] = "active",
         limit: int = 25,
         continue_token: str | None = None,
-        **config,
+        api_url: str | None = None,
+        workspace: str | None = None,
+        user_id: str | None = None,
+        api_key: str | None = None,
+        timeout: int | None = None,
     ) -> SandboxPage:
         """List one bounded page of sandboxes."""
     
@@ -198,22 +203,29 @@ class Sandbox:
 Paginate large sandbox collections without loading the full workspace history:
 
 - `active` (default): user sandboxes in `Running` or `Pending` phase.
-- `inactive`: user sandboxes in `Paused`, `Succeeded`, or `Failed` phase.
+- `inactive`: user sandboxes in every other phase — `Paused`, `Succeeded`,
+  `Failed`, or `Unknown`.
 
 Idle warm-pool capacity is internal infrastructure and is excluded from both
 lifecycles.
 
-```python
-page = Sandbox.list_page(lifecycle="inactive", limit=10)
-for sandbox in page.sandboxes:
-    print(sandbox.name)
+Each sandbox on a page owns its own HTTP client. Use the page as a context
+manager (or call `page.close()`) to release them without destroying the remote
+sandboxes:
 
-if page.has_more:
-    page = Sandbox.list_page(
+```python
+with Sandbox.list_page(lifecycle="inactive", limit=10) as page:
+    for sandbox in page.sandboxes:
+        print(sandbox.name)
+    next_token = page.continue_token if page.has_more else None
+
+if next_token:
+    with Sandbox.list_page(
         lifecycle="inactive",
         limit=10,
-        continue_token=page.continue_token,
-    )
+        continue_token=next_token,
+    ) as page:
+        ...
 ```
 
 ### CommandRunner

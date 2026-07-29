@@ -7,6 +7,8 @@ from pytest_httpx import HTTPXMock
 
 from prokube.common.exceptions import PoolExhaustedError, SandboxError
 from prokube.sandbox import Sandbox, SandboxPage
+from prokube.sandbox.client import SandboxClient
+from prokube.sandbox.models import SandboxStatus
 
 
 @pytest.fixture
@@ -114,7 +116,7 @@ class TestSandboxList:
         sandboxes[0]._client.close()
 
     def test_list_page_returns_ready_to_use_sandboxes(
-        self, mock_env, httpx_mock: HTTPXMock
+        self, mock_env, httpx_mock: HTTPXMock, monkeypatch
     ):
         httpx_mock.add_response(
             method="GET",
@@ -123,27 +125,53 @@ class TestSandboxList:
         )
         httpx_mock.add_response(
             method="GET",
-            url=(
-                "https://test.example.com/_platform/sandbox/test-ws/sandboxes"
-                "?limit=10&lifecycle=inactive"
-            ),
             json={
-                "sandboxes": [{"name": "paused-1", "phase": "Paused"}],
-                "loaded": 1,
+                "sandboxes": [
+                    {"name": "paused-1", "phase": "Paused"},
+                    {"name": "paused-2", "phase": "Paused"},
+                ],
+                "loaded": 2,
                 "hasMore": True,
                 "continueToken": "next-token",
             },
         )
 
-        page = Sandbox.list_page(lifecycle="inactive", limit=10)
+        closed: list[SandboxClient] = []
+        real_close = SandboxClient.close
 
-        assert isinstance(page, SandboxPage)
-        assert [sandbox.name for sandbox in page.sandboxes] == ["paused-1"]
-        assert page.sandboxes[0].status == "Paused"
-        assert page.loaded == 1
-        assert page.has_more is True
-        assert page.continue_token == "next-token"
-        page.sandboxes[0]._client.close()
+        def spy_close(self: SandboxClient) -> None:
+            closed.append(self)
+            real_close(self)
+
+        monkeypatch.setattr(SandboxClient, "close", spy_close)
+
+        with Sandbox.list_page(lifecycle="inactive", limit=10) as page:
+            assert isinstance(page, SandboxPage)
+            assert [sandbox.name for sandbox in page.sandboxes] == [
+                "paused-1",
+                "paused-2",
+            ]
+            # Sandbox.status is the plain string value of the phase.
+            assert page.sandboxes[0].status == SandboxStatus.PAUSED.value
+            assert page.loaded == 2
+            assert page.has_more is True
+            assert page.continue_token == "next-token"
+            page_clients = [sandbox._client for sandbox in page.sandboxes]
+            # Every sandbox owns a distinct client, still open inside the block.
+            assert len(set(map(id, page_clients))) == 2
+            assert not any(client in closed for client in page_clients)
+
+        # Leaving the block releases the page's clients without deleting the
+        # remote sandboxes, and closing again is a no-op.
+        assert all(client in closed for client in page_clients)
+        page.close()
+        assert [request.method for request in httpx_mock.get_requests()] == [
+            "GET",
+            "GET",
+        ]
+
+        request = httpx_mock.get_requests()[-1]
+        assert dict(request.url.params) == {"limit": "10", "lifecycle": "inactive"}
 
 
 class TestSandboxFromPool:

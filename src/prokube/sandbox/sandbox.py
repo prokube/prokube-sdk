@@ -6,8 +6,9 @@ import logging
 import sys
 import time
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Literal
+from typing import Generic, Literal, TypeVar
 
 import httpx
 
@@ -22,19 +23,44 @@ from prokube.sandbox.client import SandboxClient
 from prokube.sandbox.code import CodeRunner
 from prokube.sandbox.commands import CommandRunner
 from prokube.sandbox.files import FileManager
-from prokube.sandbox.models import CodeResult, SandboxStatus
+from prokube.sandbox.models import CodeResult, SandboxInfo, SandboxStatus
 
 logger = logging.getLogger(__name__)
 
 
-@dataclass(frozen=True)
-class SandboxPage:
-    """One bounded page of ready-to-use sandboxes."""
+SandboxT = TypeVar("SandboxT", bound="Sandbox")
 
-    sandboxes: list[Sandbox]
+
+@dataclass(frozen=True)
+class SandboxPage(Generic[SandboxT]):
+    """One bounded page of ready-to-use sandboxes.
+
+    Every sandbox on the page owns its own HTTP client. Call :meth:`close`
+    (or use the page as a context manager) to release those clients without
+    destroying the remote sandboxes; ``kill()`` is the only other path that
+    closes them, and it deletes the sandbox too.
+    """
+
+    sandboxes: list[SandboxT]
     loaded: int
     has_more: bool
     continue_token: str | None = None
+
+    def close(self) -> None:
+        """Release the HTTP client of every sandbox on this page.
+
+        Closing is idempotent and leaves the remote sandboxes untouched.
+        """
+        for sandbox in self.sandboxes:
+            sandbox._client.close()
+
+    def __enter__(self) -> Self:
+        """Enter context manager."""
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        """Exit context manager - releases the page's HTTP clients."""
+        self.close()
 
 
 class Sandbox:
@@ -511,23 +537,36 @@ class Sandbox:
         if not infos:
             return []
 
-        # Each Sandbox gets its own client so that kill() on one
-        # does not invalidate the others. Skip version check since
-        # we already verified compatibility above.
+        return cls._wrap_infos(infos, config)
+
+    @classmethod
+    def _wrap_infos(cls, infos: Sequence[SandboxInfo], config: Config) -> list[Self]:
+        """Build Sandbox instances from listing results.
+
+        Each Sandbox gets its own client so that ``kill()`` on one does not
+        invalidate the others. The version check is skipped because the
+        listing client already verified compatibility. If any construction
+        fails, every client created here is closed — including the one whose
+        owning instance never came into existence.
+        """
         sandboxes: list[Self] = []
         try:
             for info in infos:
-                sandboxes.append(
-                    cls(
+                client = SandboxClient(config, check_version=False)
+                try:
+                    sandbox = cls(
                         name=info.name,
                         workspace=info.workspace,
-                        client=SandboxClient(config, check_version=False),
+                        client=client,
                         status=info.status,
                         pool=info.pool,
                         image=info.image,
                         auto_idle_timeout_seconds=info.auto_idle_timeout_seconds,
                     )
-                )
+                except Exception:
+                    client.close()
+                    raise
+                sandboxes.append(sandbox)
         except Exception:
             for sbx in sandboxes:
                 sbx._client.close()
@@ -547,7 +586,7 @@ class Sandbox:
         user_id: str | None = None,
         api_key: str | None = None,
         timeout: int | None = None,
-    ) -> SandboxPage:
+    ) -> SandboxPage[Self]:
         """List one bounded page of sandboxes.
 
         Pass ``continue_token`` from the previous page together with the same
@@ -570,27 +609,8 @@ class Sandbox:
         finally:
             client.close()
 
-        sandboxes: list[Self] = []
-        try:
-            for info in page.sandboxes:
-                sandboxes.append(
-                    cls(
-                        name=info.name,
-                        workspace=info.workspace,
-                        client=SandboxClient(config, check_version=False),
-                        status=info.status,
-                        pool=info.pool,
-                        image=info.image,
-                        auto_idle_timeout_seconds=info.auto_idle_timeout_seconds,
-                    )
-                )
-        except Exception:
-            for sandbox in sandboxes:
-                sandbox._client.close()
-            raise
-
         return SandboxPage(
-            sandboxes=sandboxes,
+            sandboxes=cls._wrap_infos(page.sandboxes, config),
             loaded=page.loaded,
             has_more=page.has_more,
             continue_token=page.continue_token,
