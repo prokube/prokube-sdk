@@ -53,11 +53,15 @@ class TestSandboxInfo:
             image="python:3.10",
             pool="my-pool",
             created_at="2024-01-01T00:00:00Z",
+            claim_name="claim-123",
+            claimed_at="2024-01-02T00:00:00Z",
             auto_idle_timeout_seconds=1800,
         )
         assert info.status == SandboxStatus.RUNNING
         assert info.image == "python:3.10"
         assert info.pool == "my-pool"
+        assert info.claim_name == "claim-123"
+        assert info.claimed_at == "2024-01-02T00:00:00Z"
         assert info.auto_idle_timeout_seconds == 1800
 
 

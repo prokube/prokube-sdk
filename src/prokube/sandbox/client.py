@@ -221,6 +221,8 @@ class SandboxClient:
             workspace=self.config.workspace,
             status=_parse_status(response.get("status"), SandboxStatus.RUNNING),
             pool=pool,
+            claim_name=response.get("claimName") or response.get("claim_name"),
+            claimed_at=response.get("claimedAt") or response.get("claimed_at"),
             auto_idle_timeout_seconds=(
                 response_auto_idle_timeout
                 if response_auto_idle_timeout is not None
@@ -312,6 +314,8 @@ class SandboxClient:
                 image=s.get("image") or None,
                 pool=s.get("poolName") or s.get("pool"),
                 created_at=s.get("createdAt") or s.get("created_at"),
+                claim_name=s.get("claimName") or s.get("claim_name"),
+                claimed_at=s.get("claimedAt") or s.get("claimed_at"),
                 auto_idle_timeout_seconds=parse_auto_idle_timeout(s),
             )
             for s in sandboxes
@@ -350,6 +354,8 @@ class SandboxClient:
                 image=s.get("image") or None,
                 pool=s.get("poolName") or s.get("pool"),
                 created_at=s.get("createdAt") or s.get("created_at"),
+                claim_name=s.get("claimName") or s.get("claim_name"),
+                claimed_at=s.get("claimedAt") or s.get("claimed_at"),
                 auto_idle_timeout_seconds=parse_auto_idle_timeout(s),
             )
             for s in sandboxes
@@ -390,6 +396,8 @@ class SandboxClient:
             image=response.get("image"),
             pool=response.get("poolName") or response.get("pool"),
             created_at=response.get("createdAt") or response.get("created_at"),
+            claim_name=response.get("claimName") or response.get("claim_name"),
+            claimed_at=response.get("claimedAt") or response.get("claimed_at"),
             auto_idle_timeout_seconds=parse_auto_idle_timeout(response),
         )
 
@@ -447,6 +455,8 @@ class SandboxClient:
             image=response.get("image"),
             pool=response.get("poolName") or response.get("pool"),
             created_at=response.get("createdAt") or response.get("created_at"),
+            claim_name=response.get("claimName") or response.get("claim_name"),
+            claimed_at=response.get("claimedAt") or response.get("claimed_at"),
             auto_idle_timeout_seconds=parse_auto_idle_timeout(response),
             resumed_from_pool=resumed_from_pool,
         )

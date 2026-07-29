@@ -90,6 +90,8 @@ class TestListSandboxes:
                         "phase": "Running",
                         "poolName": "python-pool",
                         "createdAt": "2026-01-01T00:00:00Z",
+                        "claimName": "claim-123",
+                        "claimedAt": "2026-01-02T00:00:00Z",
                         "auto_idle_timeout_seconds": 900,
                     },
                     {
@@ -112,6 +114,8 @@ class TestListSandboxes:
         assert result[0].image == "python:3.10"
         assert result[0].pool == "python-pool"
         assert result[0].created_at == "2026-01-01T00:00:00Z"
+        assert result[0].claim_name == "claim-123"
+        assert result[0].claimed_at == "2026-01-02T00:00:00Z"
         assert result[0].auto_idle_timeout_seconds == 900
         assert result[1].name == "sandbox-2"
         assert result[1].status == SandboxStatus.PENDING
@@ -209,7 +213,11 @@ class TestListSandboxes:
         httpx_mock.add_response(
             method="POST",
             url="https://test.example.com/_platform/sandbox/test-ws/sandboxes/claim",
-            json={"name": "sandbox-test", "status": "Running"},
+            json={
+                "name": "sandbox-test",
+                "status": "Running",
+                "claimName": "claim-123",
+            },
         )
 
         client = SandboxClient(config)
@@ -220,6 +228,7 @@ class TestListSandboxes:
         assert body["poolName"] == "python-pool"
         assert body["autoIdleTimeoutSeconds"] == 900
         assert info.auto_idle_timeout_seconds == 900
+        assert info.claim_name == "claim-123"
         client.close()
 
     def test_claim_pool_exhausted_raises_retryable_error(

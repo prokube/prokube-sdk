@@ -39,6 +39,8 @@ class SandboxInfo(BaseModel):
     image: str | None = Field(default=None, description="Container image")
     pool: str | None = Field(default=None, description="WarmPool name if claimed")
     created_at: str | None = Field(default=None, description="Creation timestamp")
+    claim_name: str | None = Field(default=None, description="Pool claim name")
+    claimed_at: str | None = Field(default=None, description="Pool claim timestamp")
     auto_idle_timeout_seconds: int | None = Field(
         default=None,
         description="Auto-idle timeout override in seconds, when configured",
