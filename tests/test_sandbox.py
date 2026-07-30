@@ -236,8 +236,17 @@ class TestSandboxFromPool:
         assert sbx.auto_idle_timeout_seconds == 900
         sbx._client.close()
 
-    def test_from_pool_exposes_pool_exhaustion(self, mock_env, httpx_mock: HTTPXMock):
-        """from_pool preserves retryable 429 pool_exhausted responses."""
+    def test_from_pool_exposes_pool_exhaustion(
+        self, mock_env, httpx_mock: HTTPXMock, monkeypatch
+    ):
+        """from_pool preserves retryable 429 pool_exhausted responses.
+
+        The claim retry budget is zeroed so the first 429 is terminal; the
+        retry behaviour itself is covered in tests/test_idempotency_key.py.
+        """
+        monkeypatch.setattr(
+            "prokube.sandbox.client._CLAIM_POOL_EXHAUSTED_BUDGET_SECONDS", 0
+        )
         httpx_mock.add_response(
             method="GET",
             url="https://test.example.com/api/version",

@@ -4,11 +4,22 @@ from __future__ import annotations
 
 import base64
 import re
+import time
+import uuid
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Literal
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
+from typing import TYPE_CHECKING, Any, Literal
+
+import httpx
 
 from prokube.common.compat import check_backend_compatibility
-from prokube.common.exceptions import NotFoundError, ProKubeError, SandboxError
+from prokube.common.exceptions import (
+    NotFoundError,
+    PoolExhaustedError,
+    ProKubeError,
+    SandboxError,
+)
 from prokube.common.http import HttpClient
 from prokube.sandbox.models import (
     BatchFileWriteRequest,
@@ -29,6 +40,56 @@ from prokube.sandbox.models import (
 
 if TYPE_CHECKING:
     from prokube.common.config import Config
+
+# Warm-pool claim retries. A claim carries an Idempotency-Key, so an attempt
+# that produced no claim may be replayed under that same key; see
+# SandboxClient.claim_from_pool.
+_CLAIM_TRANSPORT_ATTEMPTS = 3
+_CLAIM_RETRY_BACKOFF_SECONDS = 0.5
+# Total wall-clock budget for replaying 429 pool_exhausted responses. A warm
+# pool that ran dry is refilled by the backend within seconds, so a generous
+# default keeps a transient empty pool from surfacing as a caller-visible
+# error; PoolExhaustedError is raised only once this budget cannot absorb the
+# next wait.
+_CLAIM_POOL_EXHAUSTED_BUDGET_SECONDS = 60.0
+
+
+def _parse_retry_after(value: str | None) -> float | None:
+    """Parse a Retry-After header into seconds, or None if unusable.
+
+    Accepts both spellings RFC 9110 allows: a delay in seconds and an
+    HTTP-date. A date already in the past yields 0.
+    """
+    if value is None:
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        pass
+    try:
+        when = parsedate_to_datetime(text)
+    except (TypeError, ValueError):
+        return None
+    if when is None:
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return max((when - datetime.now(timezone.utc)).total_seconds(), 0.0)
+
+
+def _claim_retry_delay(retry_after: str | None, attempt: int) -> float:
+    """Seconds to wait before replaying a pool-exhausted claim.
+
+    The backend's Retry-After hint wins when it is present and positive;
+    otherwise fall back to the same linear backoff transport retries use.
+    """
+    hinted = _parse_retry_after(retry_after)
+    if hinted is not None and hinted > 0:
+        return hinted
+    return _CLAIM_RETRY_BACKOFF_SECONDS * attempt
 
 
 def _parse_status(status_str: str | None, default: SandboxStatus) -> SandboxStatus:
@@ -214,25 +275,100 @@ class SandboxClient:
         return f"{self._sandbox_path(name)}/{sub}"
 
     def claim_from_pool(
-        self, pool: str, auto_idle_timeout_seconds: int | None = None
+        self,
+        pool: str,
+        auto_idle_timeout_seconds: int | None = None,
+        pool_exhausted_budget_seconds: float | None = None,
     ) -> SandboxInfo:
         """Claim a sandbox from a warm pool.
+
+        Two failure modes are replayed transparently, both under the *same*
+        Idempotency-Key: the backend coalesces repeated (workspace, key) pairs
+        onto a single claim instead of handing out a second sandbox, so a
+        replay can never leak a sandbox.
+
+        1. Transport failures (no HTTP response was received or parsed: connect
+           errors, read/write errors, protocol errors, pool timeouts) are
+           retried up to ``_CLAIM_TRANSPORT_ATTEMPTS`` times with a linear
+           backoff. That closes the lost-response window the key exists for.
+        2. ``429`` with a structured ``pool_exhausted`` reason means the pool
+           momentarily has no warm sandbox left — the backend made no claim, so
+           replaying costs nothing. Attempts continue for at most
+           ``pool_exhausted_budget_seconds`` of wall-clock, waiting the
+           backend's ``Retry-After`` hint when it sends one and the linear
+           backoff otherwise. ``PoolExhaustedError`` is raised (unchanged: same
+           type, status, reason and ``retry_after``) once the remaining budget
+           can no longer absorb the next wait.
+
+        Every other HTTP response is terminal: 4xx/5xx raise immediately
+        (``NotFoundError``, ``ProKubeError``, ...), because the backend already
+        made a decision and replaying it here would only hide it. If every
+        attempt fails at the transport layer, the last error is re-raised
+        unchanged.
 
         Args:
             pool: Name of the warm pool.
             auto_idle_timeout_seconds: Per-claim auto-idle override in seconds.
+            pool_exhausted_budget_seconds: Total wall-clock budget for retrying
+                429 pool_exhausted responses (default:
+                ``_CLAIM_POOL_EXHAUSTED_BUDGET_SECONDS``). Pass ``0`` to make
+                the first 429 terminal.
 
         Returns:
             Information about the claimed sandbox.
+
+        Raises:
+            PoolExhaustedError: If the pool stayed exhausted for the budget.
+            httpx.TransportError: If every attempt failed before a response.
         """
         request = ClaimRequest(
             pool_name=pool,
             auto_idle_timeout_seconds=auto_idle_timeout_seconds,
         )
-        response = self._http.post(
-            f"{self._sandboxes_path()}/claim",
-            json=request.model_dump(by_alias=True, exclude_none=True),
+        payload = request.model_dump(by_alias=True, exclude_none=True)
+        path = f"{self._sandboxes_path()}/claim"
+        # Invariant: exactly ONE idempotency key per logical claim_from_pool
+        # call. It is generated here, outside _send and outside the retry loop,
+        # so that every attempt — transport replay or pool-exhausted replay —
+        # re-sends the same key. The backend treats a repeated key with the
+        # same request hash as a replay of the same claim instead of handing
+        # out a second sandbox, which is what makes a lost response safe.
+        idempotency_key = str(uuid.uuid4())
+
+        def _send() -> dict[str, Any]:
+            return self._http.post(
+                path,
+                json=payload,
+                headers={"Idempotency-Key": idempotency_key},
+            )
+
+        budget = (
+            _CLAIM_POOL_EXHAUSTED_BUDGET_SECONDS
+            if pool_exhausted_budget_seconds is None
+            else pool_exhausted_budget_seconds
         )
+        deadline = time.monotonic() + budget
+        transport_failures = 0
+        exhausted_waits = 0
+
+        while True:
+            try:
+                response = _send()
+                break
+            except httpx.TransportError:
+                transport_failures += 1
+                if transport_failures >= _CLAIM_TRANSPORT_ATTEMPTS:
+                    raise
+                delay = _CLAIM_RETRY_BACKOFF_SECONDS * transport_failures
+            except PoolExhaustedError as exc:
+                exhausted_waits += 1
+                delay = _claim_retry_delay(exc.retry_after, exhausted_waits)
+                # Budget is a wall-clock bound on the whole wait, so a hint
+                # that cannot fit is a refusal, not a truncated sleep.
+                if time.monotonic() + delay > deadline:
+                    raise
+            time.sleep(delay)
+
         # API returns sandboxName for claim endpoint
         sandbox_name = response.get("sandboxName") or response["name"]
         response_auto_idle_timeout = parse_auto_idle_timeout(response)
