@@ -242,7 +242,7 @@ class TestListSandboxes:
 
         client = SandboxClient(config)
         with pytest.raises(PoolExhaustedError) as exc_info:
-            client.claim_from_pool("python-pool")
+            client.claim_from_pool("python-pool", pool_exhausted_budget_seconds=0)
 
         assert exc_info.value.status_code == 429
         assert exc_info.value.reason == "pool_exhausted"
