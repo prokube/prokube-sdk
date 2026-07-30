@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import base64
 import re
+import time
 import uuid
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, Literal
+
+import httpx
 
 from prokube.common.compat import check_backend_compatibility
 from prokube.common.exceptions import NotFoundError, ProKubeError, SandboxError
@@ -30,6 +33,12 @@ from prokube.sandbox.models import (
 
 if TYPE_CHECKING:
     from prokube.common.config import Config
+
+# Warm-pool claim transport retries. A claim carries an Idempotency-Key, so a
+# request that never produced an HTTP response may be replayed safely; see
+# SandboxClient.claim_from_pool.
+_CLAIM_TRANSPORT_ATTEMPTS = 3
+_CLAIM_RETRY_BACKOFF_SECONDS = 0.5
 
 
 def _parse_status(status_str: str | None, default: SandboxStatus) -> SandboxStatus:
@@ -219,12 +228,29 @@ class SandboxClient:
     ) -> SandboxInfo:
         """Claim a sandbox from a warm pool.
 
+        Transport failures (no HTTP response was received or parsed: connect
+        errors, read/write errors, protocol errors, pool timeouts) are retried
+        up to ``_CLAIM_TRANSPORT_ATTEMPTS`` times with a linear backoff. This is
+        safe because every attempt re-sends the *same* Idempotency-Key, and the
+        backend coalesces repeated (workspace, key) pairs onto a single claim
+        instead of handing out a second sandbox. That closes the lost-response
+        window the key exists for.
+
+        Anything that did produce an HTTP response is *not* retried: 4xx/5xx
+        raise immediately (``PoolExhaustedError``, ``NotFoundError``,
+        ``ProKubeError``, ...), because the backend already made a decision and
+        replaying it here would only hide it. If every attempt fails at the
+        transport layer, the last error is re-raised unchanged.
+
         Args:
             pool: Name of the warm pool.
             auto_idle_timeout_seconds: Per-claim auto-idle override in seconds.
 
         Returns:
             Information about the claimed sandbox.
+
+        Raises:
+            httpx.TransportError: If every attempt failed before a response.
         """
         request = ClaimRequest(
             pool_name=pool,
@@ -233,11 +259,11 @@ class SandboxClient:
         payload = request.model_dump(by_alias=True, exclude_none=True)
         path = f"{self._sandboxes_path()}/claim"
         # Invariant: exactly ONE idempotency key per logical claim_from_pool
-        # call. It is generated here, outside _send, so that every transport
-        # attempt (retries, if a retry layer is ever added around _send)
-        # re-sends the same key. The backend treats a repeated key with the
-        # same request hash as a replay of the same claim instead of handing
-        # out a second sandbox, which is what makes a lost response safe.
+        # call. It is generated here, outside _send and outside the retry loop,
+        # so that every transport attempt re-sends the same key. The backend
+        # treats a repeated key with the same request hash as a replay of the
+        # same claim instead of handing out a second sandbox, which is what
+        # makes a lost response safe.
         idempotency_key = str(uuid.uuid4())
 
         def _send() -> dict[str, Any]:
@@ -247,7 +273,15 @@ class SandboxClient:
                 headers={"Idempotency-Key": idempotency_key},
             )
 
-        response = _send()
+        for attempt in range(1, _CLAIM_TRANSPORT_ATTEMPTS + 1):
+            try:
+                response = _send()
+                break
+            except httpx.TransportError:
+                if attempt == _CLAIM_TRANSPORT_ATTEMPTS:
+                    raise
+                time.sleep(_CLAIM_RETRY_BACKOFF_SECONDS * attempt)
+
         # API returns sandboxName for claim endpoint
         sandbox_name = response.get("sandboxName") or response["name"]
         response_auto_idle_timeout = parse_auto_idle_timeout(response)
