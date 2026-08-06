@@ -312,6 +312,7 @@ class TestSandboxCreate:
         for key in (
             "cpu",
             "memory",
+            "resources",
             "allowInternetAccess",
             "autoIdleTimeoutSeconds",
             "envVars",
@@ -322,8 +323,9 @@ class TestSandboxCreate:
         sbx._client.close()
 
     def test_create_sandbox_with_all_extras(self, mock_env, httpx_mock: HTTPXMock):
-        """cpu/memory/allow_internet_access/env_vars/secret_refs should serialize
-        to camelCase JSON keys on the wire."""
+        """cpu/memory serialize BOTH flat (external API-key route) and nested
+        under `resources` (internal route) — each backend route reads its own
+        shape and ignores the other."""
         import json
 
         httpx_mock.add_response(
@@ -354,6 +356,7 @@ class TestSandboxCreate:
         body = json.loads(post_req.content)
         assert body["image"] == "python:3.10"
         assert body["name"] == "sandbox-abc"
+        assert body["resources"] == {"cpu": "2", "memory": "4Gi"}
         assert body["cpu"] == "2"
         assert body["memory"] == "4Gi"
         assert body["allowInternetAccess"] is True

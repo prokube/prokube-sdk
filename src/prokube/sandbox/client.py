@@ -294,10 +294,18 @@ class SandboxClient:
             env_vars=env_vars,
             secret_refs=secret_refs,
         )
-        response = self._http.post(
-            self._sandboxes_path(),
-            json=request.model_dump(by_alias=True, exclude_none=True),
-        )
+        # The backend has two create wire shapes: the internal route's
+        # CreateSandboxRequest nests cpu/memory under `resources` (and
+        # silently ignores top-level keys), while the external API-key
+        # route's ExternalCreateRequest takes them flat (and ignores
+        # `resources`). Send both; each route reads its own shape.
+        payload = request.model_dump(by_alias=True, exclude_none=True)
+        resources = {
+            key: value for key, value in {"cpu": cpu, "memory": memory}.items() if value
+        }
+        if resources:
+            payload["resources"] = resources
+        response = self._http.post(self._sandboxes_path(), json=payload)
         info = _parse_sandbox_info(
             response, self.config.workspace, SandboxStatus.PENDING
         )
