@@ -68,7 +68,7 @@ class TestPoolClientPathRouting:
         httpx_mock.add_response(
             method="GET",
             url="https://test.example.com/api/version",
-            json={"version": "0.1.0"},
+            json={"version": "0.8.0"},
         )
         httpx_mock.add_response(
             method="GET",
@@ -112,7 +112,7 @@ class TestPoolClientCreate:
         httpx_mock.add_response(
             method="GET",
             url="https://test.example.com/api/version",
-            json={"version": "0.1.0"},
+            json={"version": "0.8.0"},
         )
         httpx_mock.add_response(
             method="POST",
@@ -159,7 +159,7 @@ class TestPoolClientCreateExtras:
         httpx_mock.add_response(
             method="GET",
             url="https://test.example.com/api/version",
-            json={"version": "0.1.0"},
+            json={"version": "0.8.0"},
         )
         httpx_mock.add_response(
             method="POST",
@@ -191,7 +191,7 @@ class TestPoolClientCreateExtras:
         httpx_mock.add_response(
             method="GET",
             url="https://test.example.com/api/version",
-            json={"version": "0.1.0"},
+            json={"version": "0.8.0"},
         )
         httpx_mock.add_response(
             method="POST",
@@ -298,7 +298,7 @@ class TestPoolClientList:
         httpx_mock.add_response(
             method="GET",
             url="https://test.example.com/api/version",
-            json={"version": "0.1.0"},
+            json={"version": "0.8.0"},
         )
         httpx_mock.add_response(
             method="GET",
@@ -315,7 +315,7 @@ class TestPoolClientList:
         httpx_mock.add_response(
             method="GET",
             url="https://test.example.com/api/version",
-            json={"version": "0.1.0"},
+            json={"version": "0.8.0"},
         )
         httpx_mock.add_response(
             method="GET",
@@ -363,7 +363,7 @@ class TestPoolClientGet:
         httpx_mock.add_response(
             method="GET",
             url="https://test.example.com/api/version",
-            json={"version": "0.1.0"},
+            json={"version": "0.8.0"},
         )
         httpx_mock.add_response(
             method="GET",
@@ -388,7 +388,7 @@ class TestPoolClientDelete:
         httpx_mock.add_response(
             method="GET",
             url="https://test.example.com/api/version",
-            json={"version": "0.1.0"},
+            json={"version": "0.8.0"},
         )
         httpx_mock.add_response(
             method="DELETE",
@@ -415,7 +415,7 @@ def _mock_version(httpx_mock: HTTPXMock) -> None:
     httpx_mock.add_response(
         method="GET",
         url="https://test.example.com/api/version",
-        json={"version": "0.1.0"},
+        json={"version": "0.8.0"},
     )
 
 

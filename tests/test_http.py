@@ -62,6 +62,32 @@ class TestHttpClient:
         response = http_client.delete("/api/test")
         assert response is None
 
+    def test_delete_accepted_with_empty_body(
+        self, http_client: HttpClient, httpx_mock: HTTPXMock
+    ):
+        """The v0.8 backend answers DELETE with 202 and an empty body."""
+        httpx_mock.add_response(
+            method="DELETE",
+            url="https://test.example.com/api/test",
+            status_code=202,
+        )
+
+        assert http_client.delete("/api/test") is None
+
+    def test_delete_accepted_with_null_body(
+        self, http_client: HttpClient, httpx_mock: HTTPXMock
+    ):
+        """A literal ``null`` JSON body is also treated as no content."""
+        httpx_mock.add_response(
+            method="DELETE",
+            url="https://test.example.com/api/test",
+            status_code=202,
+            content=b"null",
+            headers={"Content-Type": "application/json"},
+        )
+
+        assert http_client.delete("/api/test") is None
+
     def test_get_bytes(self, http_client: HttpClient, httpx_mock: HTTPXMock):
         """Test GET request returning bytes."""
         httpx_mock.add_response(

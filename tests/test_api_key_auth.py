@@ -236,7 +236,8 @@ class TestApiKeyEndToEnd:
         httpx_mock.add_response(
             method="POST",
             url="https://test.example.com/sandbox/test-ws/sandboxes/claim",
-            json={"name": "sandbox-abc", "status": "Running"},
+            status_code=202,
+            json={"name": "sandbox-abc", "phase": "Running"},
         )
 
         sbx = Sandbox.from_pool("python-pool")
@@ -272,7 +273,8 @@ class TestApiKeyEndToEnd:
         httpx_mock.add_response(
             method="POST",
             url="https://test.example.com/sandbox/test-ws/sandboxes/claim",
-            json={"name": "sandbox-test", "status": "Running"},
+            status_code=202,
+            json={"name": "sandbox-test", "phase": "Running"},
         )
         httpx_mock.add_response(
             method="POST",
@@ -291,7 +293,8 @@ class TestApiKeyEndToEnd:
         httpx_mock.add_response(
             method="POST",
             url="https://test.example.com/sandbox/test-ws/sandboxes/claim",
-            json={"name": "sandbox-test", "status": "Running"},
+            status_code=202,
+            json={"name": "sandbox-test", "phase": "Running"},
         )
 
         sbx = Sandbox.from_pool("python-pool")
@@ -311,7 +314,8 @@ class TestApiKeyEndToEnd:
         httpx_mock.add_response(
             method="POST",
             url="https://test.example.com/sandbox/test-ws/sandboxes/claim",
-            json={"name": "sandbox-test", "status": "Running"},
+            status_code=202,
+            json={"name": "sandbox-test", "phase": "Running"},
         )
 
         sbx = Sandbox.from_pool("python-pool", api_key="explicit-key")
