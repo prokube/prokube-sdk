@@ -66,6 +66,7 @@ sbx.kill(wait=True)
 from prokube.sandbox import Sandbox
 
 with Sandbox.from_pool("python-pool") as sbx:
+    sbx.wait_until_ready()
     result = sbx.run_code("print(42)")
     print(result.stdout)
 # Sandbox is automatically cleaned up
@@ -101,6 +102,7 @@ export PROKUBE_WORKSPACE=henrik
 from prokube.sandbox import Sandbox
 
 with Sandbox.from_pool("python-pool") as sbx:
+    sbx.wait_until_ready()
     result = sbx.run_code("print('Hello from inside the workspace!')")
     print(result.stdout)
 ```
@@ -136,6 +138,7 @@ from prokube.sandbox import Sandbox
 
 # API key is picked up from PROKUBE_API_KEY env var
 with Sandbox.from_pool("python-pool") as sbx:
+    sbx.wait_until_ready()
     result = sbx.run_code("print('Hello from outside the cluster!')")
     print(result.stdout)
 ```
@@ -151,6 +154,7 @@ with Sandbox.from_pool(
     workspace="my-workspace",
     api_key="your-api-key",
 ) as sbx:
+    sbx.wait_until_ready()
     result = sbx.run_code("print('Hello from outside the cluster!')")
     print(result.stdout)
 ```

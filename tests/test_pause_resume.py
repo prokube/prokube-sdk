@@ -312,6 +312,44 @@ class TestSandboxPause:
 
         sbx._client.close()
 
+    def test_pause_wait_deleting_raises(
+        self, mock_env, monkeypatch, httpx_mock: HTTPXMock
+    ):
+        """A delete admitted during the pause outranks it; stop waiting."""
+        monkeypatch.setattr("time.sleep", lambda _: None)
+        _mock_version(httpx_mock)
+        _mock_claim(httpx_mock)
+        _mock_pause(httpx_mock)
+        _mock_get(httpx_mock, "Pausing")
+        _mock_get(httpx_mock, "Deleting")
+
+        sbx = Sandbox.from_pool("python-pool")
+        with pytest.raises(SandboxError, match="is being deleted"):
+            sbx.pause()
+
+        sbx._client.close()
+
+    def test_pause_wait_sandbox_gone_raises(
+        self, mock_env, monkeypatch, httpx_mock: HTTPXMock
+    ):
+        """A concurrent delete finishing mid-wait surfaces as SandboxError."""
+        monkeypatch.setattr("time.sleep", lambda _: None)
+        _mock_version(httpx_mock)
+        _mock_claim(httpx_mock)
+        _mock_pause(httpx_mock)
+        httpx_mock.add_response(
+            method="GET",
+            url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/sandbox-test",
+            status_code=404,
+            json={"detail": "not found"},
+        )
+
+        sbx = Sandbox.from_pool("python-pool")
+        with pytest.raises(SandboxError, match="deleted while waiting"):
+            sbx.pause()
+
+        sbx._client.close()
+
     def test_pause_non_running_raises(self, mock_env, httpx_mock: HTTPXMock):
         _mock_version(httpx_mock)
         _mock_claim(httpx_mock)
@@ -991,6 +1029,82 @@ class TestSandboxKill:
             sbx.kill(wait=True, timeout=1)
 
         sbx._client.close()
+
+    def test_kill_wait_delete_failed_raises_with_last_error(
+        self, mock_env, monkeypatch, httpx_mock: HTTPXMock
+    ):
+        """A terminal delete_failed row surfaces immediately, with the reason."""
+        monkeypatch.setattr("time.sleep", lambda _: None)
+        _mock_version(httpx_mock)
+        _mock_claim(httpx_mock)
+        httpx_mock.add_response(
+            method="DELETE",
+            url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/sandbox-test",
+            status_code=202,
+        )
+        _mock_get(httpx_mock, "Deleting")
+        _mock_get(
+            httpx_mock, "Failed", lastError="workspace purge could not be confirmed"
+        )
+
+        sbx = Sandbox.from_pool("python-pool")
+        with pytest.raises(
+            SandboxError,
+            match=r"failed to delete: workspace purge could not be confirmed",
+        ):
+            sbx.kill(wait=True)
+
+        # The delete was admitted and terminally failed: the object must not
+        # accept work, but kill() stays re-issuable.
+        with pytest.raises(SandboxError, match="is being deleted"):
+            sbx.run_code("print(1)")
+        sbx._client.close()
+
+    def test_kill_wait_timeout_blocks_operations_and_kill_retries(
+        self, mock_env, monkeypatch, httpx_mock: HTTPXMock
+    ):
+        """After a wait timeout the object is deletion-locked; kill() retries."""
+        call_count = 0
+        real_monotonic = __import__("time").monotonic
+
+        def fake_monotonic():
+            nonlocal call_count
+            call_count += 1
+            if call_count <= 2:
+                return real_monotonic()
+            return real_monotonic() + 1000
+
+        monkeypatch.setattr("time.monotonic", fake_monotonic)
+        monkeypatch.setattr("time.sleep", lambda _: None)
+        _mock_version(httpx_mock)
+        _mock_claim(httpx_mock)
+        httpx_mock.add_response(
+            method="DELETE",
+            url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/sandbox-test",
+            status_code=202,
+        )
+        _mock_get(httpx_mock, "Deleting")
+
+        sbx = Sandbox.from_pool("python-pool")
+        with pytest.raises(SandboxTimeoutError, match="was not deleted within"):
+            sbx.kill(wait=True, timeout=1)
+
+        # Deletion was admitted: normal operations are blocked...
+        with pytest.raises(SandboxError, match="is being deleted"):
+            sbx.run_code("print(1)")
+
+        # ...but kill() can be re-issued; a 404 on the re-issued DELETE means
+        # the backend finished in the meantime, which is the desired outcome.
+        httpx_mock.add_response(
+            method="DELETE",
+            url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/sandbox-test",
+            status_code=404,
+            json={"detail": "not found"},
+        )
+        sbx.kill(wait=True)
+        assert sbx.status == "Succeeded"
+        with pytest.raises(SandboxError, match="has been killed"):
+            sbx.run_code("print(1)")
 
 
 class TestSandboxPhaseProperty:

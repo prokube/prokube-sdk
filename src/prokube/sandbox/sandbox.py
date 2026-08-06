@@ -135,6 +135,7 @@ class Sandbox:
         self._image = image
         self._auto_idle_timeout_seconds = auto_idle_timeout_seconds
         self._killed = False
+        self._delete_requested = False
         self._last_error: str | None = None
 
         # Initialize helpers with killed-state check callback
@@ -143,10 +144,15 @@ class Sandbox:
         self._code = CodeRunner(client, name, self._check_not_killed)
 
     def _check_not_killed(self) -> None:
-        """Raise error if sandbox has been killed."""
+        """Raise error if the sandbox has been killed or is being deleted."""
         if self._killed:
             raise SandboxError(
                 f"Sandbox {self._name} has been killed and cannot be used anymore"
+            )
+        if self._delete_requested:
+            raise SandboxError(
+                f"Sandbox {self._name} is being deleted; call kill(wait=True) "
+                "to wait for the deletion to complete"
             )
 
     @property
@@ -282,6 +288,11 @@ class Sandbox:
                 self.refresh(request_timeout=remaining)
             except httpx.TimeoutException:
                 pass
+            except NotFoundError:
+                # A concurrently admitted delete finished while we waited.
+                raise SandboxError(
+                    f"Sandbox {self._name} was deleted while waiting for it to pause"
+                ) from None
             else:
                 if self._status == SandboxStatus.PAUSED:
                     return
@@ -290,6 +301,14 @@ class Sandbox:
                         f"Sandbox {self._name} failed to pause: "
                         f"{self._last_error or 'no error reported by the backend'} "
                         f"(re-issue pause() to retry)"
+                    )
+                if self._status == SandboxStatus.DELETING:
+                    # Delete outranks pause on the backend: the pause worker's
+                    # settle will miss and the sandbox is going away. Waiting
+                    # any longer can only end in 404.
+                    raise SandboxError(
+                        f"Sandbox {self._name} is being deleted; it will "
+                        "never reach Paused"
                     )
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -463,23 +482,41 @@ class Sandbox:
         ``wait=True`` when you intend to reuse the name (or need the quota
         back) and must know the reclamation finished.
 
-        After calling this method, the sandbox cannot be used anymore.
-        Any subsequent calls to run_code(), commands, or files will raise.
+        After a successful ``kill()`` (or once the delete has been admitted),
+        the sandbox cannot be used anymore: run_code(), commands, and files
+        raise. If waiting fails or times out, the object stays in a
+        deletion-requested state — normal operations are blocked, but
+        ``kill(wait=True)`` may be re-issued to keep waiting (the backend's
+        DELETE is idempotent while teardown is in flight).
 
-        If the delete request fails, an exception is raised and the sandbox
-        remains usable so callers can retry or handle the failure.
+        If the initial delete request itself fails, an exception is raised
+        and the sandbox remains usable so callers can retry.
 
         Args:
             wait: Poll until the sandbox is really gone (default: False).
             timeout: Maximum seconds to wait when ``wait`` is True.
 
         Raises:
+            SandboxError: If ``wait`` is True and the backend lands the
+                delete in a terminal failure (phase ``Failed`` with
+                ``lastError``); re-issue ``kill()`` to retry the delete.
             SandboxTimeoutError: If ``wait`` is True and the sandbox is still
                 present after ``timeout`` seconds.
         """
         if self._killed:
             return  # Already killed, nothing to do
-        self._client.delete(self._name)
+        try:
+            self._client.delete(self._name)
+        except NotFoundError:
+            # A re-issued kill can find the sandbox already gone: that is
+            # the outcome we wanted, not an error.
+            self._status = SandboxStatus.SUCCEEDED
+            self._killed = True
+            self._client.close()
+            return
+        # The delete is admitted: from here the sandbox is going away and
+        # must not accept work, even if the wait below fails or times out.
+        self._delete_requested = True
         if wait:
             self._wait_until_gone(timeout)
         # Only mark as killed and close client after successful delete
@@ -503,6 +540,16 @@ class Sandbox:
                 pass
             else:
                 self._status = info.status
+                self._last_error = info.last_error
+                if self._status == SandboxStatus.FAILED:
+                    # delete_failed on the backend: retries are exhausted and
+                    # the row (and name) stay reserved until a delete is
+                    # re-issued and succeeds.
+                    raise SandboxError(
+                        f"Sandbox {self._name} failed to delete: "
+                        f"{self._last_error or 'no error reported by the backend'} "
+                        f"(re-issue kill() to retry)"
+                    )
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 break
