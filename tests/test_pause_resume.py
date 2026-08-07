@@ -742,6 +742,61 @@ class TestWaitUntilReady:
 
         sbx._client.close()
 
+    def test_wait_until_ready_warmup_accepts_extra_stdout(
+        self, mock_env, monkeypatch, httpx_mock: HTTPXMock
+    ):
+        """A probe whose stdout contains the marker plus extra text succeeds in one attempt.
+
+        Regression test for issue #51: the kernel may append unrelated
+        warnings (e.g. IPython's history-thread SQLite error) to the same
+        stdout as the marker. That session is live and must not be discarded.
+        """
+        monkeypatch.setattr("time.sleep", lambda _: None)
+
+        _mock_version(httpx_mock)
+        _mock_claim(httpx_mock)
+        httpx_mock.add_response(
+            method="GET",
+            url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/sandbox-test",
+            json={"name": "sandbox-test", "phase": "Running"},
+        )
+
+        call_counter = {"n": 0}
+
+        def _probe_callback(request: httpx.Request) -> httpx.Response:
+            call_counter["n"] += 1
+            marker = _extract_marker(request) or ""
+            return httpx.Response(
+                200,
+                json={
+                    "stdout": (
+                        f"{marker}\n"
+                        "The history saving thread hit an unexpected error "
+                        "(OperationalError('attempt to write a readonly "
+                        "database')). History will not be written to the "
+                        "database.\n"
+                    ),
+                    "stderr": "",
+                    "success": True,
+                    "execution_time_ms": 1,
+                },
+            )
+
+        httpx_mock.add_callback(
+            _probe_callback,
+            method="POST",
+            url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/sandbox-test/exec",
+            is_reusable=True,
+        )
+
+        sbx = Sandbox.from_pool("python-pool")
+        sbx.wait_until_ready(timeout=5)
+
+        assert sbx.status == "Running"
+        assert call_counter["n"] == 1
+
+        sbx._client.close()
+
     def test_wait_until_ready_warmup_caps_per_probe_timeout(
         self, mock_env, monkeypatch, httpx_mock: HTTPXMock
     ):
