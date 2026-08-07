@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from enum import Enum
-from typing import Literal
+from typing import Literal, TypeAlias
 
 from pydantic import BaseModel, Field
 
@@ -151,6 +152,21 @@ class EnvVar(BaseModel):
 
     name: str = Field(..., description="Environment variable name")
     value: str = Field(..., description="Environment variable value")
+
+
+#: What callers may pass for an environment variable: either an ``EnvVar`` or
+#: the plain ``{"name": ..., "value": ...}`` mapping pydantic coerces into one.
+EnvVarInput: TypeAlias = EnvVar | Mapping[str, str]
+
+
+def to_env_vars(values: Sequence[EnvVarInput] | None) -> list[EnvVar] | None:
+    """Coerce caller-supplied environment variables into ``EnvVar`` models."""
+    if values is None:
+        return None
+    return [
+        value if isinstance(value, EnvVar) else EnvVar.model_validate(value)
+        for value in values
+    ]
 
 
 class CreateRequest(BaseModel):

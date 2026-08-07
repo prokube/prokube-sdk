@@ -6,6 +6,7 @@ from pydantic import ValidationError
 from prokube.sandbox.client import _parse_batch_file_write_response
 from prokube.sandbox.models import (
     BatchFileWriteResponse,
+    BatchFileWriteResult,
     ClaimRequest,
     CodeResult,
     CommandResult,
@@ -123,6 +124,7 @@ class TestCodeResult:
         assert result.success is False
         assert result.error_name == "ValueError"
         assert result.error_value == "invalid value"
+        assert result.traceback is not None
         assert len(result.traceback) == 2
 
 
@@ -239,8 +241,8 @@ class TestRequestModels:
             success_count=1,
             failure_count=1,
             results=[
-                {"index": 1, "path": "/workspace/b.txt", "success": False},
-                {"index": 0, "path": "/workspace/a.txt", "success": True},
+                BatchFileWriteResult(index=1, path="/workspace/b.txt", success=False),
+                BatchFileWriteResult(index=0, path="/workspace/a.txt", success=True),
             ],
         )
 

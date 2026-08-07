@@ -28,7 +28,12 @@ from prokube.sandbox.client import SandboxClient
 from prokube.sandbox.code import CodeRunner
 from prokube.sandbox.commands import CommandRunner
 from prokube.sandbox.files import FileManager
-from prokube.sandbox.models import CodeResult, SandboxInfo, SandboxStatus
+from prokube.sandbox.models import (
+    CodeResult,
+    EnvVarInput,
+    SandboxInfo,
+    SandboxStatus,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -837,7 +842,7 @@ class Sandbox:
         memory: str | None = None,
         allow_internet_access: bool | None = None,
         auto_idle_timeout_seconds: int | None = None,
-        env_vars: list[dict[str, str]] | None = None,
+        env_vars: Sequence[EnvVarInput] | None = None,
         secret_refs: list[str] | None = None,
         api_url: str | None = None,
         workspace: str | None = None,
@@ -861,7 +866,8 @@ class Sandbox:
                 internet. If None, the backend default is used.
             auto_idle_timeout_seconds: Per-sandbox auto-idle override in seconds.
             env_vars: Environment variables to inject into the sandbox. Each
-                entry is a ``{"name": ..., "value": ...}`` dict.
+                entry is an :class:`EnvVar` or an equivalent
+                ``{"name": ..., "value": ...}`` mapping.
             secret_refs: Names of workspace secrets to mount into the sandbox.
             api_url: API URL (default: from PROKUBE_API_URL env var).
             workspace: Workspace (default: from PROKUBE_WORKSPACE env var).

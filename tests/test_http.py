@@ -175,6 +175,7 @@ class TestHttpClient:
         http_client.get("/api/test")
 
         request = httpx_mock.get_request()
+        assert request is not None
         assert request.headers["kubeflow-userid"] == "test-user@example.com"
 
 
@@ -236,6 +237,7 @@ class TestApiKeyBaseUrl:
         assert response == {"sandboxes": [], "total": 0}
 
         request = httpx_mock.get_request()
+        assert request is not None
         assert request.headers["x-api-key"] == "pk_live_test123"
         assert str(request.url) == "https://test.example.com/sandbox/test-ws/sandboxes"
         client.close()
@@ -259,6 +261,7 @@ class TestApiKeyBaseUrl:
         assert response == {"sandboxes": [], "total": 0}
 
         request = httpx_mock.get_request()
+        assert request is not None
         assert (
             str(request.url)
             == "https://test.example.com/pkui/_platform/sandbox/test-ws/sandboxes"
