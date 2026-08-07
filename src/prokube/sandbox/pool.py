@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from collections.abc import Sequence
 
 if sys.version_info >= (3, 11):
     from typing import Self
@@ -11,6 +12,7 @@ else:
 
 from prokube.common.config import Config
 from prokube.common.exceptions import SandboxError
+from prokube.sandbox.models import EnvVarInput
 from prokube.sandbox.pool_client import PoolClient
 
 
@@ -175,7 +177,7 @@ class SandboxPool:
         *,
         allow_internet_access: bool | None = None,
         auto_idle_timeout_seconds: int | None = None,
-        env_vars: list[dict[str, str]] | None = None,
+        env_vars: Sequence[EnvVarInput] | None = None,
         secret_refs: list[str] | None = None,
         api_url: str | None = None,
         workspace: str | None = None,
@@ -196,7 +198,8 @@ class SandboxPool:
             auto_idle_timeout_seconds: Default auto-idle timeout in seconds for
                 sandboxes claimed from this pool.
             env_vars: Environment variables to inject into pool sandboxes. Each
-                entry is a ``{"name": ..., "value": ...}`` dict.
+                entry is an :class:`EnvVar` or an equivalent
+                ``{"name": ..., "value": ...}`` mapping.
             secret_refs: Names of workspace secrets to mount into pool
                 sandboxes.
             api_url: API URL (default: from PROKUBE_API_URL env var).

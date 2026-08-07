@@ -27,6 +27,7 @@ dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
     "pytest-httpx>=0.30.0",
+    "pyright>=1.1.400",
     "ruff>=0.4.0",
 ]
 
@@ -62,6 +63,12 @@ ignore = [
 
 [tool.ruff.lint.isort]
 known-first-party = ["prokube"]
+
+[tool.pyright]
+include = ["src", "tests"]
+pythonVersion = "3.10"
+# pyright's own default; pinned so a future default change cannot move the gate.
+typeCheckingMode = "standard"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

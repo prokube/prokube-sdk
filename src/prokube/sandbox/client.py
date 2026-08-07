@@ -18,6 +18,7 @@ from prokube.sandbox.models import (
     CodeResult,
     CommandResult,
     CreateRequest,
+    EnvVarInput,
     ExecRequest,
     FileInfo,
     FileWriteRequest,
@@ -25,6 +26,7 @@ from prokube.sandbox.models import (
     SandboxInfoPage,
     SandboxStatus,
     parse_auto_idle_timeout,
+    to_env_vars,
 )
 
 if TYPE_CHECKING:
@@ -105,13 +107,24 @@ def _parse_batch_file_write_response(
             raise ValueError("Batch file write response indexes must be unique")
         seen_indexes.add(item.index)
 
-    success_count = response.get("successCount", response.get("success_count"))
-    failure_count = response.get("failureCount", response.get("failure_count"))
+    raw_success_count = response.get("successCount", response.get("success_count"))
+    raw_failure_count = response.get("failureCount", response.get("failure_count"))
 
-    if success_count is None:
+    if raw_success_count is None:
         success_count = sum(1 for item in results if item.success)
-    if failure_count is None:
+    else:
+        success_count = _require_response_count(raw_success_count, "successCount")
+    if raw_failure_count is None:
         failure_count = len(results) - success_count
+    else:
+        failure_count = _require_response_count(raw_failure_count, "failureCount")
+
+    raw_total = response.get("total")
+    total = (
+        len(results)
+        if "total" not in response
+        else _require_response_count(raw_total, "total")
+    )
 
     success = response.get("success")
     if not isinstance(success, bool):
@@ -119,9 +132,9 @@ def _parse_batch_file_write_response(
 
     return BatchFileWriteResponse(
         success=success,
-        total=int(response.get("total", len(results))),
-        success_count=int(success_count),
-        failure_count=int(failure_count),
+        total=total,
+        success_count=success_count,
+        failure_count=failure_count,
         results=results,
     )
 
@@ -144,6 +157,12 @@ def _require_batch_result_bool(item: dict[str, object], field: str) -> bool:
     value = item.get(field)
     if not isinstance(value, bool):
         raise ValueError(f"Batch file write response item is missing {field}")
+    return value
+
+
+def _require_response_count(value: object, field: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"Batch file write response {field} must be an integer")
     return value
 
 
@@ -257,7 +276,7 @@ class SandboxClient:
         memory: str | None = None,
         allow_internet_access: bool | None = None,
         auto_idle_timeout_seconds: int | None = None,
-        env_vars: list[dict[str, str]] | None = None,
+        env_vars: Sequence[EnvVarInput] | None = None,
         secret_refs: list[str] | None = None,
     ) -> SandboxInfo:
         """Create a new sandbox.
@@ -272,7 +291,8 @@ class SandboxClient:
                 internet. Backend default used if None.
             auto_idle_timeout_seconds: Per-sandbox auto-idle override in seconds.
             env_vars: Environment variables to inject into the sandbox. Each
-                entry is a ``{"name": ..., "value": ...}`` dict.
+                entry is an :class:`EnvVar` or an equivalent
+                ``{"name": ..., "value": ...}`` mapping.
             secret_refs: Names of workspace secrets to mount into the sandbox.
 
         Returns:
@@ -291,7 +311,7 @@ class SandboxClient:
             memory=memory,
             allow_internet_access=allow_internet_access,
             auto_idle_timeout_seconds=auto_idle_timeout_seconds,
-            env_vars=env_vars,
+            env_vars=to_env_vars(env_vars),
             secret_refs=secret_refs,
         )
         # The backend has two create wire shapes: the internal route's

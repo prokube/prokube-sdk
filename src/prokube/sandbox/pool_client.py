@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 from prokube.common.compat import check_backend_compatibility
 from prokube.common.http import HttpClient
 from prokube.sandbox.models import (
     CreatePoolRequest,
+    EnvVarInput,
     PoolInfo,
     parse_auto_idle_timeout,
+    to_env_vars,
 )
 
 if TYPE_CHECKING:
@@ -55,7 +58,7 @@ class PoolClient:
         cpu: str,
         memory: str,
         allow_internet_access: bool | None = None,
-        env_vars: list[dict[str, str]] | None = None,
+        env_vars: Sequence[EnvVarInput] | None = None,
         secret_refs: list[str] | None = None,
         auto_idle_timeout_seconds: int | None = None,
     ) -> PoolInfo:
@@ -70,7 +73,8 @@ class PoolClient:
             allow_internet_access: Whether pool sandboxes may reach the public
                 internet. If None, the backend default is used.
             env_vars: Environment variables to inject into pool sandboxes. Each
-                entry is a ``{"name": ..., "value": ...}`` dict.
+                entry is an :class:`EnvVar` or an equivalent
+                ``{"name": ..., "value": ...}`` mapping.
             secret_refs: Names of workspace secrets to mount into pool
                 sandboxes.
             auto_idle_timeout_seconds: Default auto-idle timeout in seconds for
@@ -87,7 +91,7 @@ class PoolClient:
             memory=memory,
             allow_internet_access=allow_internet_access,
             auto_idle_timeout_seconds=auto_idle_timeout_seconds,
-            env_vars=env_vars,
+            env_vars=to_env_vars(env_vars),
             secret_refs=secret_refs,
         )
         response = self._http.post(
