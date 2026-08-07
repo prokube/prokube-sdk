@@ -11,7 +11,7 @@ if TYPE_CHECKING:
     from prokube.common.http import HttpClient
 
 # Minimum required backend version for this SDK version
-MIN_BACKEND_VERSION = "0.1.0"
+MIN_BACKEND_VERSION = "0.8.0"
 
 
 def parse_version(version_string: str) -> tuple[int, int, int]:

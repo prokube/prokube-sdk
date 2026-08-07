@@ -26,7 +26,10 @@ class TestSandboxStatus:
         """Test status enum values."""
         assert SandboxStatus.PENDING.value == "Pending"
         assert SandboxStatus.RUNNING.value == "Running"
-        assert SandboxStatus.BOUND.value == "Bound"
+        assert SandboxStatus.PAUSED.value == "Paused"
+        assert SandboxStatus.PAUSING.value == "Pausing"
+        assert SandboxStatus.RESUMING.value == "Resuming"
+        assert SandboxStatus.DELETING.value == "Deleting"
         assert SandboxStatus.SUCCEEDED.value == "Succeeded"
         assert SandboxStatus.FAILED.value == "Failed"
         assert SandboxStatus.UNKNOWN.value == "Unknown"
@@ -43,6 +46,7 @@ class TestSandboxInfo:
         assert info.status == SandboxStatus.UNKNOWN
         assert info.image is None
         assert info.pool is None
+        assert info.last_error is None
 
     def test_full_sandbox_info(self):
         """Test creating SandboxInfo with all fields."""
@@ -54,11 +58,13 @@ class TestSandboxInfo:
             pool="my-pool",
             created_at="2024-01-01T00:00:00Z",
             auto_idle_timeout_seconds=1800,
+            last_error="pause failed: csi timeout",
         )
         assert info.status == SandboxStatus.RUNNING
         assert info.image == "python:3.10"
         assert info.pool == "my-pool"
         assert info.auto_idle_timeout_seconds == 1800
+        assert info.last_error == "pause failed: csi timeout"
 
 
 class TestCommandResult:

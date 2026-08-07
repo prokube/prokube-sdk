@@ -27,7 +27,7 @@ class TestSandboxList:
         httpx_mock.add_response(
             method="GET",
             url="https://test.example.com/api/version",
-            json={"version": "0.1.0"},
+            json={"version": "0.8.0"},
         )
         httpx_mock.add_response(
             method="GET",
@@ -45,7 +45,7 @@ class TestSandboxList:
         httpx_mock.add_response(
             method="GET",
             url="https://test.example.com/api/version",
-            json={"version": "0.1.0"},
+            json={"version": "0.8.0"},
         )
         httpx_mock.add_response(
             method="GET",
@@ -89,7 +89,7 @@ class TestSandboxList:
         httpx_mock.add_response(
             method="GET",
             url="https://test.example.com/api/version",
-            json={"version": "0.1.0"},
+            json={"version": "0.8.0"},
         )
         httpx_mock.add_response(
             method="GET",
@@ -121,7 +121,7 @@ class TestSandboxList:
         httpx_mock.add_response(
             method="GET",
             url="https://test.example.com/api/version",
-            json={"version": "0.1.0"},
+            json={"version": "0.8.0"},
         )
         httpx_mock.add_response(
             method="GET",
@@ -145,7 +145,7 @@ class TestSandboxList:
 
         monkeypatch.setattr(SandboxClient, "close", spy_close)
 
-        with Sandbox.list_page(lifecycle="inactive", limit=10) as page:
+        with Sandbox.list_page(limit=10) as page:
             assert isinstance(page, SandboxPage)
             assert [sandbox.name for sandbox in page.sandboxes] == [
                 "paused-1",
@@ -171,7 +171,7 @@ class TestSandboxList:
         ]
 
         request = httpx_mock.get_requests()[-1]
-        assert dict(request.url.params) == {"limit": "10", "lifecycle": "inactive"}
+        assert dict(request.url.params) == {"limit": "10"}
 
 
 class TestSandboxFromPool:
@@ -183,13 +183,14 @@ class TestSandboxFromPool:
         httpx_mock.add_response(
             method="GET",
             url="https://test.example.com/api/version",
-            json={"version": "0.1.0"},
+            json={"version": "0.8.0"},
         )
         # Mock claim request
         httpx_mock.add_response(
             method="POST",
             url="https://test.example.com/_platform/sandbox/test-ws/sandboxes/claim",
-            json={"name": "sandbox-abc123", "status": "Running"},
+            status_code=202,
+            json={"name": "sandbox-abc123", "phase": "Running"},
         )
 
         sbx = Sandbox.from_pool("python-pool")
@@ -220,12 +221,13 @@ class TestSandboxFromPool:
         httpx_mock.add_response(
             method="GET",
             url="https://test.example.com/api/version",
-            json={"version": "0.1.0"},
+            json={"version": "0.8.0"},
         )
         httpx_mock.add_response(
             method="POST",
             url="https://test.example.com/_platform/sandbox/test-ws/sandboxes/claim",
-            json={"name": "sandbox-abc123", "status": "Running"},
+            status_code=202,
+            json={"name": "sandbox-abc123", "phase": "Running"},
         )
 
         sbx = Sandbox.from_pool("python-pool", auto_idle_timeout_seconds=900)
@@ -241,7 +243,7 @@ class TestSandboxFromPool:
         httpx_mock.add_response(
             method="GET",
             url="https://test.example.com/api/version",
-            json={"version": "0.1.0"},
+            json={"version": "0.8.0"},
         )
         httpx_mock.add_response(
             method="POST",
@@ -268,7 +270,7 @@ class TestSandboxCreate:
         httpx_mock.add_response(
             method="GET",
             url="https://test.example.com/api/version",
-            json={"version": "0.1.0"},
+            json={"version": "0.8.0"},
         )
         # Mock create request
         httpx_mock.add_response(
@@ -293,7 +295,7 @@ class TestSandboxCreate:
         httpx_mock.add_response(
             method="GET",
             url="https://test.example.com/api/version",
-            json={"version": "0.1.0"},
+            json={"version": "0.8.0"},
         )
         httpx_mock.add_response(
             method="POST",
@@ -310,6 +312,7 @@ class TestSandboxCreate:
         for key in (
             "cpu",
             "memory",
+            "resources",
             "allowInternetAccess",
             "autoIdleTimeoutSeconds",
             "envVars",
@@ -320,14 +323,15 @@ class TestSandboxCreate:
         sbx._client.close()
 
     def test_create_sandbox_with_all_extras(self, mock_env, httpx_mock: HTTPXMock):
-        """cpu/memory/allow_internet_access/env_vars/secret_refs should serialize
-        to camelCase JSON keys on the wire."""
+        """cpu/memory serialize BOTH flat (external API-key route) and nested
+        under `resources` (internal route) — each backend route reads its own
+        shape and ignores the other."""
         import json
 
         httpx_mock.add_response(
             method="GET",
             url="https://test.example.com/api/version",
-            json={"version": "0.1.0"},
+            json={"version": "0.8.0"},
         )
         httpx_mock.add_response(
             method="POST",
@@ -352,6 +356,7 @@ class TestSandboxCreate:
         body = json.loads(post_req.content)
         assert body["image"] == "python:3.10"
         assert body["name"] == "sandbox-abc"
+        assert body["resources"] == {"cpu": "2", "memory": "4Gi"}
         assert body["cpu"] == "2"
         assert body["memory"] == "4Gi"
         assert body["allowInternetAccess"] is True
@@ -377,7 +382,7 @@ class TestSandboxCreate:
         httpx_mock.add_response(
             method="GET",
             url="https://test.example.com/api/version",
-            json={"version": "0.1.0"},
+            json={"version": "0.8.0"},
         )
         httpx_mock.add_response(
             method="POST",
@@ -407,13 +412,14 @@ class TestSandboxRunCode:
         httpx_mock.add_response(
             method="GET",
             url="https://test.example.com/api/version",
-            json={"version": "0.1.0"},
+            json={"version": "0.8.0"},
         )
         # Mock claim
         httpx_mock.add_response(
             method="POST",
             url="https://test.example.com/_platform/sandbox/test-ws/sandboxes/claim",
-            json={"name": "sandbox-test", "status": "Running"},
+            status_code=202,
+            json={"name": "sandbox-test", "phase": "Running"},
         )
         # Mock exec
         httpx_mock.add_response(
@@ -443,12 +449,13 @@ class TestSandboxRunCode:
         httpx_mock.add_response(
             method="GET",
             url="https://test.example.com/api/version",
-            json={"version": "0.1.0"},
+            json={"version": "0.8.0"},
         )
         httpx_mock.add_response(
             method="POST",
             url="https://test.example.com/_platform/sandbox/test-ws/sandboxes/claim",
-            json={"name": "sandbox-test", "status": "Running"},
+            status_code=202,
+            json={"name": "sandbox-test", "phase": "Running"},
         )
         httpx_mock.add_response(
             method="POST",
@@ -477,12 +484,13 @@ class TestSandboxRunCode:
         httpx_mock.add_response(
             method="GET",
             url="https://test.example.com/api/version",
-            json={"version": "0.1.0"},
+            json={"version": "0.8.0"},
         )
         httpx_mock.add_response(
             method="POST",
             url="https://test.example.com/_platform/sandbox/test-ws/sandboxes/claim",
-            json={"name": "sandbox-test", "status": "Running"},
+            status_code=202,
+            json={"name": "sandbox-test", "phase": "Running"},
         )
         httpx_mock.add_response(
             method="POST",
@@ -512,12 +520,13 @@ class TestSandboxRunCode:
         httpx_mock.add_response(
             method="GET",
             url="https://test.example.com/api/version",
-            json={"version": "0.1.0"},
+            json={"version": "0.8.0"},
         )
         httpx_mock.add_response(
             method="POST",
             url="https://test.example.com/_platform/sandbox/test-ws/sandboxes/claim",
-            json={"name": "sandbox-test", "status": "Running"},
+            status_code=202,
+            json={"name": "sandbox-test", "phase": "Running"},
         )
         httpx_mock.add_response(
             method="POST",
@@ -547,13 +556,14 @@ class TestSandboxRunCode:
         httpx_mock.add_response(
             method="GET",
             url="https://test.example.com/api/version",
-            json={"version": "0.1.0"},
+            json={"version": "0.8.0"},
         )
         # Mock claim
         httpx_mock.add_response(
             method="POST",
             url="https://test.example.com/_platform/sandbox/test-ws/sandboxes/claim",
-            json={"name": "sandbox-test", "status": "Running"},
+            status_code=202,
+            json={"name": "sandbox-test", "phase": "Running"},
         )
         # First exec - returns session_id
         httpx_mock.add_response(
@@ -615,13 +625,14 @@ class TestSandboxRunCode:
         httpx_mock.add_response(
             method="GET",
             url="https://test.example.com/api/version",
-            json={"version": "0.1.0"},
+            json={"version": "0.8.0"},
         )
         # Mock claim
         httpx_mock.add_response(
             method="POST",
             url="https://test.example.com/_platform/sandbox/test-ws/sandboxes/claim",
-            json={"name": "sandbox-test", "status": "Running"},
+            status_code=202,
+            json={"name": "sandbox-test", "phase": "Running"},
         )
         # First exec
         httpx_mock.add_response(
@@ -683,13 +694,14 @@ class TestSandboxCommands:
         httpx_mock.add_response(
             method="GET",
             url="https://test.example.com/api/version",
-            json={"version": "0.1.0"},
+            json={"version": "0.8.0"},
         )
         # Mock claim
         httpx_mock.add_response(
             method="POST",
             url="https://test.example.com/_platform/sandbox/test-ws/sandboxes/claim",
-            json={"name": "sandbox-test", "status": "Running"},
+            status_code=202,
+            json={"name": "sandbox-test", "phase": "Running"},
         )
         # Mock exec
         httpx_mock.add_response(
@@ -719,12 +731,13 @@ class TestSandboxCommands:
         httpx_mock.add_response(
             method="GET",
             url="https://test.example.com/api/version",
-            json={"version": "0.1.0"},
+            json={"version": "0.8.0"},
         )
         httpx_mock.add_response(
             method="POST",
             url="https://test.example.com/_platform/sandbox/test-ws/sandboxes/claim",
-            json={"name": "sandbox-test", "status": "Running"},
+            status_code=202,
+            json={"name": "sandbox-test", "phase": "Running"},
         )
         httpx_mock.add_response(
             method="POST",
@@ -753,12 +766,13 @@ class TestSandboxCommands:
         httpx_mock.add_response(
             method="GET",
             url="https://test.example.com/api/version",
-            json={"version": "0.1.0"},
+            json={"version": "0.8.0"},
         )
         httpx_mock.add_response(
             method="POST",
             url="https://test.example.com/_platform/sandbox/test-ws/sandboxes/claim",
-            json={"name": "sandbox-test", "status": "Running"},
+            status_code=202,
+            json={"name": "sandbox-test", "phase": "Running"},
         )
         httpx_mock.add_response(
             method="POST",
@@ -787,12 +801,13 @@ class TestSandboxCommands:
         httpx_mock.add_response(
             method="GET",
             url="https://test.example.com/api/version",
-            json={"version": "0.1.0"},
+            json={"version": "0.8.0"},
         )
         httpx_mock.add_response(
             method="POST",
             url="https://test.example.com/_platform/sandbox/test-ws/sandboxes/claim",
-            json={"name": "sandbox-test", "status": "Running"},
+            status_code=202,
+            json={"name": "sandbox-test", "phase": "Running"},
         )
         httpx_mock.add_response(
             method="POST",
@@ -821,12 +836,13 @@ class TestSandboxCommands:
         httpx_mock.add_response(
             method="GET",
             url="https://test.example.com/api/version",
-            json={"version": "0.1.0"},
+            json={"version": "0.8.0"},
         )
         httpx_mock.add_response(
             method="POST",
             url="https://test.example.com/_platform/sandbox/test-ws/sandboxes/claim",
-            json={"name": "sandbox-test", "status": "Running"},
+            status_code=202,
+            json={"name": "sandbox-test", "phase": "Running"},
         )
         httpx_mock.add_response(
             method="POST",
@@ -858,13 +874,14 @@ class TestSandboxFiles:
         httpx_mock.add_response(
             method="GET",
             url="https://test.example.com/api/version",
-            json={"version": "0.1.0"},
+            json={"version": "0.8.0"},
         )
         # Mock claim
         httpx_mock.add_response(
             method="POST",
             url="https://test.example.com/_platform/sandbox/test-ws/sandboxes/claim",
-            json={"name": "sandbox-test", "status": "Running"},
+            status_code=202,
+            json={"name": "sandbox-test", "phase": "Running"},
         )
         # Mock file write
         httpx_mock.add_response(
@@ -901,12 +918,13 @@ class TestSandboxFiles:
         httpx_mock.add_response(
             method="GET",
             url="https://test.example.com/api/version",
-            json={"version": "0.1.0"},
+            json={"version": "0.8.0"},
         )
         httpx_mock.add_response(
             method="POST",
             url="https://test.example.com/_platform/sandbox/test-ws/sandboxes/claim",
-            json={"name": "sandbox-test", "status": "Running"},
+            status_code=202,
+            json={"name": "sandbox-test", "phase": "Running"},
         )
         httpx_mock.add_response(
             method="POST",
@@ -978,7 +996,8 @@ class TestSandboxFiles:
         httpx_mock.add_response(
             method="POST",
             url="https://test.example.com/sandbox/test-ws/sandboxes/claim",
-            json={"name": "sandbox-test", "status": "Running"},
+            status_code=202,
+            json={"name": "sandbox-test", "phase": "Running"},
         )
         httpx_mock.add_response(
             method="POST",
@@ -1015,12 +1034,13 @@ class TestSandboxFiles:
         httpx_mock.add_response(
             method="GET",
             url="https://test.example.com/api/version",
-            json={"version": "0.1.0"},
+            json={"version": "0.8.0"},
         )
         httpx_mock.add_response(
             method="POST",
             url="https://test.example.com/_platform/sandbox/test-ws/sandboxes/claim",
-            json={"name": "sandbox-test", "status": "Running"},
+            status_code=202,
+            json={"name": "sandbox-test", "phase": "Running"},
         )
         httpx_mock.add_response(
             method="POST",
@@ -1067,12 +1087,13 @@ class TestSandboxFiles:
         httpx_mock.add_response(
             method="GET",
             url="https://test.example.com/api/version",
-            json={"version": "0.1.0"},
+            json={"version": "0.8.0"},
         )
         httpx_mock.add_response(
             method="POST",
             url="https://test.example.com/_platform/sandbox/test-ws/sandboxes/claim",
-            json={"name": "sandbox-test", "status": "Running"},
+            status_code=202,
+            json={"name": "sandbox-test", "phase": "Running"},
         )
         httpx_mock.add_response(
             method="POST",
@@ -1083,7 +1104,7 @@ class TestSandboxFiles:
         httpx_mock.add_response(
             method="GET",
             url="https://test.example.com/_platform/sandbox/test-ws/sandboxes/sandbox-test",
-            json={"name": "sandbox-test", "status": "Running"},
+            json={"name": "sandbox-test", "phase": "Running"},
         )
 
         sbx = Sandbox.from_pool("python-pool")
@@ -1100,12 +1121,13 @@ class TestSandboxFiles:
         httpx_mock.add_response(
             method="GET",
             url="https://test.example.com/api/version",
-            json={"version": "0.1.0"},
+            json={"version": "0.8.0"},
         )
         httpx_mock.add_response(
             method="POST",
             url="https://test.example.com/_platform/sandbox/test-ws/sandboxes/claim",
-            json={"name": "sandbox-test", "status": "Running"},
+            status_code=202,
+            json={"name": "sandbox-test", "phase": "Running"},
         )
 
         sbx = Sandbox.from_pool("python-pool")
@@ -1125,12 +1147,13 @@ class TestSandboxFiles:
         httpx_mock.add_response(
             method="GET",
             url="https://test.example.com/api/version",
-            json={"version": "0.1.0"},
+            json={"version": "0.8.0"},
         )
         httpx_mock.add_response(
             method="POST",
             url="https://test.example.com/_platform/sandbox/test-ws/sandboxes/claim",
-            json={"name": "sandbox-test", "status": "Running"},
+            status_code=202,
+            json={"name": "sandbox-test", "phase": "Running"},
         )
 
         sbx = Sandbox.from_pool("python-pool")
@@ -1151,13 +1174,14 @@ class TestSandboxFiles:
         httpx_mock.add_response(
             method="GET",
             url="https://test.example.com/api/version",
-            json={"version": "0.1.0"},
+            json={"version": "0.8.0"},
         )
         # Mock claim
         httpx_mock.add_response(
             method="POST",
             url="https://test.example.com/_platform/sandbox/test-ws/sandboxes/claim",
-            json={"name": "sandbox-test", "status": "Running"},
+            status_code=202,
+            json={"name": "sandbox-test", "phase": "Running"},
         )
         # Mock file read - uses /files/download?path= endpoint
         httpx_mock.add_response(
@@ -1179,13 +1203,14 @@ class TestSandboxFiles:
         httpx_mock.add_response(
             method="GET",
             url="https://test.example.com/api/version",
-            json={"version": "0.1.0"},
+            json={"version": "0.8.0"},
         )
         # Mock claim
         httpx_mock.add_response(
             method="POST",
             url="https://test.example.com/_platform/sandbox/test-ws/sandboxes/claim",
-            json={"name": "sandbox-test", "status": "Running"},
+            status_code=202,
+            json={"name": "sandbox-test", "phase": "Running"},
         )
         # Mock file list
         httpx_mock.add_response(
@@ -1219,19 +1244,20 @@ class TestSandboxKill:
         httpx_mock.add_response(
             method="GET",
             url="https://test.example.com/api/version",
-            json={"version": "0.1.0"},
+            json={"version": "0.8.0"},
         )
         # Mock claim
         httpx_mock.add_response(
             method="POST",
             url="https://test.example.com/_platform/sandbox/test-ws/sandboxes/claim",
-            json={"name": "sandbox-test", "status": "Running"},
+            status_code=202,
+            json={"name": "sandbox-test", "phase": "Running"},
         )
         # Mock delete
         httpx_mock.add_response(
             method="DELETE",
             url="https://test.example.com/_platform/sandbox/test-ws/sandboxes/sandbox-test",
-            status_code=204,
+            status_code=202,
         )
 
         sbx = Sandbox.from_pool("python-pool")
@@ -1249,19 +1275,20 @@ class TestSandboxContextManager:
         httpx_mock.add_response(
             method="GET",
             url="https://test.example.com/api/version",
-            json={"version": "0.1.0"},
+            json={"version": "0.8.0"},
         )
         # Mock claim
         httpx_mock.add_response(
             method="POST",
             url="https://test.example.com/_platform/sandbox/test-ws/sandboxes/claim",
-            json={"name": "sandbox-test", "status": "Running"},
+            status_code=202,
+            json={"name": "sandbox-test", "phase": "Running"},
         )
         # Mock delete
         httpx_mock.add_response(
             method="DELETE",
             url="https://test.example.com/_platform/sandbox/test-ws/sandboxes/sandbox-test",
-            status_code=204,
+            status_code=202,
         )
 
         with Sandbox.from_pool("python-pool") as sbx:
@@ -1282,13 +1309,14 @@ class TestSandboxRepr:
         httpx_mock.add_response(
             method="GET",
             url="https://test.example.com/api/version",
-            json={"version": "0.1.0"},
+            json={"version": "0.8.0"},
         )
         # Mock claim
         httpx_mock.add_response(
             method="POST",
             url="https://test.example.com/_platform/sandbox/test-ws/sandboxes/claim",
-            json={"name": "sandbox-test", "status": "Running"},
+            status_code=202,
+            json={"name": "sandbox-test", "phase": "Running"},
         )
 
         sbx = Sandbox.from_pool("python-pool")

@@ -8,7 +8,7 @@ import time
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Generic, Literal, TypeVar
+from typing import Generic, TypeVar
 
 import httpx
 
@@ -18,7 +18,12 @@ else:
     from typing_extensions import Self
 
 from prokube.common.config import Config
-from prokube.common.exceptions import ProKubeError, SandboxError, SandboxTimeoutError
+from prokube.common.exceptions import (
+    NotFoundError,
+    ProKubeError,
+    SandboxError,
+    SandboxTimeoutError,
+)
 from prokube.sandbox.client import SandboxClient
 from prokube.sandbox.code import CodeRunner
 from prokube.sandbox.commands import CommandRunner
@@ -70,8 +75,9 @@ class Sandbox:
     They can be created directly or claimed from a warm pool for faster startup.
 
     Example:
-        >>> # Claim from warm pool (instant, <100ms)
+        >>> # Claim from warm pool (fast, but adoption is asynchronous)
         >>> sbx = Sandbox.from_pool("python-pool")
+        >>> sbx.wait_until_ready()
         >>>
         >>> # Execute code (stateful)
         >>> sbx.run_code("import pandas as pd")
@@ -86,11 +92,12 @@ class Sandbox:
         >>> sbx.files.write("/workspace/test.txt", "hello world")
         >>> content = sbx.files.read("/workspace/test.txt")
         >>>
-        >>> # Cleanup
-        >>> sbx.kill()
+        >>> # Cleanup (deletion completes asynchronously)
+        >>> sbx.kill(wait=True)
 
     Context Manager:
         >>> with Sandbox.from_pool("python-pool") as sbx:
+        ...     sbx.wait_until_ready()
         ...     result = sbx.run_code("print(42)")
         ...     print(result.stdout)
         # Sandbox is automatically killed
@@ -128,7 +135,8 @@ class Sandbox:
         self._image = image
         self._auto_idle_timeout_seconds = auto_idle_timeout_seconds
         self._killed = False
-        self._skip_next_warmup = False
+        self._delete_requested = False
+        self._last_error: str | None = None
 
         # Initialize helpers with killed-state check callback
         self._commands = CommandRunner(client, name, self._check_not_killed)
@@ -136,10 +144,15 @@ class Sandbox:
         self._code = CodeRunner(client, name, self._check_not_killed)
 
     def _check_not_killed(self) -> None:
-        """Raise error if sandbox has been killed."""
+        """Raise error if the sandbox has been killed or is being deleted."""
         if self._killed:
             raise SandboxError(
                 f"Sandbox {self._name} has been killed and cannot be used anymore"
+            )
+        if self._delete_requested:
+            raise SandboxError(
+                f"Sandbox {self._name} is being deleted; call kill(wait=True) "
+                "to wait for the deletion to complete"
             )
 
     @property
@@ -232,21 +245,79 @@ class Sandbox:
         """Get the configured auto-idle timeout override in seconds, if known."""
         return self._auto_idle_timeout_seconds
 
-    def pause(self) -> None:
+    def pause(self, wait: bool = True, timeout: int = 300) -> None:
         """Pause the sandbox. Frees compute resources.
 
         Preserves: /workspace (working directory) and /home/agent (HOME, pip --user, dotfiles).
         Lost: running processes, apt-installed system packages, /tmp.
 
+        The backend accepts the pause asynchronously (phase ``Pausing``). By
+        default this method blocks until the sandbox reports ``Paused``.
+
+        Args:
+            wait: Block until the sandbox has actually reached Paused
+                (default: True). Pass False to return as soon as the backend
+                accepted the request, leaving the phase at ``Pausing``.
+            timeout: Maximum seconds to wait when ``wait`` is True.
+
         Raises:
-            SandboxError: If sandbox is not in Running state.
+            SandboxError: If sandbox is not in Running state, or if the pause
+                fails (phase ``Failed``). Re-issuing ``pause()`` retries.
+            SandboxTimeoutError: If the sandbox does not reach Paused within
+                ``timeout`` seconds.
         """
         self._check_not_killed()
-        self._client.pause(self._name)
-        self._status = SandboxStatus.PAUSED
+        info = self._client.pause(self._name)
+        self._status = info.status
+        self._last_error = info.last_error
         # Pausing deletes the underlying pod, so any existing Jupyter session
         # is no longer valid. Reset so next run_code() starts a fresh kernel.
         self._code.reset_session()
+        if wait:
+            self._wait_for_pause(timeout)
+
+    def _wait_for_pause(self, timeout: int) -> None:
+        """Poll until the sandbox settles on Paused, Failed, or the deadline."""
+        poll_interval = 2
+        deadline = time.monotonic() + timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            try:
+                self.refresh(request_timeout=remaining)
+            except httpx.TimeoutException:
+                pass
+            except NotFoundError:
+                # A concurrently admitted delete finished while we waited.
+                raise SandboxError(
+                    f"Sandbox {self._name} was deleted while waiting for it to pause"
+                ) from None
+            else:
+                if self._status == SandboxStatus.PAUSED:
+                    return
+                if self._status == SandboxStatus.FAILED:
+                    raise SandboxError(
+                        f"Sandbox {self._name} failed to pause: "
+                        f"{self._last_error or 'no error reported by the backend'} "
+                        f"(re-issue pause() to retry)"
+                    )
+                if self._status == SandboxStatus.DELETING:
+                    # Delete outranks pause on the backend: the pause worker's
+                    # settle will miss and the sandbox is going away. Waiting
+                    # any longer can only end in 404.
+                    raise SandboxError(
+                        f"Sandbox {self._name} is being deleted; it will "
+                        "never reach Paused"
+                    )
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(poll_interval, remaining))
+        raise SandboxTimeoutError(
+            f"Sandbox {self._name} did not pause within {timeout}s "
+            f"(current phase: {self._status.value!r})"
+        )
 
     def resume(self) -> None:
         """Resume a paused sandbox.
@@ -255,28 +326,35 @@ class Sandbox:
         If /home/agent/.sandbox-restore.sh exists, it runs automatically on
         startup to reinstall system packages.
 
+        The backend accepts the resume asynchronously and reports phase
+        ``Resuming``; this call does not block. Use
+        :meth:`wait_until_ready` to wait for the new pod to become Running.
+
         Raises:
             SandboxError: If sandbox is not in Paused state.
         """
         self._check_not_killed()
         info = self._client.resume(self._name)
         self._status = info.status
+        self._last_error = info.last_error
         if info.auto_idle_timeout_seconds is not None:
             self._auto_idle_timeout_seconds = info.auto_idle_timeout_seconds
-        self._skip_next_warmup = info.resumed_from_pool
         # New pod means previous Jupyter session is invalid.
         self._code.reset_session()
 
     def wait_until_ready(self, timeout: int = 120) -> None:
         """Block until sandbox phase is Running. Useful after resume().
 
+        Transitional phases (Pending, Pausing, Resuming) simply keep polling.
+
         Args:
             timeout: Maximum seconds to wait (default: 120).
 
         Raises:
             SandboxTimeoutError: If sandbox does not become Running within timeout.
-            SandboxError: If the sandbox enters a terminal state (Failed/Succeeded)
-                while waiting for it to become ready.
+            SandboxError: If the sandbox enters a state from which it can no
+                longer become ready (Failed, Succeeded, or Deleting). For a
+                failed sandbox the backend's ``lastError`` is included.
         """
         self._check_not_killed()
         poll_interval = 2
@@ -299,15 +377,18 @@ class Sandbox:
                 time.sleep(min(poll_interval, remaining))
                 continue
             if self._status == SandboxStatus.RUNNING:
-                if self._skip_next_warmup:
-                    self._skip_next_warmup = False
-                    return
                 self._warmup_kernel(deadline)
                 return
-            if self._status in (SandboxStatus.FAILED, SandboxStatus.SUCCEEDED):
+            if self._status in (
+                SandboxStatus.FAILED,
+                SandboxStatus.SUCCEEDED,
+                SandboxStatus.DELETING,
+            ):
+                detail = f": {self._last_error}" if self._last_error else ""
                 raise SandboxError(
                     f"Sandbox {self._name} entered terminal state "
-                    f"{self._status.value!r} while waiting for it to become ready"
+                    f"{self._status.value!r} while waiting for it to become "
+                    f"ready{detail}"
                 )
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -392,22 +473,91 @@ class Sandbox:
             sleep_for = min(0.5, max(0.0, deadline - time.monotonic()))
             time.sleep(sleep_for)
 
-    def kill(self) -> None:
-        """Destroy the sandbox immediately.
+    def kill(self, wait: bool = False, timeout: int = 300) -> None:
+        """Destroy the sandbox.
 
-        After calling this method, the sandbox cannot be used anymore.
-        Any subsequent calls to run_code(), commands, or files will raise.
+        The backend accepts the delete with HTTP 202 and tears the sandbox
+        down asynchronously, including purging its persistence records. The
+        sandbox name stays reserved until that purge completes, so pass
+        ``wait=True`` when you intend to reuse the name (or need the quota
+        back) and must know the reclamation finished.
 
-        If the delete request fails, an exception is raised and the sandbox
-        remains usable so callers can retry or handle the failure.
+        After a successful ``kill()`` (or once the delete has been admitted),
+        the sandbox cannot be used anymore: run_code(), commands, and files
+        raise. If waiting fails or times out, the object stays in a
+        deletion-requested state — normal operations are blocked, but
+        ``kill(wait=True)`` may be re-issued to keep waiting (the backend's
+        DELETE is idempotent while teardown is in flight).
+
+        If the initial delete request itself fails, an exception is raised
+        and the sandbox remains usable so callers can retry.
+
+        Args:
+            wait: Poll until the sandbox is really gone (default: False).
+            timeout: Maximum seconds to wait when ``wait`` is True.
+
+        Raises:
+            SandboxError: If ``wait`` is True and the backend lands the
+                delete in a terminal failure (phase ``Failed`` with
+                ``lastError``); re-issue ``kill()`` to retry the delete.
+            SandboxTimeoutError: If ``wait`` is True and the sandbox is still
+                present after ``timeout`` seconds.
         """
         if self._killed:
             return  # Already killed, nothing to do
-        self._client.delete(self._name)
+        try:
+            self._client.delete(self._name)
+        except NotFoundError:
+            # A re-issued kill can find the sandbox already gone: that is
+            # the outcome we wanted, not an error.
+            self._status = SandboxStatus.SUCCEEDED
+            self._killed = True
+            self._client.close()
+            return
+        # The delete is admitted: from here the sandbox is going away and
+        # must not accept work, even if the wait below fails or times out.
+        self._delete_requested = True
+        if wait:
+            self._wait_until_gone(timeout)
         # Only mark as killed and close client after successful delete
         self._status = SandboxStatus.SUCCEEDED
         self._killed = True
         self._client.close()
+
+    def _wait_until_gone(self, timeout: int) -> None:
+        """Poll the sandbox until the backend reports it as absent (404)."""
+        poll_interval = 2
+        deadline = time.monotonic() + timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            try:
+                info = self._client.get(self._name, request_timeout=remaining)
+            except NotFoundError:
+                return
+            except httpx.TimeoutException:
+                pass
+            else:
+                self._status = info.status
+                self._last_error = info.last_error
+                if self._status == SandboxStatus.FAILED:
+                    # delete_failed on the backend: retries are exhausted and
+                    # the row (and name) stay reserved until a delete is
+                    # re-issued and succeeds.
+                    raise SandboxError(
+                        f"Sandbox {self._name} failed to delete: "
+                        f"{self._last_error or 'no error reported by the backend'} "
+                        f"(re-issue kill() to retry)"
+                    )
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(poll_interval, remaining))
+        raise SandboxTimeoutError(
+            f"Sandbox {self._name} was not deleted within {timeout}s "
+            f"(current phase: {self._status.value!r})"
+        )
 
     def refresh(self, request_timeout: float | None = None) -> None:
         """Refresh sandbox information from the API.
@@ -419,6 +569,7 @@ class Sandbox:
         self._check_not_killed()
         info = self._client.get(self._name, request_timeout=request_timeout)
         self._status = info.status
+        self._last_error = info.last_error
         if info.auto_idle_timeout_seconds is not None:
             self._auto_idle_timeout_seconds = info.auto_idle_timeout_seconds
 
@@ -436,8 +587,9 @@ class Sandbox:
     ) -> Self:
         """Claim a sandbox from a warm pool.
 
-        This is the fastest way to get a sandbox - typically <100ms.
-        The sandbox is pre-warmed and ready to use immediately.
+        This is the fastest way to get a sandbox: the backend adopts a
+        pre-warmed pod, but does so asynchronously, so the claim starts out
+        in phase Pending. Call :meth:`wait_until_ready` before using it.
 
         Args:
             pool: Name of the warm pool.
@@ -449,10 +601,11 @@ class Sandbox:
             timeout: Request timeout (default: from PROKUBE_TIMEOUT env var).
 
         Returns:
-            A ready-to-use Sandbox instance.
+            A Sandbox instance, usually still starting up.
 
         Example:
             >>> sbx = Sandbox.from_pool("python-pool")
+            >>> sbx.wait_until_ready()
             >>> sbx.run_code("print('Hello!')")
         """
         config = cls._build_config(
@@ -578,7 +731,6 @@ class Sandbox:
     def list_page(
         cls,
         *,
-        lifecycle: Literal["active", "inactive"] = "active",
         limit: int = 25,
         continue_token: str | None = None,
         api_url: str | None = None,
@@ -589,8 +741,10 @@ class Sandbox:
     ) -> SandboxPage[Self]:
         """List one bounded page of sandboxes.
 
-        Pass ``continue_token`` from the previous page together with the same
-        ``lifecycle`` and ``limit`` values to fetch the next page.
+        One name-ordered listing covers every sandbox state. Pass
+        ``continue_token`` from the previous page together with the same
+        ``limit`` to fetch the next page; the token is an opaque keyset
+        cursor.
         """
         config = cls._build_config(
             api_url=api_url,
@@ -602,7 +756,6 @@ class Sandbox:
         client = SandboxClient(config)
         try:
             page = client.list_page(
-                lifecycle=lifecycle,
                 limit=limit,
                 continue_token=continue_token,
             )
@@ -728,10 +881,7 @@ class Sandbox:
             ...     env_vars=[{"name": "FOO", "value": "bar"}],
             ...     secret_refs=["openai-key"],
             ... )
-            >>> # Wait for sandbox to be ready
-            >>> while sbx.status == "Pending":
-            ...     time.sleep(1)
-            ...     sbx.refresh()
+            >>> sbx.wait_until_ready()
             >>> sbx.run_code("print('Ready!')")
         """
         config = cls._build_config(

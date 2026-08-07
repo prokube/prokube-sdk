@@ -57,7 +57,7 @@ class TestListSandboxes:
         httpx_mock.add_response(
             method="GET",
             url="https://test.example.com/api/version",
-            json={"version": "0.1.0"},
+            json={"version": "0.8.0"},
         )
         httpx_mock.add_response(
             method="GET",
@@ -76,7 +76,7 @@ class TestListSandboxes:
         httpx_mock.add_response(
             method="GET",
             url="https://test.example.com/api/version",
-            json={"version": "0.1.0"},
+            json={"version": "0.8.0"},
         )
         httpx_mock.add_response(
             method="GET",
@@ -124,7 +124,7 @@ class TestListSandboxes:
         httpx_mock.add_response(
             method="GET",
             url="https://test.example.com/api/version",
-            json={"version": "0.1.0"},
+            json={"version": "0.8.0"},
         )
         httpx_mock.add_response(
             method="GET",
@@ -144,7 +144,6 @@ class TestListSandboxes:
 
         client = SandboxClient(config)
         page = client.list_page(
-            lifecycle="inactive",
             limit=10,
             continue_token="opaque-token",
         )
@@ -153,7 +152,6 @@ class TestListSandboxes:
         assert request.url.path == "/_platform/sandbox/test-ws/sandboxes"
         assert dict(request.url.params) == {
             "limit": "10",
-            "lifecycle": "inactive",
             "continueToken": "opaque-token",
         }
         assert [sandbox.name for sandbox in page.sandboxes] == ["paused-1"]
@@ -168,7 +166,7 @@ class TestListSandboxes:
         httpx_mock.add_response(
             method="GET",
             url="https://test.example.com/api/version",
-            json={"version": "0.1.0"},
+            json={"version": "0.8.0"},
         )
 
         client = SandboxClient(config)
@@ -184,7 +182,7 @@ class TestListSandboxes:
         httpx_mock.add_response(
             method="GET",
             url="https://test.example.com/api/version",
-            json={"version": "0.1.0"},
+            json={"version": "0.8.0"},
         )
         httpx_mock.add_response(
             method="GET",
@@ -195,7 +193,7 @@ class TestListSandboxes:
         client.list_page(continue_token="")
 
         request = httpx_mock.get_requests()[-1]
-        assert dict(request.url.params) == {"limit": "25", "lifecycle": "active"}
+        assert dict(request.url.params) == {"limit": "25"}
         client.close()
 
     def test_claim_sends_auto_idle_timeout(self, config, httpx_mock: HTTPXMock):
@@ -205,12 +203,13 @@ class TestListSandboxes:
         httpx_mock.add_response(
             method="GET",
             url="https://test.example.com/api/version",
-            json={"version": "0.1.0"},
+            json={"version": "0.8.0"},
         )
         httpx_mock.add_response(
             method="POST",
             url="https://test.example.com/_platform/sandbox/test-ws/sandboxes/claim",
-            json={"name": "sandbox-test", "status": "Running"},
+            status_code=202,
+            json={"name": "sandbox-test", "phase": "Pending"},
         )
 
         client = SandboxClient(config)
@@ -230,7 +229,7 @@ class TestListSandboxes:
         httpx_mock.add_response(
             method="GET",
             url="https://test.example.com/api/version",
-            json={"version": "0.1.0"},
+            json={"version": "0.8.0"},
         )
         httpx_mock.add_response(
             method="POST",
@@ -254,7 +253,7 @@ class TestListSandboxes:
         httpx_mock.add_response(
             method="GET",
             url="https://test.example.com/api/version",
-            json={"version": "0.1.0"},
+            json={"version": "0.8.0"},
         )
         httpx_mock.add_response(
             method="GET",
@@ -288,7 +287,7 @@ class TestReadFile:
         httpx_mock.add_response(
             method="GET",
             url="https://test.example.com/api/version",
-            json={"version": "0.1.0"},
+            json={"version": "0.8.0"},
         )
         # Mock file download - path is passed as query parameter
         httpx_mock.add_response(
@@ -309,7 +308,7 @@ class TestReadFile:
         httpx_mock.add_response(
             method="GET",
             url="https://test.example.com/api/version",
-            json={"version": "0.1.0"},
+            json={"version": "0.8.0"},
         )
         # Mock file download - special chars in query param
         httpx_mock.add_response(
@@ -334,13 +333,14 @@ class TestUnknownStatusFromBackend:
         httpx_mock.add_response(
             method="GET",
             url="https://test.example.com/api/version",
-            json={"version": "0.1.0"},
+            json={"version": "0.8.0"},
         )
         # Mock claim with unknown status
         httpx_mock.add_response(
             method="POST",
             url="https://test.example.com/_platform/sandbox/test-ws/sandboxes/claim",
-            json={"name": "sandbox-test", "status": "SomeNewBackendStatus"},
+            status_code=202,
+            json={"name": "sandbox-test", "phase": "SomeNewBackendStatus"},
         )
 
         client = SandboxClient(config)
@@ -349,4 +349,117 @@ class TestUnknownStatusFromBackend:
         # Should fall back to UNKNOWN instead of crashing
         assert info.status == SandboxStatus.UNKNOWN
         assert info.name == "sandbox-test"
+        client.close()
+
+
+class TestClaimResponseShape:
+    """The claim endpoint returns a full Sandbox body (202), not a claim stub."""
+
+    def test_claim_parses_full_sandbox_body(self, config, httpx_mock: HTTPXMock):
+        httpx_mock.add_response(
+            method="GET",
+            url="https://test.example.com/api/version",
+            json={"version": "0.8.0"},
+        )
+        httpx_mock.add_response(
+            method="POST",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandboxes/claim",
+            status_code=202,
+            json={
+                "name": "claim-abc123",
+                "namespace": "test-ws",
+                "image": "python:3.12",
+                "phase": "Pending",
+                "podName": "pool-pod-7",
+                "createdAt": "2026-01-01T00:00:00Z",
+                "poolName": "python-pool",
+                "claimName": "claim-abc123",
+                "autoIdleTimeoutSeconds": 600,
+                "lastError": None,
+            },
+        )
+
+        client = SandboxClient(config)
+        info = client.claim_from_pool("python-pool")
+
+        assert info.name == "claim-abc123"
+        assert info.status == SandboxStatus.PENDING
+        assert info.image == "python:3.12"
+        assert info.pool == "python-pool"
+        assert info.created_at == "2026-01-01T00:00:00Z"
+        assert info.auto_idle_timeout_seconds == 600
+        assert info.last_error is None
+        client.close()
+
+    def test_claim_defaults_missing_phase_to_pending(
+        self, config, httpx_mock: HTTPXMock
+    ):
+        httpx_mock.add_response(
+            method="GET",
+            url="https://test.example.com/api/version",
+            json={"version": "0.8.0"},
+        )
+        httpx_mock.add_response(
+            method="POST",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandboxes/claim",
+            status_code=202,
+            json={"name": "claim-abc123", "namespace": "test-ws"},
+        )
+
+        client = SandboxClient(config)
+        info = client.claim_from_pool("python-pool")
+
+        assert info.status == SandboxStatus.PENDING
+        assert info.pool == "python-pool"
+        client.close()
+
+
+class TestLastError:
+    """``lastError`` is surfaced wherever the backend reports a Sandbox."""
+
+    def test_get_surfaces_last_error(self, config, httpx_mock: HTTPXMock):
+        httpx_mock.add_response(
+            method="GET",
+            url="https://test.example.com/api/version",
+            json={"version": "0.8.0"},
+        )
+        httpx_mock.add_response(
+            method="GET",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandboxes/sbx-1",
+            json={
+                "name": "sbx-1",
+                "phase": "Failed",
+                "lastError": "resume failed: no capacity",
+            },
+        )
+
+        client = SandboxClient(config)
+        info = client.get("sbx-1")
+
+        assert info.status == SandboxStatus.FAILED
+        assert info.last_error == "resume failed: no capacity"
+        client.close()
+
+    def test_list_surfaces_last_error(self, config, httpx_mock: HTTPXMock):
+        httpx_mock.add_response(
+            method="GET",
+            url="https://test.example.com/api/version",
+            json={"version": "0.8.0"},
+        )
+        httpx_mock.add_response(
+            method="GET",
+            url="https://test.example.com/_platform/sandbox/test-ws/sandboxes",
+            json={
+                "sandboxes": [
+                    {"name": "sbx-1", "phase": "Failed", "lastError": "pause failed"},
+                    {"name": "sbx-2", "phase": "Running"},
+                ]
+            },
+        )
+
+        client = SandboxClient(config)
+        result = client.list()
+
+        assert result[0].last_error == "pause failed"
+        assert result[1].last_error is None
         client.close()

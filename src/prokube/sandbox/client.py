@@ -5,7 +5,7 @@ from __future__ import annotations
 import base64
 import re
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 
 from prokube.common.compat import check_backend_compatibility
 from prokube.common.exceptions import NotFoundError, ProKubeError, SandboxError
@@ -50,23 +50,26 @@ def _parse_status(status_str: str | None, default: SandboxStatus) -> SandboxStat
         return SandboxStatus.UNKNOWN
 
 
-def _parse_sandbox_info(raw: dict, workspace: str) -> SandboxInfo:
-    """Build a SandboxInfo from one raw sandbox list entry.
+def _parse_sandbox_info(
+    raw: dict,
+    workspace: str,
+    default_status: SandboxStatus = SandboxStatus.UNKNOWN,
+) -> SandboxInfo:
+    """Build a SandboxInfo from one raw backend Sandbox body.
 
     The backend has used both camelCase and snake_case spellings for these
     fields, and reports the phase as either ``status`` or ``phase``; accept
-    every spelling so both listing endpoints stay in sync.
+    every spelling so all endpoints stay in sync.
     """
     return SandboxInfo(
         name=raw["name"],
         workspace=workspace,
-        status=_parse_status(
-            raw.get("status") or raw.get("phase"), SandboxStatus.UNKNOWN
-        ),
+        status=_parse_status(raw.get("status") or raw.get("phase"), default_status),
         image=raw.get("image") or None,
         pool=raw.get("poolName") or raw.get("pool"),
         created_at=raw.get("createdAt") or raw.get("created_at"),
         auto_idle_timeout_seconds=parse_auto_idle_timeout(raw),
+        last_error=raw.get("lastError") or raw.get("last_error"),
     )
 
 
@@ -218,6 +221,10 @@ class SandboxClient:
     ) -> SandboxInfo:
         """Claim a sandbox from a warm pool.
 
+        The backend accepts the claim with HTTP 202 and adopts a warm pod
+        asynchronously, so the returned sandbox usually starts out Pending.
+        Poll :meth:`get` (or ``Sandbox.wait_until_ready``) until it is Running.
+
         Args:
             pool: Name of the warm pool.
             auto_idle_timeout_seconds: Per-claim auto-idle override in seconds.
@@ -233,20 +240,14 @@ class SandboxClient:
             f"{self._sandboxes_path()}/claim",
             json=request.model_dump(by_alias=True, exclude_none=True),
         )
-        # API returns sandboxName for claim endpoint
-        sandbox_name = response.get("sandboxName") or response["name"]
-        response_auto_idle_timeout = parse_auto_idle_timeout(response)
-        return SandboxInfo(
-            name=sandbox_name,
-            workspace=self.config.workspace,
-            status=_parse_status(response.get("status"), SandboxStatus.RUNNING),
-            pool=pool,
-            auto_idle_timeout_seconds=(
-                response_auto_idle_timeout
-                if response_auto_idle_timeout is not None
-                else auto_idle_timeout_seconds
-            ),
+        info = _parse_sandbox_info(
+            response, self.config.workspace, SandboxStatus.PENDING
         )
+        if info.pool is None:
+            info.pool = pool
+        if info.auto_idle_timeout_seconds is None:
+            info.auto_idle_timeout_seconds = auto_idle_timeout_seconds
+        return info
 
     def create(
         self,
@@ -293,24 +294,25 @@ class SandboxClient:
             env_vars=env_vars,
             secret_refs=secret_refs,
         )
-        response = self._http.post(
-            self._sandboxes_path(),
-            json=request.model_dump(by_alias=True, exclude_none=True),
+        # The backend has two create wire shapes: the internal route's
+        # CreateSandboxRequest nests cpu/memory under `resources` (and
+        # silently ignores top-level keys), while the external API-key
+        # route's ExternalCreateRequest takes them flat (and ignores
+        # `resources`). Send both; each route reads its own shape.
+        payload = request.model_dump(by_alias=True, exclude_none=True)
+        resources = {
+            key: value for key, value in {"cpu": cpu, "memory": memory}.items() if value
+        }
+        if resources:
+            payload["resources"] = resources
+        response = self._http.post(self._sandboxes_path(), json=payload)
+        info = _parse_sandbox_info(
+            response, self.config.workspace, SandboxStatus.PENDING
         )
-        # API returns 'phase' instead of 'status' for sandbox phase
-        status_str = response.get("status") or response.get("phase")
-        response_auto_idle_timeout = parse_auto_idle_timeout(response)
-        return SandboxInfo(
-            name=response["name"],
-            workspace=self.config.workspace,
-            status=_parse_status(status_str, SandboxStatus.PENDING),
-            image=image,
-            auto_idle_timeout_seconds=(
-                response_auto_idle_timeout
-                if response_auto_idle_timeout is not None
-                else auto_idle_timeout_seconds
-            ),
-        )
+        info.image = info.image or image
+        if info.auto_idle_timeout_seconds is None:
+            info.auto_idle_timeout_seconds = auto_idle_timeout_seconds
+        return info
 
     def list(self) -> list[SandboxInfo]:
         """List all sandboxes in the configured workspace.
@@ -327,24 +329,21 @@ class SandboxClient:
     def list_page(
         self,
         *,
-        lifecycle: Literal["active", "inactive"] = "active",
         limit: int = 25,
         continue_token: str | None = None,
     ) -> SandboxInfoPage:
         """List one bounded page of sandboxes.
 
-        The continuation token is opaque and must be reused with the same
-        lifecycle and limit values that produced it. An empty token means
-        "no token": the backend rejects ``continueToken=`` with HTTP 422, so
-        it is treated the same as ``None`` and requests the first page.
+        There is exactly one name-ordered listing across every sandbox state.
+        The continuation token is an opaque keyset cursor and must be reused
+        with the same limit that produced it. An empty token means "no token":
+        the backend rejects ``continueToken=`` with HTTP 422, so it is treated
+        the same as ``None`` and requests the first page.
         """
         if not 1 <= limit <= 100:
             raise ValueError("limit must be between 1 and 100")
 
-        params: dict[str, str | int] = {
-            "limit": limit,
-            "lifecycle": lifecycle,
-        }
+        params: dict[str, str | int] = {"limit": limit}
         if continue_token:
             params["continueToken"] = continue_token
         response = self._http.get(self._sandboxes_path(), params=params)
@@ -359,6 +358,8 @@ class SandboxClient:
 
     def get(self, name: str, request_timeout: float | None = None) -> SandboxInfo:
         """Get information about a sandbox.
+
+        This is the poll target for every asynchronous lifecycle operation.
 
         Args:
             name: Sandbox name.
@@ -376,47 +377,47 @@ class SandboxClient:
         if request_timeout is not None:
             kwargs["timeout"] = request_timeout
         response = self._http.get(self._sandbox_path(name), **kwargs)
-        return SandboxInfo(
-            name=response["name"],
-            workspace=self.config.workspace,
-            status=_parse_status(
-                response.get("status") or response.get("phase"),
-                SandboxStatus.UNKNOWN,
-            ),
-            image=response.get("image"),
-            pool=response.get("poolName") or response.get("pool"),
-            created_at=response.get("createdAt") or response.get("created_at"),
-            auto_idle_timeout_seconds=parse_auto_idle_timeout(response),
-        )
+        return _parse_sandbox_info(response, self.config.workspace)
 
-    def pause(self, name: str) -> None:
+    def pause(self, name: str) -> SandboxInfo:
         """Pause a running sandbox.
 
         Frees compute resources while preserving /workspace and /home/agent.
-
-        Args:
-            name: Sandbox name.
-
-        Raises:
-            SandboxError: If sandbox is not in Running state (HTTP 409).
-        """
-        try:
-            self._http.post(self._sandbox_sub_path(name, "pause"))
-        except ProKubeError as e:
-            if e.status_code == 409:
-                raise SandboxError(str(e), status_code=409) from e
-            raise
-
-    def resume(self, name: str) -> SandboxInfo:
-        """Resume a paused sandbox.
-
-        A new pod starts with the same PVC mounts at /workspace and /home/agent.
+        The backend accepts the request with HTTP 202 and reports phase
+        ``Pausing`` until its worker settles the sandbox on ``Paused``; poll
+        :meth:`get` to observe the final phase.
 
         Args:
             name: Sandbox name.
 
         Returns:
-            Updated sandbox information after the resume request.
+            Sandbox information as of the accepted pause request.
+
+        Raises:
+            SandboxError: If sandbox is not in Running state (HTTP 409).
+        """
+        try:
+            response = self._http.post(self._sandbox_sub_path(name, "pause"))
+        except ProKubeError as e:
+            if e.status_code == 409:
+                raise SandboxError(str(e), status_code=409) from e
+            raise
+        return _parse_sandbox_info(
+            response, self.config.workspace, SandboxStatus.PAUSING
+        )
+
+    def resume(self, name: str) -> SandboxInfo:
+        """Resume a paused sandbox.
+
+        A new pod starts with the same PVC mounts at /workspace and /home/agent.
+        The backend accepts the request with HTTP 202 and reports phase
+        ``Resuming`` until the new pod is up; poll :meth:`get` until Running.
+
+        Args:
+            name: Sandbox name.
+
+        Returns:
+            Sandbox information as of the accepted resume request.
 
         Raises:
             SandboxError: If sandbox is not in Paused state (HTTP 409).
@@ -427,28 +428,17 @@ class SandboxClient:
             if e.status_code == 409:
                 raise SandboxError(str(e), status_code=409) from e
             raise
-
-        status_str = response.get("phase") or response.get("status")
-        if isinstance(status_str, str) and status_str.lower() == "ok":
-            status_str = None
-
-        resumed_from_pool = response.get("resumedFromPool")
-        if resumed_from_pool is None:
-            resumed_from_pool = response.get("resumed_from_pool") or False
-
-        return SandboxInfo(
-            name=response.get("name", name),
-            workspace=self.config.workspace,
-            status=_parse_status(status_str, SandboxStatus.PENDING),
-            image=response.get("image"),
-            pool=response.get("poolName") or response.get("pool"),
-            created_at=response.get("createdAt") or response.get("created_at"),
-            auto_idle_timeout_seconds=parse_auto_idle_timeout(response),
-            resumed_from_pool=resumed_from_pool,
+        return _parse_sandbox_info(
+            response, self.config.workspace, SandboxStatus.RESUMING
         )
 
     def delete(self, name: str) -> None:
         """Delete a sandbox.
+
+        The backend accepts the request with HTTP 202 and an empty body, then
+        tears the sandbox down (including its persistence records)
+        asynchronously. Poll :meth:`get` until it raises
+        :class:`NotFoundError` to know the name has been released.
 
         Args:
             name: Sandbox name.

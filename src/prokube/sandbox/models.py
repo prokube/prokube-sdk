@@ -22,7 +22,9 @@ class SandboxStatus(str, Enum):
     PENDING = "Pending"
     RUNNING = "Running"
     PAUSED = "Paused"
-    BOUND = "Bound"  # Claim is bound to a sandbox (ready to use)
+    PAUSING = "Pausing"
+    RESUMING = "Resuming"
+    DELETING = "Deleting"
     SUCCEEDED = "Succeeded"
     FAILED = "Failed"
     UNKNOWN = "Unknown"
@@ -43,9 +45,9 @@ class SandboxInfo(BaseModel):
         default=None,
         description="Auto-idle timeout override in seconds, when configured",
     )
-    resumed_from_pool: bool = Field(
-        default=False,
-        description="True when a resume response came from a warm-pool swap",
+    last_error: str | None = Field(
+        default=None,
+        description="Why the last lifecycle step failed, when the phase is Failed",
     )
 
 

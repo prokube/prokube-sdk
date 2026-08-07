@@ -22,11 +22,13 @@ uv sync --dev
 ```python
 from prokube.sandbox import Sandbox
 
-# Claim a sandbox from a warm pool (instant, <100ms)
+# Claim a sandbox from a warm pool (fast, but adoption is asynchronous)
 sbx = Sandbox.from_pool("python-pool")
+sbx.wait_until_ready()
 
 # Or create directly (cold start, ~10-30s)
 sbx = Sandbox.create(image="pk-sandbox:python-datascience")
+sbx.wait_until_ready()
 
 # Execute code (stateful - variables persist between calls)
 sbx.run_code("import pandas as pd")
@@ -48,8 +50,14 @@ assert batch_result.success
 content = sbx.files.read("/workspace/output.txt")
 files = sbx.files.list("/workspace")
 
-# Cleanup
-sbx.kill()
+# Pause / resume: both are asynchronous on the backend.
+sbx.pause()               # blocks until the sandbox reports Paused
+sbx.resume()              # returns immediately, phase is Resuming
+sbx.wait_until_ready()    # block until the new pod is Running
+
+# Cleanup. Deletion (including the persistence purge that releases the name)
+# is asynchronous; pass wait=True when you need guaranteed reclamation.
+sbx.kill(wait=True)
 ```
 
 ### Context Manager
@@ -58,6 +66,7 @@ sbx.kill()
 from prokube.sandbox import Sandbox
 
 with Sandbox.from_pool("python-pool") as sbx:
+    sbx.wait_until_ready()
     result = sbx.run_code("print(42)")
     print(result.stdout)
 # Sandbox is automatically cleaned up
@@ -93,6 +102,7 @@ export PROKUBE_WORKSPACE=henrik
 from prokube.sandbox import Sandbox
 
 with Sandbox.from_pool("python-pool") as sbx:
+    sbx.wait_until_ready()
     result = sbx.run_code("print('Hello from inside the workspace!')")
     print(result.stdout)
 ```
@@ -128,6 +138,7 @@ from prokube.sandbox import Sandbox
 
 # API key is picked up from PROKUBE_API_KEY env var
 with Sandbox.from_pool("python-pool") as sbx:
+    sbx.wait_until_ready()
     result = sbx.run_code("print('Hello from outside the cluster!')")
     print(result.stdout)
 ```
@@ -143,6 +154,7 @@ with Sandbox.from_pool(
     workspace="my-workspace",
     api_key="your-api-key",
 ) as sbx:
+    sbx.wait_until_ready()
     result = sbx.run_code("print('Hello from outside the cluster!')")
     print(result.stdout)
 ```
@@ -160,11 +172,12 @@ The main class for interacting with sandboxes.
 class Sandbox:
     name: str           # Sandbox name
     workspace: str      # Workspace (Kubernetes namespace)
-    status: str         # Pending, Running, Bound, Succeeded, Failed, Unknown
+    status: str         # Pending, Running, Paused, Pausing, Resuming,
+                        # Deleting, Succeeded, Failed, Unknown
     
     @classmethod
     def from_pool(cls, pool: str, **config) -> Sandbox:
-        """Claim sandbox from WarmPool (instant)."""
+        """Claim sandbox from WarmPool (fast; poll with wait_until_ready)."""
     
     @classmethod
     def create(cls, image: str, **config) -> Sandbox:
@@ -174,7 +187,6 @@ class Sandbox:
     def list_page(
         cls,
         *,
-        lifecycle: Literal["active", "inactive"] = "active",
         limit: int = 25,
         continue_token: str | None = None,
         api_url: str | None = None,
@@ -183,13 +195,22 @@ class Sandbox:
         api_key: str | None = None,
         timeout: int | None = None,
     ) -> SandboxPage:
-        """List one bounded page of sandboxes."""
+        """List one bounded page of sandboxes, across every phase."""
     
     def run_code(self, code: str, language: str = "python", timeout: int = 300) -> CodeResult:
         """Execute code with stateful Jupyter kernel."""
     
-    def kill(self) -> None:
-        """Destroy sandbox immediately."""
+    def pause(self, wait: bool = True, timeout: int = 300) -> None:
+        """Pause the sandbox; blocks until it reports Paused by default."""
+
+    def resume(self) -> None:
+        """Request a resume; returns immediately with phase Resuming."""
+
+    def wait_until_ready(self, timeout: int = 120) -> None:
+        """Block until the sandbox phase is Running."""
+
+    def kill(self, wait: bool = False, timeout: int = 300) -> None:
+        """Destroy the sandbox; deletion completes asynchronously."""
     
     @property
     def commands(self) -> CommandRunner:
@@ -200,28 +221,23 @@ class Sandbox:
         """Access file operations."""
 ```
 
-Paginate large sandbox collections without loading the full workspace history:
-
-- `active` (default): user sandboxes in `Running` or `Pending` phase.
-- `inactive`: user sandboxes in every other phase — `Paused`, `Succeeded`,
-  `Failed`, or `Unknown`.
-
-Idle warm-pool capacity is internal infrastructure and is excluded from both
-lifecycles.
+`list_page` returns one name-ordered listing across every sandbox phase. The
+continuation token is an opaque keyset cursor: pass it back together with the
+same `limit` to fetch the next page. Idle warm-pool capacity is internal
+infrastructure and never appears in the listing.
 
 Each sandbox on a page owns its own HTTP client. Use the page as a context
 manager (or call `page.close()`) to release them without destroying the remote
 sandboxes:
 
 ```python
-with Sandbox.list_page(lifecycle="inactive", limit=10) as page:
+with Sandbox.list_page(limit=10) as page:
     for sandbox in page.sandboxes:
         print(sandbox.name)
     next_token = page.continue_token if page.has_more else None
 
 if next_token:
     with Sandbox.list_page(
-        lifecycle="inactive",
         limit=10,
         continue_token=next_token,
     ) as page:
