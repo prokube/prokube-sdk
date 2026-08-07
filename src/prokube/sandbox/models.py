@@ -156,7 +156,7 @@ class EnvVar(BaseModel):
 
 #: What callers may pass for an environment variable: either an ``EnvVar`` or
 #: the plain ``{"name": ..., "value": ...}`` mapping pydantic coerces into one.
-EnvVarInput: TypeAlias = "EnvVar | Mapping[str, str]"
+EnvVarInput: TypeAlias = EnvVar | Mapping[str, str]
 
 
 def to_env_vars(values: Sequence[EnvVarInput] | None) -> list[EnvVar] | None:
