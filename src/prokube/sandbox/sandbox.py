@@ -405,18 +405,23 @@ class Sandbox:
         )
 
     def _warmup_kernel(self, deadline: float) -> None:
-        """Probe the Jupyter kernel until it echoes a unique marker back.
+        """Probe the sandbox interpreter until it echoes a unique marker back.
 
-        After the pod reaches Running, ipykernel still needs ~1–2s before its
-        first ``execute_request`` produces visible iopub stdout. During that
-        window, execd's ``exec`` sub-resource returns successfully but the
-        stdout never reaches the SSE stream, so the first user ``run_code()``
-        call races the cold kernel pipeline and silently returns empty output.
+        The first execution after a pod reaches Running can race a cold
+        interpreter: a probe may return successfully with empty stdout before
+        the execution pipeline is fully live, in which case the first user
+        ``run_code()`` call would silently return empty output. (Whether the
+        current sandbox agent still exhibits this race is unverified; the
+        probe is kept as cheap insurance until warmup is re-measured against
+        it.)
 
         This method hides that race by running a tiny ``print(<marker>)``
-        probe in a loop until the stdout matches, proving the kernel pipeline
-        is end-to-end live. The probe is bounded by ``deadline`` (the same
-        deadline used by :meth:`wait_until_ready`), so it can never exceed the
+        probe in a loop until the marker appears in stdout, proving the
+        execution pipeline is end-to-end live. The check is containment, not
+        equality: the interpreter may append unrelated text (e.g. warnings)
+        to the same stream, and extra output does not make the session any
+        less live. The probe is bounded by ``deadline`` (the same deadline
+        used by :meth:`wait_until_ready`), so it can never exceed the
         caller's overall timeout budget. If the deadline is reached without
         success, a warning is logged and the method returns without raising —
         the user may still get useful results, and we don't want to block
@@ -425,10 +430,10 @@ class Sandbox:
         Notes:
             * The marker is per-call (``uuid4().hex``) to avoid collisions
               with any user code that happens to print a similar literal.
-            * If a probe returns successfully but without the marker, discard
-              that session before retrying. Otherwise a cold/stale Jupyter
-              session can be reused forever and every probe keeps returning
-              empty stdout.
+            * If a probe returns successfully but stdout does not contain the
+              marker, discard that session before retrying. Otherwise a
+              cold/stale session can be reused forever and every probe keeps
+              returning empty stdout.
 
         Args:
             deadline: ``time.monotonic()`` value after which the probe gives
@@ -471,7 +476,7 @@ class Sandbox:
                 sleep_for = min(0.5, max(0.0, deadline - time.monotonic()))
                 time.sleep(sleep_for)
                 continue
-            if result.stdout.strip() == marker:
+            if marker in result.stdout:
                 return
             self._code.reset_session()
             # Loop top will recompute remaining and exit if deadline passed.
