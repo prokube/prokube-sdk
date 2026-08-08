@@ -468,11 +468,16 @@ class Sandbox:
         blocks until the kernel has started (200) or the wait window elapses
         (503). One blocking call therefore replaces the poll loop. Because the
         ping only proves the *kernel* started — not that the exec/SSE pipeline
-        in front of it delivers output — a single ``print(<marker>)``
-        round-trip still follows it as end-to-end proof.
+        in front of it delivers output — a ``print(<marker>)`` round-trip
+        still follows it as end-to-end proof. That proof runs through
+        :meth:`_probe_kernel_loop`: a warm kernel normally echoes the marker
+        on the first try, but a transient gateway 504 or a swallowed first
+        stdout must be retried inside the remaining budget instead of
+        handing the user a sandbox whose next ``run_code`` resets the
+        just-prewarmed session.
 
         Agents without the endpoint answer 404/400/405; those fall back to
-        :meth:`_probe_kernel_loop`, the retry loop this replaced.
+        the very same loop, which is all warmup was before the ping existed.
 
         Everything is bounded by ``deadline`` (the same deadline used by
         :meth:`wait_until_ready`), so warmup can never exceed the caller's
@@ -493,7 +498,7 @@ class Sandbox:
         if outcome == "expired":
             self._warn_warmup_incomplete(0)
             return
-        self._verify_kernel_pipeline(deadline)
+        self._probe_kernel_loop(deadline)
 
     def _ping_kernel(self, deadline: float) -> _KernelPingOutcome:
         """Block on the agent's kernel-ready ping until it reports warm.
@@ -552,38 +557,11 @@ class Sandbox:
                 continue
             return "warm"
 
-    def _verify_kernel_pipeline(self, deadline: float) -> None:
-        """Prove the exec/SSE pipeline delivers output, in one round-trip.
-
-        Runs after the agent reported the kernel warm, so a single attempt is
-        enough: there is nothing left to wait for, only to confirm. A failure
-        is logged, never raised, matching :meth:`_probe_kernel_loop`.
-        """
-        remaining = deadline - time.monotonic()
-        # run_code expects an integer second timeout (see _probe_kernel_loop).
-        if remaining < 1:
-            self._warn_warmup_incomplete(0)
-            return
-        marker = f"__pk_warmup_{uuid.uuid4().hex}__"
-        try:
-            result = self.run_code(f'print("{marker}")', timeout=int(remaining))
-        except ProKubeError as exc:
-            if exc.status_code != 504:
-                raise
-            self._code.reset_session()
-            self._warn_warmup_incomplete(1)
-            return
-        if result.stdout.strip() == marker:
-            return
-        # A warm kernel that swallows its own stdout leaves a stale session
-        # behind; discard it so the user's first run_code starts fresh.
-        self._code.reset_session()
-        self._warn_warmup_incomplete(1)
-
     def _probe_kernel_loop(self, deadline: float) -> None:
         """Probe the Jupyter kernel until it echoes a unique marker back.
 
-        The fallback for agents without a kernel-ready ping: run a tiny
+        Used both as the end-to-end proof after a warm kernel-ready ping and
+        as the whole warmup for agents without that endpoint: run a tiny
         ``print(<marker>)`` in a loop until the stdout matches, proving the
         kernel pipeline is end-to-end live.
 

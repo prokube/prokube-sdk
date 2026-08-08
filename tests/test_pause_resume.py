@@ -1,6 +1,7 @@
 """Tests for pause/resume functionality."""
 
 import json
+import logging
 import re
 
 import httpx
@@ -1237,7 +1238,7 @@ class TestWaitUntilReadyLongPoll:
 class TestKernelWarmupPing:
     """Kernel warmup goes through the agent's blocking kernel-ready ping."""
 
-    def test_ping_warm_then_single_verification_run(
+    def test_ping_warm_converges_in_one_marker_run(
         self, mock_env, httpx_mock: HTTPXMock
     ):
         """A warm ping replaces the probe loop, but still gets one marker run."""
@@ -1255,8 +1256,8 @@ class TestKernelWarmupPing:
         assert params["wait"] == "kernel"
         assert 1 <= int(params["timeout"]) <= 100
         assert len(_exec_posts(httpx_mock)) == 1, (
-            "the ping only proves the kernel started, so exactly one marker "
-            "round-trip should confirm the exec pipeline — not a retry loop"
+            "the ping already proved the kernel is warm, so the marker "
+            "verification should converge on its first round-trip"
         )
 
         sbx._client.close()
@@ -1371,11 +1372,142 @@ class TestKernelWarmupPing:
 
         sbx._client.close()
 
-    def test_warm_ping_with_silent_pipeline_discards_session(
-        self, mock_env, httpx_mock: HTTPXMock
+    def test_warm_ping_retries_transient_exec_504(
+        self, mock_env, monkeypatch, httpx_mock: HTTPXMock
     ):
-        """A verification run that swallows its marker must not leave the
-        stale Jupyter session behind for the user's first run_code."""
+        """A gateway 504 on the marker run is retried, not taken as completion.
+
+        Returning after the first failure would hand the user a sandbox whose
+        next ``run_code`` carries ``reset_session=true``, restarting the very
+        kernel warmup just prewarmed.
+        """
+        monkeypatch.setattr("time.sleep", lambda _: None)
+        _mock_version(httpx_mock)
+        _mock_claim(httpx_mock)
+        _mock_get(httpx_mock, "Running")
+        _mock_ping_warm(httpx_mock)
+
+        call_counter = {"n": 0}
+
+        def _exec_callback(request: httpx.Request) -> httpx.Response:
+            call_counter["n"] += 1
+            if call_counter["n"] == 1:
+                return httpx.Response(504, text="upstream request timeout")
+            marker = _extract_marker(request) or ""
+            return httpx.Response(
+                200,
+                json={
+                    "stdout": f"{marker}\n",
+                    "stderr": "",
+                    "success": True,
+                    "execution_time_ms": 1,
+                    "session_id": "warm-session",
+                },
+            )
+
+        httpx_mock.add_callback(
+            _exec_callback,
+            method="POST",
+            url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/sandbox-test/exec",
+            is_reusable=True,
+        )
+
+        sbx = Sandbox.from_pool("python-pool")
+        sbx.wait_until_ready(timeout=60)
+
+        assert call_counter["n"] == 2, (
+            "a transient 504 must be retried within the remaining deadline"
+        )
+
+        sbx.run_code("print(1)")
+        user_body = json.loads(_exec_posts(httpx_mock)[-1].content)
+        assert user_body["reset_session"] is False, (
+            "warmup recovered, so the user's first call must not restart the "
+            "kernel it just prewarmed"
+        )
+        assert user_body["session_id"] == "warm-session"
+
+        sbx._client.close()
+
+    def test_warm_ping_retries_silent_pipeline_then_succeeds(
+        self, mock_env, monkeypatch, httpx_mock: HTTPXMock
+    ):
+        """A verification run that swallows its marker is retried on a fresh
+        session instead of ending warmup."""
+        monkeypatch.setattr("time.sleep", lambda _: None)
+        _mock_version(httpx_mock)
+        _mock_claim(httpx_mock)
+        _mock_get(httpx_mock, "Running")
+        _mock_ping_warm(httpx_mock)
+
+        call_counter = {"n": 0}
+
+        def _exec_callback(request: httpx.Request) -> httpx.Response:
+            call_counter["n"] += 1
+            if call_counter["n"] == 1:
+                return httpx.Response(
+                    200,
+                    json={
+                        "stdout": "",
+                        "stderr": "",
+                        "success": True,
+                        "execution_time_ms": 1,
+                        "session_id": "stale-session",
+                    },
+                )
+            marker = _extract_marker(request) or ""
+            return httpx.Response(
+                200,
+                json={
+                    "stdout": f"{marker}\n",
+                    "stderr": "",
+                    "success": True,
+                    "execution_time_ms": 1,
+                    "session_id": "fresh-session",
+                },
+            )
+
+        httpx_mock.add_callback(
+            _exec_callback,
+            method="POST",
+            url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/sandbox-test/exec",
+            is_reusable=True,
+        )
+
+        sbx = Sandbox.from_pool("python-pool")
+        sbx.wait_until_ready(timeout=60)
+
+        assert call_counter["n"] == 2
+        retry_body = json.loads(_exec_posts(httpx_mock)[1].content)
+        assert retry_body["reset_session"] is True, (
+            "the stale session that swallowed stdout must be discarded before the retry"
+        )
+
+        sbx.run_code("print(1)")
+        user_body = json.loads(_exec_posts(httpx_mock)[-1].content)
+        assert user_body["reset_session"] is False
+        assert user_body["session_id"] == "fresh-session"
+
+        sbx._client.close()
+
+    def test_warm_ping_silent_pipeline_warns_and_discards_session(
+        self, mock_env, monkeypatch, caplog, httpx_mock: HTTPXMock
+    ):
+        """A pipeline that never echoes the marker exhausts the deadline, then
+        warns and leaves a reset pending for the user's first run_code."""
+        real_monotonic = __import__("time").monotonic
+        start = real_monotonic()
+        tick = {"n": 0}
+
+        def fake_monotonic() -> float:
+            # Advance virtual time in small steps so the 2s budget is spent
+            # after a handful of retries instead of real wall-clock seconds.
+            tick["n"] += 1
+            return start + tick["n"] * 0.1
+
+        monkeypatch.setattr("time.monotonic", fake_monotonic)
+        monkeypatch.setattr("time.sleep", lambda _: None)
+
         _mock_version(httpx_mock)
         _mock_claim(httpx_mock)
         _mock_get(httpx_mock, "Running")
@@ -1401,12 +1533,16 @@ class TestKernelWarmupPing:
         )
 
         sbx = Sandbox.from_pool("python-pool")
-        # Never raises, even though the pipeline never echoed the marker.
-        sbx.wait_until_ready(timeout=60)
-        assert len(_exec_posts(httpx_mock)) == 1, (
-            "the verification run is a single attempt; the ping already "
-            "established that waiting longer buys nothing"
+        with caplog.at_level(logging.WARNING, logger="prokube.sandbox.sandbox"):
+            # Never raises, even though the pipeline never echoed the marker.
+            sbx.wait_until_ready(timeout=2)
+
+        warmup_probes = len(_exec_posts(httpx_mock))
+        assert warmup_probes >= 2, (
+            "the marker run must be retried within the deadline, not treated "
+            "as complete after its first failure"
         )
+        assert "did not echo marker" in caplog.text
 
         sbx.run_code("print(1)")
         user_body = json.loads(_exec_posts(httpx_mock)[-1].content)
