@@ -8,7 +8,7 @@ import time
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Generic, TypeVar
+from typing import Generic, Literal, TypeVar
 
 import httpx
 
@@ -37,6 +37,29 @@ from prokube.sandbox.models import (
 
 logger = logging.getLogger(__name__)
 
+
+# Readiness waiting (see :meth:`Sandbox.wait_until_ready`). Each round asks
+# the backend to hold the status GET for _LONG_POLL_WAIT_SECONDS, allowing
+# the request itself _LONG_POLL_MARGIN_SECONDS more so a hold that expires
+# still answers in time. A round that returns faster than
+# _IMMEDIATE_RESPONSE_SECONDS did not block server-side, so the next one is
+# paced by _DEGRADED_POLL_INTERVAL_SECONDS.
+_LONG_POLL_WAIT_SECONDS = 20
+_LONG_POLL_MARGIN_SECONDS = 5
+_IMMEDIATE_RESPONSE_SECONDS = 0.5
+_DEGRADED_POLL_INTERVAL_SECONDS = 1
+
+# Kernel warmup (see :meth:`Sandbox._warmup_kernel`). The agent's blocking
+# ping is bounded by _KERNEL_PING_MAX_SECONDS per attempt; the legacy
+# fallback probes ``exec`` with a _PROBE_MAX_TIMEOUT_SECONDS budget and
+# _PROBE_RETRY_SECONDS between attempts.
+_KERNEL_PING_MAX_SECONDS = 100
+_PROBE_MAX_TIMEOUT_SECONDS = 5
+_PROBE_RETRY_SECONDS = 0.5
+
+# Result of one kernel-ready ping attempt: the kernel is up, the agent has no
+# such endpoint (fall back to marker probing), or the budget ran out first.
+_KernelPingOutcome = Literal["warm", "unsupported", "expired"]
 
 SandboxT = TypeVar("SandboxT", bound="Sandbox")
 
@@ -350,7 +373,17 @@ class Sandbox:
     def wait_until_ready(self, timeout: int = 120) -> None:
         """Block until sandbox phase is Running. Useful after resume().
 
-        Transitional phases (Pending, Pausing, Resuming) simply keep polling.
+        Each round long-polls the status endpoint: the backend holds the GET
+        open until the sandbox reaches Running (or its own wait window
+        elapses) and answers with the current payload either way, so a
+        transition is observed within milliseconds instead of on the next
+        fixed poll tick. Transitional phases (Pending, Pausing, Resuming)
+        simply start another round.
+
+        Backends that predate the ``wait_phase`` parameter ignore it and
+        answer immediately; those rounds are paced with a short client-side
+        sleep so the loop degrades into the plain polling it replaced instead
+        of hammering the API.
 
         Args:
             timeout: Maximum seconds to wait (default: 120).
@@ -362,24 +395,34 @@ class Sandbox:
                 failed sandbox the backend's ``lastError`` is included.
         """
         self._check_not_killed()
-        poll_interval = 2
         deadline = time.monotonic() + timeout
         while True:
-            remaining = deadline - time.monotonic()
+            round_started = time.monotonic()
+            remaining = deadline - round_started
             if remaining <= 0:
                 break
+            # Ask the backend to hold the request for at most the remaining
+            # budget, and cap the GET itself at the remaining budget too so a
+            # single stalled round cannot block past the caller's deadline:
+            # without this, the request falls back to the client's default
+            # timeout (PROKUBE_TIMEOUT, 300s), which can vastly exceed a
+            # short wait_until_ready(timeout=...) call. The GET is allowed a
+            # margin over the hold so a response that only arrives when the
+            # hold expires is not mistaken for a stall.
+            wait_timeout = min(_LONG_POLL_WAIT_SECONDS, remaining)
             try:
-                # Cap the GET at the remaining budget so a single stalled
-                # poll cannot block past the caller's deadline: without this,
-                # the request falls back to the client's default timeout
-                # (PROKUBE_TIMEOUT, 300s), which can vastly exceed a short
-                # wait_until_ready(timeout=...) call.
-                self.refresh(request_timeout=remaining)
+                self.refresh(
+                    request_timeout=min(
+                        wait_timeout + _LONG_POLL_MARGIN_SECONDS, remaining
+                    ),
+                    wait_phase=SandboxStatus.RUNNING.value,
+                    wait_timeout=wait_timeout,
+                )
             except httpx.TimeoutException:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     break
-                time.sleep(min(poll_interval, remaining))
+                time.sleep(min(_DEGRADED_POLL_INTERVAL_SECONDS, remaining))
                 continue
             if self._status == SandboxStatus.RUNNING:
                 self._warmup_kernel(deadline)
@@ -395,17 +438,23 @@ class Sandbox:
                     f"{self._status.value!r} while waiting for it to become "
                     f"ready{detail}"
                 )
-            remaining = deadline - time.monotonic()
+            round_ended = time.monotonic()
+            remaining = deadline - round_ended
             if remaining <= 0:
                 break
-            time.sleep(min(poll_interval, remaining))
+            if round_ended - round_started < _IMMEDIATE_RESPONSE_SECONDS:
+                # The answer came back instantly without the target phase, so
+                # the backend did not hold the request — either it ignores
+                # wait_phase (older backend) or it reported an intermediate
+                # transition. Pace the next round instead of spinning.
+                time.sleep(min(_DEGRADED_POLL_INTERVAL_SECONDS, remaining))
         raise SandboxTimeoutError(
             f"Sandbox {self._name} did not become ready within {timeout}s "
             f"(current phase: {self._status.value!r})"
         )
 
     def _warmup_kernel(self, deadline: float) -> None:
-        """Probe the sandbox interpreter until it echoes a unique marker back.
+        """Wait until the sandbox's code-execution pipeline is live.
 
         The first execution after a pod reaches Running can race a cold
         interpreter: a probe may return successfully with empty stdout before
@@ -415,17 +464,106 @@ class Sandbox:
         probe is kept as cheap insurance until warmup is re-measured against
         it.)
 
-        This method hides that race by running a tiny ``print(<marker>)``
-        probe in a loop until the marker appears in stdout, proving the
-        execution pipeline is end-to-end live. The check is containment, not
-        equality: the interpreter may append unrelated text (e.g. warnings)
-        to the same stream, and extra output does not make the session any
-        less live. The probe is bounded by ``deadline`` (the same deadline
-        used by :meth:`wait_until_ready`), so it can never exceed the
-        caller's overall timeout budget. If the deadline is reached without
-        success, a warning is logged and the method returns without raising —
-        the user may still get useful results, and we don't want to block
-        ``create`` when the workaround is only partially working.
+        The agent closes that window itself: ``GET <sandbox>/ping?wait=kernel``
+        blocks until the kernel has started (200) or the wait window elapses
+        (503). One blocking call therefore replaces the poll loop. Because the
+        ping only proves the *kernel* started — not that the exec/SSE pipeline
+        in front of it delivers output — a ``print(<marker>)`` round-trip
+        still follows it as end-to-end proof. That proof runs through
+        :meth:`_probe_kernel_loop`: a warm kernel normally echoes the marker
+        on the first try, but a transient gateway 504 or a swallowed first
+        stdout must be retried inside the remaining budget instead of
+        handing the user a sandbox whose next ``run_code`` resets the
+        just-prewarmed session.
+
+        Agents without the endpoint answer 404/400/405; those fall back to
+        the very same loop, which is all warmup was before the ping existed.
+
+        Everything is bounded by ``deadline`` (the same deadline used by
+        :meth:`wait_until_ready`), so warmup can never exceed the caller's
+        overall timeout budget. If the deadline is reached without success, a
+        warning is logged and the method returns without raising — the user
+        may still get useful results, and we don't want to block ``create``
+        when the workaround is only partially working.
+
+        Args:
+            deadline: ``time.monotonic()`` value after which warmup gives up
+                and returns without raising.
+        """
+        self._check_not_killed()
+        outcome = self._ping_kernel(deadline)
+        if outcome == "unsupported":
+            self._probe_kernel_loop(deadline)
+            return
+        if outcome == "expired":
+            self._warn_warmup_incomplete(0)
+            return
+        self._probe_kernel_loop(deadline)
+
+    def _ping_kernel(self, deadline: float) -> _KernelPingOutcome:
+        """Block on the agent's kernel-ready ping until it reports warm.
+
+        Returns ``"warm"`` once the agent answers 200, ``"unsupported"`` if it
+        has no such endpoint (so the caller must probe through ``exec``), or
+        ``"expired"`` when the deadline runs out while the kernel is still
+        cold.
+        """
+        while True:
+            remaining = deadline - time.monotonic()
+            # The agent takes an integer second wait window, so a sub-second
+            # budget cannot be expressed; give up rather than round up and
+            # overrun wait_until_ready's deadline.
+            if remaining < 1:
+                return "expired"
+            # Keep the agent's own wait window inside the remaining budget,
+            # leaving room for the response trip, and below the ceiling the
+            # gateway in front of the agent tolerates.
+            wait_seconds = int(
+                min(
+                    _KERNEL_PING_MAX_SECONDS,
+                    max(1.0, remaining - _LONG_POLL_MARGIN_SECONDS),
+                )
+            )
+            started = time.monotonic()
+            try:
+                self._client.ping_kernel(
+                    self._name,
+                    wait_timeout=wait_seconds,
+                    request_timeout=remaining,
+                )
+            except NotFoundError:
+                return "unsupported"
+            except httpx.TimeoutException:
+                # A stalled ping is indistinguishable from a proxy that never
+                # forwards it; the marker probe is the reliable path.
+                return "unsupported"
+            except ProKubeError as exc:
+                if exc.status_code in (400, 405):
+                    return "unsupported"
+                if exc.status_code not in (503, 504):
+                    raise
+                # 503: kernel still cold after the agent's wait window.
+                # 504: the gateway cut the blocking request. Both are
+                # transient — keep waiting inside our own deadline, pacing a
+                # ping that answered instantly so a non-blocking agent cannot
+                # spin the loop.
+                if time.monotonic() - started < _IMMEDIATE_RESPONSE_SECONDS:
+                    time.sleep(
+                        min(
+                            _PROBE_RETRY_SECONDS,
+                            max(0.0, deadline - time.monotonic()),
+                        )
+                    )
+                continue
+            return "warm"
+
+    def _probe_kernel_loop(self, deadline: float) -> None:
+        """Probe the Jupyter kernel until it echoes a unique marker back.
+
+        Used both as the end-to-end proof after a warm kernel-ready ping and
+        as the whole warmup for agents without that endpoint: run a tiny
+        ``print(<marker>)`` in a loop until the stdout matches, proving the
+        kernel pipeline is end-to-end live.
 
         Notes:
             * The marker is per-call (``uuid4().hex``) to avoid collisions
@@ -439,15 +577,8 @@ class Sandbox:
             deadline: ``time.monotonic()`` value after which the probe gives
                 up and returns without raising.
         """
-        self._check_not_killed()
         marker = f"__pk_warmup_{uuid.uuid4().hex}__"
         code = f'print("{marker}")'
-        # Cap the per-probe backend timeout so a single warmup attempt cannot
-        # consume the entire wait_until_ready budget. Without this cap, the
-        # first probe call against a stuck kernel could block the SDK for the
-        # user's full timeout (potentially minutes) and starve the intended
-        # 0.5s retry loop.
-        max_probe_timeout = 5
         attempts = 0
         while True:
             remaining = deadline - time.monotonic()
@@ -456,32 +587,41 @@ class Sandbox:
             # way to stay strictly within wait_until_ready's deadline is to
             # give up rather than clamp upward and overrun.
             if remaining < 1:
-                logger.warning(
-                    "Sandbox %s kernel warmup probe did not echo marker "
-                    "within deadline after %d attempt(s); continuing anyway",
-                    self._name,
-                    attempts,
-                )
+                self._warn_warmup_incomplete(attempts)
                 return
             attempts += 1
             # Cap each probe so retries stay frequent against a stuck kernel,
             # while still never exceeding the remaining wait_until_ready budget.
-            probe_timeout = min(max_probe_timeout, int(remaining))
+            # Without this cap, the first probe call against a stuck kernel
+            # could block the SDK for the user's full timeout (potentially
+            # minutes) and starve the retry loop.
+            probe_timeout = min(_PROBE_MAX_TIMEOUT_SECONDS, int(remaining))
             try:
                 result = self.run_code(code, timeout=probe_timeout)
             except ProKubeError as exc:
                 if exc.status_code != 504:
                     raise
                 self._code.reset_session()
-                sleep_for = min(0.5, max(0.0, deadline - time.monotonic()))
+                sleep_for = min(
+                    _PROBE_RETRY_SECONDS, max(0.0, deadline - time.monotonic())
+                )
                 time.sleep(sleep_for)
                 continue
             if marker in result.stdout:
                 return
             self._code.reset_session()
             # Loop top will recompute remaining and exit if deadline passed.
-            sleep_for = min(0.5, max(0.0, deadline - time.monotonic()))
+            sleep_for = min(_PROBE_RETRY_SECONDS, max(0.0, deadline - time.monotonic()))
             time.sleep(sleep_for)
+
+    def _warn_warmup_incomplete(self, attempts: int) -> None:
+        """Log that warmup did not confirm a live kernel; never raises."""
+        logger.warning(
+            "Sandbox %s kernel warmup probe did not echo marker "
+            "within deadline after %d attempt(s); continuing anyway",
+            self._name,
+            attempts,
+        )
 
     def kill(self, wait: bool = False, timeout: int = 300) -> None:
         """Destroy the sandbox.
@@ -569,15 +709,29 @@ class Sandbox:
             f"(current phase: {self._status.value!r})"
         )
 
-    def refresh(self, request_timeout: float | None = None) -> None:
+    def refresh(
+        self,
+        request_timeout: float | None = None,
+        wait_phase: str | None = None,
+        wait_timeout: float | None = None,
+    ) -> None:
         """Refresh sandbox information from the API.
 
         Args:
             request_timeout: Optional per-request timeout override, in
                 seconds. See :meth:`SandboxClient.get`.
+            wait_phase: Optional phase to long-poll for. See
+                :meth:`SandboxClient.get`.
+            wait_timeout: How long the backend may hold the request when
+                ``wait_phase`` is set. See :meth:`SandboxClient.get`.
         """
         self._check_not_killed()
-        info = self._client.get(self._name, request_timeout=request_timeout)
+        info = self._client.get(
+            self._name,
+            request_timeout=request_timeout,
+            wait_phase=wait_phase,
+            wait_timeout=wait_timeout,
+        )
         self._status = info.status
         self._last_error = info.last_error
         if info.auto_idle_timeout_seconds is not None:

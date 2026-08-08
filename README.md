@@ -42,18 +42,20 @@ print(result.exit_code)
 
 # File operations
 sbx.files.write("/workspace/data.csv", b"col1,col2\n1,2\n3,4")
-batch_result = sbx.files.write_batch([
-    ("/workspace/app.py", "print('hello')"),
-    ("/workspace/data.bin", b"\x00\x01"),
-])
+batch_result = sbx.files.write_batch(
+    [
+        ("/workspace/app.py", "print('hello')"),
+        ("/workspace/data.bin", b"\x00\x01"),
+    ]
+)
 assert batch_result.success
 content = sbx.files.read("/workspace/output.txt")
 files = sbx.files.list("/workspace")
 
 # Pause / resume: both are asynchronous on the backend.
-sbx.pause()               # blocks until the sandbox reports Paused
-sbx.resume()              # returns immediately, phase is Resuming
-sbx.wait_until_ready()    # block until the new pod is Running
+sbx.pause()  # blocks until the sandbox reports Paused
+sbx.resume()  # returns immediately, phase is Resuming
+sbx.wait_until_ready()  # block until the new pod is Running
 
 # Cleanup. Deletion (including the persistence purge that releases the name)
 # is asynchronous; pass wait=True when you need guaranteed reclamation.
@@ -170,15 +172,15 @@ The main class for interacting with sandboxes.
 
 ```python
 class Sandbox:
-    name: str           # Sandbox name
-    workspace: str      # Workspace (Kubernetes namespace)
-    status: str         # Pending, Running, Paused, Pausing, Resuming,
-                        # Deleting, Succeeded, Failed, Unknown
-    
+    name: str  # Sandbox name
+    workspace: str  # Workspace (Kubernetes namespace)
+    status: str  # Pending, Running, Paused, Pausing, Resuming,
+    # Deleting, Succeeded, Failed, Unknown
+
     @classmethod
     def from_pool(cls, pool: str, **config) -> Sandbox:
         """Claim sandbox from WarmPool (fast; poll with wait_until_ready)."""
-    
+
     @classmethod
     def create(cls, image: str, **config) -> Sandbox:
         """Create sandbox directly (cold start)."""
@@ -196,10 +198,12 @@ class Sandbox:
         timeout: int | None = None,
     ) -> SandboxPage:
         """List one bounded page of sandboxes, across every phase."""
-    
-    def run_code(self, code: str, language: str = "python", timeout: int = 300) -> CodeResult:
+
+    def run_code(
+        self, code: str, language: str = "python", timeout: int = 300
+    ) -> CodeResult:
         """Execute code with stateful Jupyter kernel."""
-    
+
     def pause(self, wait: bool = True, timeout: int = 300) -> None:
         """Pause the sandbox; blocks until it reports Paused by default."""
 
@@ -211,11 +215,11 @@ class Sandbox:
 
     def kill(self, wait: bool = False, timeout: int = 300) -> None:
         """Destroy the sandbox; deletion completes asynchronously."""
-    
+
     @property
     def commands(self) -> CommandRunner:
         """Access shell command runner."""
-    
+
     @property
     def files(self) -> FileManager:
         """Access file operations."""
@@ -251,12 +255,13 @@ class CommandRunner:
     def run(self, command: str, timeout: int = 300) -> CommandResult:
         """Execute shell command."""
 
+
 class CommandResult(BaseModel):  # Pydantic model
     stdout: str
     stderr: str
     exit_code: int
     duration_ms: int
-    
+
     @property
     def success(self) -> bool: ...
 ```
@@ -268,7 +273,9 @@ class FileManager:
     def write(self, path: str, content: bytes | str) -> None:
         """Upload file to sandbox."""
 
-    def write_batch(self, items: list[tuple[str, bytes | str]]) -> BatchFileWriteResponse:
+    def write_batch(
+        self, items: list[tuple[str, bytes | str]]
+    ) -> BatchFileWriteResponse:
         """Best-effort batch upload with per-file results."""
 
     def read(self, path: str) -> bytes:
@@ -279,18 +286,18 @@ class FileManager:
 
 
 class BatchFileWriteResponse(BaseModel):
-    success: bool           # True only if every file write succeeded
-    total: int              # Total requested file writes
-    success_count: int      # Number of successful writes
-    failure_count: int      # Number of failed writes
+    success: bool  # True only if every file write succeeded
+    total: int  # Total requested file writes
+    success_count: int  # Number of successful writes
+    failure_count: int  # Number of failed writes
     results: list[BatchFileWriteResult]
 
 
 class BatchFileWriteResult(BaseModel):
-    index: int              # Original request position
-    path: str               # Sandbox path for this entry
-    success: bool           # Whether this file write succeeded
-    error: str | None       # Failure detail for best-effort partial failures
+    index: int  # Original request position
+    path: str  # Sandbox path for this entry
+    success: bool  # Whether this file write succeeded
+    error: str | None  # Failure detail for best-effort partial failures
 ```
 
 ### CodeResult
@@ -301,10 +308,10 @@ class CodeResult(BaseModel):  # Pydantic model
     stderr: str
     success: bool
     execution_time_ms: int
-    error_name: str | None      # Set on failure
-    error_value: str | None     # Set on failure
-    traceback: list[str] | None # Set on failure
-    session_id: str | None      # For stateful execution
+    error_name: str | None  # Set on failure
+    error_value: str | None  # Set on failure
+    traceback: list[str] | None  # Set on failure
+    session_id: str | None  # For stateful execution
 ```
 
 ## Development
