@@ -118,12 +118,17 @@ def _mock_ping_unsupported(
 def _mock_ping_warm(
     httpx_mock: HTTPXMock, name: str = "sandbox-test", is_reusable: bool = False
 ) -> None:
-    """Mock an agent whose kernel-ready ping reports the kernel started."""
+    """Mock an agent whose kernel-ready ping reports the kernel started.
+
+    The real agent answers plain text ("pong"), not JSON -- the mock pins
+    that so the client can never regress into parsing the ping body.
+    """
     httpx_mock.add_response(
         method="GET",
         url=_ping_url(name),
         status_code=200,
-        json={"status": "ok"},
+        text="pong",
+        headers={"content-type": "text/plain; charset=utf-8"},
         is_reusable=is_reusable,
     )
 

@@ -477,7 +477,9 @@ class SandboxClient:
         }
         if request_timeout is not None:
             kwargs["timeout"] = request_timeout
-        self._http.get(self._sandbox_sub_path(name, "ping"), **kwargs)
+        # The agent answers plain text ("pong"), not JSON: fetch bytes so the
+        # shared error translation still runs without a JSON parse of the body.
+        self._http.get_bytes(self._sandbox_sub_path(name, "ping"), **kwargs)
 
     def pause(self, name: str) -> SandboxInfo:
         """Pause a running sandbox.
