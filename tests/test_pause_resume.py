@@ -81,6 +81,93 @@ BASE = "https://test.example.com"
 VERSION_RESPONSE = {"version": "0.8.0"}
 
 
+def _status_url(name: str = "sandbox-test") -> re.Pattern[str]:
+    """Match the status GET whether or not it carries long-poll params.
+
+    ``wait_until_ready`` long-polls with ``?wait_phase=&timeout=<hold>``,
+    where the hold depends on the remaining budget. pytest-httpx matches the
+    full URL including the query string, so status mocks match on the path
+    and tests that care about the params assert on the recorded requests.
+    """
+    return re.compile(
+        rf"^{re.escape(BASE)}/_platform/sandbox/test-ws/sandboxes/{name}(\?.*)?$"
+    )
+
+
+def _ping_url(name: str = "sandbox-test") -> re.Pattern[str]:
+    """Match the agent's kernel-ready ping on a sandbox."""
+    return re.compile(
+        rf"^{re.escape(BASE)}/_platform/sandbox/test-ws/sandboxes/{name}/ping\?.*$"
+    )
+
+
+def _mock_ping_unsupported(
+    httpx_mock: HTTPXMock, status_code: int = 404, name: str = "sandbox-test"
+) -> None:
+    """Mock an agent without the kernel-ready ping (pre-#107 sidecar)."""
+    httpx_mock.add_response(
+        method="GET",
+        url=_ping_url(name),
+        status_code=status_code,
+        json={"detail": "not found"},
+        is_reusable=True,
+    )
+
+
+def _mock_ping_warm(
+    httpx_mock: HTTPXMock, name: str = "sandbox-test", is_reusable: bool = False
+) -> None:
+    """Mock an agent whose kernel-ready ping reports the kernel started."""
+    httpx_mock.add_response(
+        method="GET",
+        url=_ping_url(name),
+        status_code=200,
+        json={"status": "ok"},
+        is_reusable=is_reusable,
+    )
+
+
+def _ping_gets(
+    httpx_mock: HTTPXMock, name: str = "sandbox-test"
+) -> list[httpx.Request]:
+    """Every recorded kernel-ready ping, in order."""
+    pattern = _ping_url(name)
+    return [
+        r
+        for r in httpx_mock.get_requests()
+        if r.method == "GET" and pattern.match(str(r.url))
+    ]
+
+
+def _exec_posts(
+    httpx_mock: HTTPXMock, name: str = "sandbox-test"
+) -> list[httpx.Request]:
+    """Every recorded code-execution POST, in order."""
+    suffix = f"/sandboxes/{name}/exec"
+    return [
+        r
+        for r in httpx_mock.get_requests()
+        if r.method == "POST" and str(r.url).endswith(suffix)
+    ]
+
+
+def _status_params(request: httpx.Request) -> dict[str, str]:
+    """Query params of a recorded status GET."""
+    return dict(request.url.params)
+
+
+def _status_gets(
+    httpx_mock: HTTPXMock, name: str = "sandbox-test"
+) -> list[httpx.Request]:
+    """Every recorded status GET, in order."""
+    pattern = _status_url(name)
+    return [
+        r
+        for r in httpx_mock.get_requests()
+        if r.method == "GET" and pattern.match(str(r.url))
+    ]
+
+
 def _mock_version(httpx_mock: HTTPXMock):
     httpx_mock.add_response(
         method="GET", url=f"{BASE}/api/version", json=VERSION_RESPONSE
@@ -117,7 +204,7 @@ def _mock_pause(httpx_mock: HTTPXMock, name="sandbox-test", phase="Pausing"):
 def _mock_get(httpx_mock: HTTPXMock, phase, name="sandbox-test", **extra):
     httpx_mock.add_response(
         method="GET",
-        url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/{name}",
+        url=_status_url(name),
         json={"name": name, "phase": phase, **extra},
     )
 
@@ -339,7 +426,7 @@ class TestSandboxPause:
         _mock_pause(httpx_mock)
         httpx_mock.add_response(
             method="GET",
-            url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/sandbox-test",
+            url=_status_url(),
             status_code=404,
             json={"detail": "not found"},
         )
@@ -452,10 +539,11 @@ class TestWaitUntilReady:
     def test_wait_until_ready_immediate(self, mock_env, httpx_mock: HTTPXMock):
         _mock_version(httpx_mock)
         _mock_claim(httpx_mock)
+        _mock_ping_unsupported(httpx_mock)
         # GET sandbox returns Running immediately
         httpx_mock.add_response(
             method="GET",
-            url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/sandbox-test",
+            url=_status_url(),
             json={"name": "sandbox-test", "phase": "Running"},
         )
         # wait_until_ready now runs a warmup probe after pod is Running
@@ -473,16 +561,17 @@ class TestWaitUntilReady:
         monkeypatch.setattr("time.sleep", lambda _: None)
         _mock_version(httpx_mock)
         _mock_claim(httpx_mock)
+        _mock_ping_unsupported(httpx_mock)
         # First poll: Pending
         httpx_mock.add_response(
             method="GET",
-            url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/sandbox-test",
+            url=_status_url(),
             json={"name": "sandbox-test", "phase": "Pending"},
         )
         # Second poll: Running
         httpx_mock.add_response(
             method="GET",
-            url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/sandbox-test",
+            url=_status_url(),
             json={"name": "sandbox-test", "phase": "Running"},
         )
         # Warmup probe after Running
@@ -501,6 +590,7 @@ class TestWaitUntilReady:
         monkeypatch.setattr("time.sleep", lambda _: None)
         _mock_version(httpx_mock)
         _mock_claim(httpx_mock)
+        _mock_ping_unsupported(httpx_mock)
         httpx_mock.add_response(
             method="POST",
             url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/sandbox-test/resume",
@@ -517,12 +607,7 @@ class TestWaitUntilReady:
         sbx.wait_until_ready(timeout=10)
 
         assert sbx.status == "Running"
-        get_requests = [
-            r
-            for r in httpx_mock.get_requests()
-            if r.method == "GET" and str(r.url).endswith("/sandboxes/sandbox-test")
-        ]
-        assert len(get_requests) == 2
+        assert len(_status_gets(httpx_mock)) == 2
         sbx._client.close()
 
     def test_wait_until_ready_warms_kernel_on_cold_start(
@@ -532,15 +617,16 @@ class TestWaitUntilReady:
         monkeypatch.setattr("time.sleep", lambda _: None)
         _mock_version(httpx_mock)
         _mock_claim(httpx_mock)
+        _mock_ping_unsupported(httpx_mock)
         # First GET: Pending, second GET: Running
         httpx_mock.add_response(
             method="GET",
-            url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/sandbox-test",
+            url=_status_url(),
             json={"name": "sandbox-test", "phase": "Pending"},
         )
         httpx_mock.add_response(
             method="GET",
-            url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/sandbox-test",
+            url=_status_url(),
             json={"name": "sandbox-test", "phase": "Running"},
         )
 
@@ -597,9 +683,10 @@ class TestWaitUntilReady:
         """Warm kernel: the first probe succeeds, so there is exactly one probe call."""
         _mock_version(httpx_mock)
         _mock_claim(httpx_mock)
+        _mock_ping_unsupported(httpx_mock)
         httpx_mock.add_response(
             method="GET",
-            url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/sandbox-test",
+            url=_status_url(),
             json={"name": "sandbox-test", "phase": "Running"},
         )
 
@@ -659,9 +746,10 @@ class TestWaitUntilReady:
 
         _mock_version(httpx_mock)
         _mock_claim(httpx_mock)
+        _mock_ping_unsupported(httpx_mock)
         httpx_mock.add_response(
             method="GET",
-            url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/sandbox-test",
+            url=_status_url(),
             json={"name": "sandbox-test", "phase": "Running"},
         )
 
@@ -704,9 +792,10 @@ class TestWaitUntilReady:
 
         _mock_version(httpx_mock)
         _mock_claim(httpx_mock)
+        _mock_ping_unsupported(httpx_mock)
         httpx_mock.add_response(
             method="GET",
-            url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/sandbox-test",
+            url=_status_url(),
             json={"name": "sandbox-test", "phase": "Running"},
         )
 
@@ -812,9 +901,10 @@ class TestWaitUntilReady:
 
         _mock_version(httpx_mock)
         _mock_claim(httpx_mock)
+        _mock_ping_unsupported(httpx_mock)
         httpx_mock.add_response(
             method="GET",
-            url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/sandbox-test",
+            url=_status_url(),
             json={"name": "sandbox-test", "phase": "Running"},
         )
 
@@ -880,7 +970,7 @@ class TestWaitUntilReady:
         # Always return Pending
         httpx_mock.add_response(
             method="GET",
-            url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/sandbox-test",
+            url=_status_url(),
             json={"name": "sandbox-test", "phase": "Pending"},
         )
 
@@ -915,7 +1005,7 @@ class TestWaitUntilReady:
         httpx_mock.add_callback(
             _get_callback,
             method="GET",
-            url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/sandbox-test",
+            url=_status_url(),
             is_reusable=True,
         )
 
@@ -960,7 +1050,7 @@ class TestWaitUntilReady:
         httpx_mock.add_exception(
             httpx.ReadTimeout("simulated stalled backend"),
             method="GET",
-            url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/sandbox-test",
+            url=_status_url(),
             is_reusable=True,
         )
 
@@ -1001,6 +1091,363 @@ class TestWaitUntilReady:
         sbx._client.close()
 
 
+class TestWaitUntilReadyLongPoll:
+    """The readiness wait long-polls the status GET instead of tick-polling."""
+
+    def test_sends_wait_phase_and_bounded_hold(self, mock_env, httpx_mock: HTTPXMock):
+        """One round asks the backend to hold the GET until phase Running."""
+        _mock_version(httpx_mock)
+        _mock_claim(httpx_mock)
+        _mock_get(httpx_mock, "Running")
+        _mock_ping_warm(httpx_mock)
+        _mock_warmup_probe_success(httpx_mock)
+
+        sbx = Sandbox.from_pool("python-pool")
+        sbx.wait_until_ready(timeout=100)
+
+        (status_get,) = _status_gets(httpx_mock)
+        params = _status_params(status_get)
+        assert params["wait_phase"] == "Running"
+        # The backend caps its hold at 30s; the SDK never asks for a window
+        # the backend would silently shorten.
+        assert int(params["timeout"]) == 20
+        read_timeout = status_get.extensions["timeout"]["read"]
+        assert read_timeout > int(params["timeout"]), (
+            "the request must outlast the server-side hold, otherwise a "
+            "long-poll answering at its cap looks like a stalled request"
+        )
+
+        sbx._client.close()
+
+    def test_hold_is_clamped_to_remaining_budget(self, mock_env, httpx_mock: HTTPXMock):
+        """A short wait budget shrinks the hold, not just the request timeout."""
+        _mock_version(httpx_mock)
+        _mock_claim(httpx_mock)
+        _mock_get(httpx_mock, "Running")
+        _mock_ping_warm(httpx_mock)
+        _mock_warmup_probe_success(httpx_mock)
+
+        sbx = Sandbox.from_pool("python-pool")
+        sbx.wait_until_ready(timeout=10)
+
+        (status_get,) = _status_gets(httpx_mock)
+        hold = int(_status_params(status_get)["timeout"])
+        read_timeout = status_get.extensions["timeout"]["read"]
+        assert 1 <= hold <= 5, (
+            f"asked the backend to hold for {hold}s with only a 10s readiness "
+            f"budget, leaving no room for the response trip"
+        )
+        assert read_timeout <= 10
+        assert hold < read_timeout
+
+        sbx._client.close()
+
+    def test_budget_too_small_to_hold_sends_plain_get(
+        self, mock_env, httpx_mock: HTTPXMock
+    ):
+        """Under the response margin there is nothing to hold: poll plainly."""
+        _mock_version(httpx_mock)
+        _mock_claim(httpx_mock)
+        _mock_get(httpx_mock, "Running")
+        _mock_ping_warm(httpx_mock)
+        _mock_warmup_probe_success(httpx_mock)
+
+        sbx = Sandbox.from_pool("python-pool")
+        sbx.wait_until_ready(timeout=3)
+
+        (status_get,) = _status_gets(httpx_mock)
+        assert _status_params(status_get) == {}
+
+        sbx._client.close()
+
+    def test_immediate_response_without_phase_change_is_paced(
+        self, mock_env, monkeypatch, httpx_mock: HTTPXMock
+    ):
+        """Old backends ignore wait_phase and answer at once; pace those rounds.
+
+        Without a client-side sleep the loop would spin as fast as the network
+        allows against any backend that does not hold the request open.
+        """
+        clock = {"t": 1_000.0}
+        sleeps: list[float] = []
+        monkeypatch.setattr("time.monotonic", lambda: clock["t"])
+        monkeypatch.setattr("time.sleep", lambda seconds: sleeps.append(seconds))
+
+        _mock_version(httpx_mock)
+        _mock_claim(httpx_mock)
+        _mock_get(httpx_mock, "Pending")
+        _mock_get(httpx_mock, "Running")
+        _mock_ping_warm(httpx_mock)
+        _mock_warmup_probe_success(httpx_mock)
+
+        sbx = Sandbox.from_pool("python-pool")
+        sbx.wait_until_ready(timeout=30)
+
+        assert sbx.status == "Running"
+        assert len(_status_gets(httpx_mock)) == 2
+        assert sleeps == [1], (
+            "an instant response that did not report the target phase must be "
+            "paced client-side, so an old backend is not hammered"
+        )
+
+        sbx._client.close()
+
+    def test_held_response_starts_next_round_immediately(
+        self, mock_env, monkeypatch, httpx_mock: HTTPXMock
+    ):
+        """A backend that really held the request needs no client-side pacing."""
+        clock = {"t": 1_000.0}
+        sleeps: list[float] = []
+        monkeypatch.setattr("time.monotonic", lambda: clock["t"])
+        monkeypatch.setattr("time.sleep", lambda seconds: sleeps.append(seconds))
+
+        _mock_version(httpx_mock)
+        _mock_claim(httpx_mock)
+        phases = iter(["Pending", "Running"])
+
+        def _status_callback(request: httpx.Request) -> httpx.Response:
+            # The backend held the connection open for a second before
+            # answering with the phase it saw at that point.
+            clock["t"] += 1.0
+            return httpx.Response(
+                200, json={"name": "sandbox-test", "phase": next(phases)}
+            )
+
+        httpx_mock.add_callback(
+            _status_callback,
+            method="GET",
+            url=_status_url(),
+            is_reusable=True,
+        )
+        _mock_ping_warm(httpx_mock)
+        _mock_warmup_probe_success(httpx_mock)
+
+        sbx = Sandbox.from_pool("python-pool")
+        sbx.wait_until_ready(timeout=30)
+
+        assert sbx.status == "Running"
+        assert sleeps == [], (
+            "a round that blocked server-side already paced itself; sleeping "
+            "again only adds latency to the next transition"
+        )
+
+        sbx._client.close()
+
+
+class TestKernelWarmupPing:
+    """Kernel warmup goes through the agent's blocking kernel-ready ping."""
+
+    def test_ping_warm_then_single_verification_run(
+        self, mock_env, httpx_mock: HTTPXMock
+    ):
+        """A warm ping replaces the probe loop, but still gets one marker run."""
+        _mock_version(httpx_mock)
+        _mock_claim(httpx_mock)
+        _mock_get(httpx_mock, "Running")
+        _mock_ping_warm(httpx_mock)
+        _mock_warmup_probe_success(httpx_mock)
+
+        sbx = Sandbox.from_pool("python-pool")
+        sbx.wait_until_ready(timeout=60)
+
+        (ping,) = _ping_gets(httpx_mock)
+        params = dict(ping.url.params)
+        assert params["wait"] == "kernel"
+        assert 1 <= int(params["timeout"]) <= 100
+        assert len(_exec_posts(httpx_mock)) == 1, (
+            "the ping only proves the kernel started, so exactly one marker "
+            "round-trip should confirm the exec pipeline — not a retry loop"
+        )
+
+        sbx._client.close()
+
+    def test_ping_wait_is_capped(self, mock_env, httpx_mock: HTTPXMock):
+        """A huge readiness budget must not park a request on the agent forever."""
+        _mock_version(httpx_mock)
+        _mock_claim(httpx_mock)
+        _mock_get(httpx_mock, "Running")
+        _mock_ping_warm(httpx_mock)
+        _mock_warmup_probe_success(httpx_mock)
+
+        sbx = Sandbox.from_pool("python-pool")
+        sbx.wait_until_ready(timeout=300)
+
+        (ping,) = _ping_gets(httpx_mock)
+        assert int(dict(ping.url.params)["timeout"]) == 100
+
+        sbx._client.close()
+
+    def test_ping_wait_shrinks_with_remaining_budget(
+        self, mock_env, httpx_mock: HTTPXMock
+    ):
+        """The agent may never block past the caller's own deadline."""
+        _mock_version(httpx_mock)
+        _mock_claim(httpx_mock)
+        _mock_get(httpx_mock, "Running")
+        _mock_ping_warm(httpx_mock)
+        _mock_warmup_probe_success(httpx_mock)
+
+        sbx = Sandbox.from_pool("python-pool")
+        sbx.wait_until_ready(timeout=10)
+
+        (ping,) = _ping_gets(httpx_mock)
+        wait_seconds = int(dict(ping.url.params)["timeout"])
+        assert 1 <= wait_seconds <= 5, (
+            f"agent asked to block {wait_seconds}s with under 10s of "
+            f"readiness budget left"
+        )
+        assert ping.extensions["timeout"]["read"] <= 10
+
+        sbx._client.close()
+
+    @pytest.mark.parametrize("status_code", [400, 404, 405])
+    def test_ping_unsupported_falls_back_to_probe_loop(
+        self, mock_env, monkeypatch, httpx_mock: HTTPXMock, status_code: int
+    ):
+        """An agent without the endpoint keeps the old marker-probe loop."""
+        monkeypatch.setattr("time.sleep", lambda _: None)
+        _mock_version(httpx_mock)
+        _mock_claim(httpx_mock)
+        _mock_get(httpx_mock, "Running")
+        _mock_ping_unsupported(httpx_mock, status_code=status_code)
+
+        call_counter = {"n": 0}
+
+        def _probe_callback(request: httpx.Request) -> httpx.Response:
+            call_counter["n"] += 1
+            marker = _extract_marker(request) or ""
+            # Cold kernel on the first probe, warm afterwards.
+            stdout = "" if call_counter["n"] == 1 else f"{marker}\n"
+            return httpx.Response(
+                200,
+                json={
+                    "stdout": stdout,
+                    "stderr": "",
+                    "success": True,
+                    "execution_time_ms": 1,
+                },
+            )
+
+        httpx_mock.add_callback(
+            _probe_callback,
+            method="POST",
+            url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/sandbox-test/exec",
+            is_reusable=True,
+        )
+
+        sbx = Sandbox.from_pool("python-pool")
+        sbx.wait_until_ready(timeout=60)
+
+        assert sbx.status == "Running"
+        assert call_counter["n"] == 2, (
+            "an unsupported ping must fall back to the retrying probe loop, "
+            "which keeps probing until the kernel echoes the marker"
+        )
+
+        sbx._client.close()
+
+    def test_ping_503_is_retried_within_deadline(
+        self, mock_env, monkeypatch, httpx_mock: HTTPXMock
+    ):
+        """503 means 'still cold', so keep pinging instead of giving up."""
+        monkeypatch.setattr("time.sleep", lambda _: None)
+        _mock_version(httpx_mock)
+        _mock_claim(httpx_mock)
+        _mock_get(httpx_mock, "Running")
+        httpx_mock.add_response(
+            method="GET",
+            url=_ping_url(),
+            status_code=503,
+            json={"detail": "kernel not ready"},
+        )
+        _mock_ping_warm(httpx_mock)
+        _mock_warmup_probe_success(httpx_mock)
+
+        sbx = Sandbox.from_pool("python-pool")
+        sbx.wait_until_ready(timeout=60)
+
+        assert len(_ping_gets(httpx_mock)) == 2
+        assert len(_exec_posts(httpx_mock)) == 1
+
+        sbx._client.close()
+
+    def test_warm_ping_with_silent_pipeline_discards_session(
+        self, mock_env, httpx_mock: HTTPXMock
+    ):
+        """A verification run that swallows its marker must not leave the
+        stale Jupyter session behind for the user's first run_code."""
+        _mock_version(httpx_mock)
+        _mock_claim(httpx_mock)
+        _mock_get(httpx_mock, "Running")
+        _mock_ping_warm(httpx_mock)
+
+        def _exec_callback(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "stdout": "",
+                    "stderr": "",
+                    "success": True,
+                    "execution_time_ms": 1,
+                    "session_id": "stale-session",
+                },
+            )
+
+        httpx_mock.add_callback(
+            _exec_callback,
+            method="POST",
+            url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/sandbox-test/exec",
+            is_reusable=True,
+        )
+
+        sbx = Sandbox.from_pool("python-pool")
+        # Never raises, even though the pipeline never echoed the marker.
+        sbx.wait_until_ready(timeout=60)
+        assert len(_exec_posts(httpx_mock)) == 1, (
+            "the verification run is a single attempt; the ping already "
+            "established that waiting longer buys nothing"
+        )
+
+        sbx.run_code("print(1)")
+        user_body = json.loads(_exec_posts(httpx_mock)[-1].content)
+        assert user_body["reset_session"] is True
+        assert "session_id" not in user_body
+
+        sbx._client.close()
+
+    def test_warmup_gives_up_under_one_second_remaining(
+        self, mock_env, monkeypatch, httpx_mock: HTTPXMock
+    ):
+        """A pod that turns Running just before the deadline skips warmup.
+
+        Neither the ping nor a marker run fits in a sub-second budget, and
+        overrunning the caller's deadline is worse than a cold first call.
+        """
+        clock = {"t": 1_000.0}
+        monkeypatch.setattr("time.monotonic", lambda: clock["t"])
+        monkeypatch.setattr("time.sleep", lambda _: None)
+
+        _mock_version(httpx_mock)
+        _mock_claim(httpx_mock)
+
+        def _status_callback(request: httpx.Request) -> httpx.Response:
+            clock["t"] += 9.7
+            return httpx.Response(
+                200, json={"name": "sandbox-test", "phase": "Running"}
+            )
+
+        httpx_mock.add_callback(_status_callback, method="GET", url=_status_url())
+
+        sbx = Sandbox.from_pool("python-pool")
+        sbx.wait_until_ready(timeout=10)
+
+        assert sbx.status == "Running"
+        assert _ping_gets(httpx_mock) == []
+        assert _exec_posts(httpx_mock) == []
+
+        sbx._client.close()
+
+
 class TestSandboxKill:
     """Tests for the asynchronous Sandbox.kill()."""
 
@@ -1037,7 +1484,7 @@ class TestSandboxKill:
         _mock_get(httpx_mock, "Deleting")
         httpx_mock.add_response(
             method="GET",
-            url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/sandbox-test",
+            url=_status_url(),
             status_code=404,
             json={"detail": "not found"},
         )
@@ -1170,7 +1617,7 @@ class TestSandboxPhaseProperty:
         _mock_claim(httpx_mock)
         httpx_mock.add_response(
             method="GET",
-            url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/sandbox-test",
+            url=_status_url(),
             json={"name": "sandbox-test", "phase": "Paused"},
         )
 
@@ -1184,7 +1631,7 @@ class TestSandboxPhaseProperty:
         _mock_claim(httpx_mock)
         httpx_mock.add_response(
             method="GET",
-            url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/sandbox-test",
+            url=_status_url(),
             json={"name": "sandbox-test", "phase": "Running"},
         )
 

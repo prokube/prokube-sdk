@@ -196,6 +196,16 @@ def _is_timeout_stderr(value: str) -> bool:
     )
 
 
+# Long-poll status GET (``?wait_phase=&timeout=``) tuning. The backend caps
+# the hold at 30s and defaults to 20s; the SDK mirrors those numbers so it
+# never asks for a window the backend will silently shorten. The margin is
+# how much longer than the hold a request is allowed to take, covering the
+# round trip of a response that only arrives when the hold expires.
+_DEFAULT_WAIT_TIMEOUT_SECONDS = 20
+_MAX_WAIT_TIMEOUT_SECONDS = 30
+_WAIT_REQUEST_MARGIN_SECONDS = 5
+
+
 class SandboxClient:
     """Client for sandbox API operations."""
 
@@ -376,7 +386,13 @@ class SandboxClient:
             continue_token=response.get("continueToken"),
         )
 
-    def get(self, name: str, request_timeout: float | None = None) -> SandboxInfo:
+    def get(
+        self,
+        name: str,
+        request_timeout: float | None = None,
+        wait_phase: str | None = None,
+        wait_timeout: float | None = None,
+    ) -> SandboxInfo:
         """Get information about a sandbox.
 
         This is the poll target for every asynchronous lifecycle operation.
@@ -389,15 +405,79 @@ class SandboxClient:
                 deadline (e.g. ``wait_until_ready``) should pass the
                 remaining budget so a single stalled request cannot outlast
                 the caller's overall timeout.
+            wait_phase: Optional phase to long-poll for (e.g. ``"Running"``).
+                When given, the backend holds the request open until the
+                sandbox reaches that phase or its own wait window elapses,
+                and answers with the current payload either way — a response
+                that still reports another phase is a normal timeout, not an
+                error. Backends that predate the parameter ignore it and
+                answer immediately, which degrades to plain polling.
+            wait_timeout: How long, in seconds, the backend may hold the
+                request when ``wait_phase`` is set. Defaults to
+                ``_DEFAULT_WAIT_TIMEOUT_SECONDS`` and is clamped to the
+                server-side cap.
 
         Returns:
             Information about the sandbox.
         """
-        kwargs: dict[str, float] = {}
+        kwargs: dict[str, object] = {}
         if request_timeout is not None:
             kwargs["timeout"] = request_timeout
+        if wait_phase is not None:
+            hold = int(
+                min(
+                    _MAX_WAIT_TIMEOUT_SECONDS,
+                    _DEFAULT_WAIT_TIMEOUT_SECONDS
+                    if wait_timeout is None
+                    else wait_timeout,
+                )
+            )
+            if request_timeout is not None:
+                # The server holds the connection for the whole wait window
+                # before answering, so the per-request timeout must outlast
+                # it — same reasoning as the request_timeout cap above, in
+                # the other direction. Leave a margin for the response trip
+                # so a long-poll that answers right at its cap still lands.
+                # Once too little budget is left to hold anything, fall back
+                # to a plain (immediate) status GET.
+                hold = min(hold, int(request_timeout) - _WAIT_REQUEST_MARGIN_SECONDS)
+            if hold >= 1:
+                kwargs["params"] = {"wait_phase": wait_phase, "timeout": hold}
         response = self._http.get(self._sandbox_path(name), **kwargs)
         return _parse_sandbox_info(response, self.config.workspace)
+
+    def ping_kernel(
+        self,
+        name: str,
+        wait_timeout: int,
+        request_timeout: float | None = None,
+    ) -> None:
+        """Block on the sandbox agent until its Jupyter kernel is warm.
+
+        Calls ``GET <sandbox>/ping?wait=kernel&timeout=<wait_timeout>`` on
+        the sandbox agent (the same per-sandbox base path ``exec`` uses, so
+        it is proxied exactly like code execution). Returning normally means
+        the agent answered 200 — the kernel has started.
+
+        Args:
+            name: Sandbox name.
+            wait_timeout: Seconds the agent may block waiting for the kernel.
+            request_timeout: Optional per-request timeout override.
+
+        Raises:
+            NotFoundError: The agent (or the proxy in front of it) does not
+                expose the endpoint — an older agent, so the caller must fall
+                back to probing the kernel through ``exec``.
+            ProKubeError: Any other non-2xx answer. ``status_code == 503``
+                means the kernel is not warm yet and the call may be retried;
+                400/405 likewise indicate an agent without this endpoint.
+        """
+        kwargs: dict[str, object] = {
+            "params": {"wait": "kernel", "timeout": wait_timeout},
+        }
+        if request_timeout is not None:
+            kwargs["timeout"] = request_timeout
+        self._http.get(self._sandbox_sub_path(name, "ping"), **kwargs)
 
     def pause(self, name: str) -> SandboxInfo:
         """Pause a running sandbox.
