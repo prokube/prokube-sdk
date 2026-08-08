@@ -845,6 +845,7 @@ class TestWaitUntilReady:
 
         _mock_version(httpx_mock)
         _mock_claim(httpx_mock)
+        _mock_ping_unsupported(httpx_mock)
         httpx_mock.add_response(
             method="GET",
             url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/sandbox-test",
