@@ -72,6 +72,10 @@ def _parse_sandbox_info(
         created_at=raw.get("createdAt") or raw.get("created_at"),
         auto_idle_timeout_seconds=parse_auto_idle_timeout(raw),
         last_error=raw.get("lastError") or raw.get("last_error"),
+        preserves_process_state=raw.get(
+            "preservesProcessState", raw.get("preserves_process_state", False)
+        )
+        is True,
     )
 
 

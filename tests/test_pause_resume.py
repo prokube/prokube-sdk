@@ -197,13 +197,13 @@ def _mock_claim(httpx_mock: HTTPXMock, name="sandbox-test", phase="Running"):
     )
 
 
-def _mock_pause(httpx_mock: HTTPXMock, name="sandbox-test", phase="Pausing"):
+def _mock_pause(httpx_mock: HTTPXMock, name="sandbox-test", phase="Pausing", **extra):
     """Mock the pause endpoint with the v0.8 202 + full Sandbox body."""
     httpx_mock.add_response(
         method="POST",
         url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/{name}/pause",
         status_code=202,
-        json={"name": name, "namespace": "test-ws", "phase": phase},
+        json={"name": name, "namespace": "test-ws", "phase": phase, **extra},
     )
 
 
@@ -518,6 +518,54 @@ class TestSandboxResume:
         sbx.resume()
 
         assert sbx.auto_idle_timeout_seconds == 900
+        sbx._client.close()
+
+    def test_full_snapshot_lifecycle_preserves_code_session(
+        self, mock_env, httpx_mock: HTTPXMock
+    ):
+        _mock_version(httpx_mock)
+        _mock_claim(httpx_mock)
+        _mock_pause(httpx_mock, preservesProcessState=True)
+        httpx_mock.add_response(
+            method="POST",
+            url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/sandbox-test/resume",
+            status_code=202,
+            json={
+                "name": "sandbox-test",
+                "phase": "Resuming",
+                "preservesProcessState": True,
+            },
+        )
+
+        sbx = Sandbox.from_pool("python-pool")
+        sbx._code._session_id = "restorable-session"
+        sbx.pause(wait=False)
+        sbx.resume()
+
+        assert sbx.session_id == "restorable-session"
+        assert sbx._code._reset_on_next_exec is False
+        sbx._client.close()
+
+    def test_default_lifecycle_invalidates_code_session(
+        self, mock_env, httpx_mock: HTTPXMock
+    ):
+        _mock_version(httpx_mock)
+        _mock_claim(httpx_mock)
+        _mock_pause(httpx_mock)
+        httpx_mock.add_response(
+            method="POST",
+            url=f"{BASE}/_platform/sandbox/test-ws/sandboxes/sandbox-test/resume",
+            status_code=202,
+            json={"name": "sandbox-test", "phase": "Resuming"},
+        )
+
+        sbx = Sandbox.from_pool("python-pool")
+        sbx._code._session_id = "stale-session"
+        sbx.pause(wait=False)
+        sbx.resume()
+
+        assert sbx.session_id is None
+        assert sbx._code._reset_on_next_exec is True
         sbx._client.close()
 
     def test_resume_non_paused_raises(self, mock_env, httpx_mock: HTTPXMock):

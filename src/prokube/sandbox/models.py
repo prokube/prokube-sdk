@@ -50,6 +50,10 @@ class SandboxInfo(BaseModel):
         default=None,
         description="Why the last lifecycle step failed, when the phase is Failed",
     )
+    preserves_process_state: bool = Field(
+        default=False,
+        description="Whether pause and resume preserve running process state",
+    )
 
 
 class SandboxInfoPage(BaseModel):
