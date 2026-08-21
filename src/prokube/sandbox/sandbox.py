@@ -298,9 +298,9 @@ class Sandbox:
         info = self._client.pause(self._name)
         self._status = info.status
         self._last_error = info.last_error
-        # Pausing deletes the underlying pod, so any existing Jupyter session
-        # is no longer valid. Reset so next run_code() starts a fresh kernel.
-        self._code.reset_session()
+        if not info.preserves_process_state:
+            # The normal pod-replacement path invalidates the old code session.
+            self._code.reset_session()
         if wait:
             self._wait_for_pause(timeout)
 
@@ -367,8 +367,8 @@ class Sandbox:
         self._last_error = info.last_error
         if info.auto_idle_timeout_seconds is not None:
             self._auto_idle_timeout_seconds = info.auto_idle_timeout_seconds
-        # New pod means previous Jupyter session is invalid.
-        self._code.reset_session()
+        if not info.preserves_process_state:
+            self._code.reset_session()
 
     def wait_until_ready(self, timeout: int = 120) -> None:
         """Block until sandbox phase is Running. Useful after resume().
