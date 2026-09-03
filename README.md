@@ -2,6 +2,62 @@
 
 Python SDK for the prokube.ai platform.
 
+## Greenfield Sandbox v0.1
+
+The top-level `SandboxClient` implements the deliberately small, incompatible
+v0.1 API: create, stateful Python execution, and idempotent delete. Actor
+activation, pause, suspend, and resume remain transparent runtime details.
+
+```python
+from prokube import SandboxClient
+
+with SandboxClient(
+    endpoint="https://platform.example.com/pkui",
+    workspace="research",
+    api_key="...",
+) as client:
+    with client.create(
+        name="research-task-42",
+        runtime="python",
+        size="small",
+        network="offline",
+    ) as sandbox:
+        sandbox.run_code("value = 41")
+        result = sandbox.run_code("value += 1; print(value)")
+        print(result.stdout)
+```
+
+The older `prokube.sandbox.Sandbox` API remains available for deployments using
+the pre-greenfield backend, but its pool, file, command, and explicit lifecycle
+methods are not supported by the v0.1 backend.
+
+Run the opt-in deployment test with:
+
+```bash
+PROKUBE_E2E=1 \
+PROKUBE_API_URL=http://127.0.0.1:18080 \
+PROKUBE_WORKSPACE=research \
+PROKUBE_USER_ID=user@example.com \
+uv run pytest tests/e2e/test_sandbox_v1_live.py -v
+```
+
+Measure lazy create, cold first-code, active code, a 64 KiB code payload,
+code-mediated 1 KiB and 1 MiB file I/O, delete, and optionally transparent
+resume-to-code with:
+
+```bash
+uv run python scripts/benchmark_sandbox_v1.py \
+  --endpoint http://127.0.0.1:18080 \
+  --workspace research \
+  --user-id user@example.com \
+  --rounds 10
+```
+
+The file measurements execute `pathlib` inside `run_code`; v0.1 intentionally
+does not expose a file-upload API. `--suspend-command` accepts a local command
+with a `{name}` placeholder when transparent resume-to-code should also be
+measured.
+
 ## Installation
 
 ```bash
