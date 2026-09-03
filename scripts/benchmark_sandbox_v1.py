@@ -11,6 +11,7 @@ import statistics
 import subprocess
 import time
 import uuid
+from typing import Literal
 
 from prokube import Sandbox, SandboxClient
 
@@ -26,9 +27,11 @@ def run_code_timed(sandbox: Sandbox, code: str, *, timeout: int = 300) -> float:
     return elapsed
 
 
-def create_timed(client: SandboxClient, name: str) -> tuple[float, Sandbox]:
+def create_timed(
+    client: SandboxClient, name: str, runtime: Literal["python", "python-microvm"]
+) -> tuple[float, Sandbox]:
     started = time.perf_counter()
-    sandbox = client.create(name=name)
+    sandbox = client.create(name=name, runtime=runtime)
     return time.perf_counter() - started, sandbox
 
 
@@ -57,6 +60,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--workspace", default=os.environ.get("PROKUBE_WORKSPACE"))
     parser.add_argument("--api-key", default=os.environ.get("PROKUBE_API_KEY"))
     parser.add_argument("--user-id", default=os.environ.get("PROKUBE_USER_ID"))
+    parser.add_argument(
+        "--runtime", choices=("python", "python-microvm"), default="python"
+    )
     parser.add_argument("--rounds", type=int, default=10)
     parser.add_argument(
         "--suspend-command",
@@ -96,7 +102,7 @@ def main() -> None:
     ) as client:
         for round_number in range(args.rounds):
             name = f"sdk-bench-{uuid.uuid4().hex[:10]}"
-            create_seconds, sandbox = create_timed(client, name)
+            create_seconds, sandbox = create_timed(client, name, args.runtime)
             timings["create_lazy"].append(create_seconds)
             try:
                 timings["first_code_cold"].append(run_code_timed(sandbox, "value = 41"))
