@@ -58,6 +58,13 @@ does not expose a file-upload API. `--suspend-command` accepts a local command
 with a `{name}` placeholder when transparent resume-to-code should also be
 measured.
 
+`scripts/load_test_sandbox_v1_files.py` builds a deterministic archive, uploads
+and extracts 10,000 files through `run_code`, verifies their count, byte size,
+and aggregate digest, and can repeat verification after an external suspend.
+`scripts/load_test_sandbox_v1_capacity.py` keeps one Actor active, starts a
+second Actor request, proves that it remains parked, suspends the first Actor,
+and measures how long the second request takes to acquire the released worker.
+
 ## Installation
 
 ```bash
