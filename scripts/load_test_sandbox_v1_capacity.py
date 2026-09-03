@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prove request parking when all Substrate workers are assigned."""
+"""Prove request parking and release when all workers are assigned."""
 
 from __future__ import annotations
 
@@ -21,7 +21,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--api-key", default=os.environ.get("PROKUBE_API_KEY"))
     parser.add_argument("--user-id", default=os.environ.get("PROKUBE_USER_ID"))
     parser.add_argument("--observe-seconds", type=float, default=3)
-    parser.add_argument("--suspend-command", required=True)
+    parser.add_argument(
+        "--release-command",
+        required=True,
+        help="blocking pause, suspend, or delete command with a {name} placeholder",
+    )
     args = parser.parse_args()
     if not args.endpoint or not args.workspace:
         parser.error("--endpoint and --workspace are required")
@@ -53,10 +57,10 @@ def main() -> None:
                 time.sleep(args.observe_seconds)
                 parked = not waiting.done()
 
-                command = shlex.split(args.suspend_command.format(name=first.name))
-                suspend_started = time.perf_counter()
+                command = shlex.split(args.release_command.format(name=first.name))
+                release_started = time.perf_counter()
                 subprocess.run(command, check=True)
-                suspend_seconds = time.perf_counter() - suspend_started
+                release_seconds = time.perf_counter() - release_started
 
                 result = waiting.result(timeout=300)
                 total_wait_seconds = time.perf_counter() - started
@@ -68,7 +72,7 @@ def main() -> None:
             print(f"firstSandbox={first.name}")
             print(f"secondSandbox={second.name}")
             print(f"parkedAfter{args.observe_seconds:g}Seconds={str(parked).lower()}")
-            print(f"suspendSeconds={suspend_seconds:.3f}")
+            print(f"releaseSeconds={release_seconds:.3f}")
             print(f"secondRequestTotalSeconds={total_wait_seconds:.3f}")
             print(f"secondSession={result.session_id}")
         finally:
