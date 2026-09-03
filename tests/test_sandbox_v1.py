@@ -1,5 +1,6 @@
 """Contract tests for the minimal pk-sandbox v0.1 client."""
 
+import base64
 import json
 from typing import Any, cast
 
@@ -84,6 +85,92 @@ def test_api_key_uses_public_gateway_route_and_origin(httpx_mock: HTTPXMock) -> 
     request = httpx_mock.get_request()
     assert request is not None
     assert request.headers["x-api-key"] == "secret"
+
+
+def test_file_upload_download_batch_and_list(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(status_code=201, json={"name": "files"})
+    httpx_mock.add_response(status_code=201, json={"path": "/workspace/data.bin"})
+    httpx_mock.add_response(
+        json={
+            "success": True,
+            "total": 2,
+            "successCount": 2,
+            "failureCount": 0,
+            "results": [
+                {"index": 0, "path": "/workspace/a.txt", "success": True},
+                {"index": 1, "path": "/workspace/b.bin", "success": True},
+            ],
+        }
+    )
+    httpx_mock.add_response(content=b"\x00\x01\x02")
+    httpx_mock.add_response(
+        json={
+            "path": "/workspace",
+            "files": [
+                {
+                    "name": "data.bin",
+                    "path": "/workspace/data.bin",
+                    "isDirectory": False,
+                    "size": 3,
+                }
+            ],
+        }
+    )
+    httpx_mock.add_response(status_code=204)
+
+    with SandboxClient(
+        endpoint="https://platform.example/pkui",
+        workspace="research",
+        user_id="user@example.com",
+    ) as client:
+        sandbox = client.create(name="files")
+        sandbox.files.write("/workspace/data.bin", b"\x00\x01\x02")
+        batch = sandbox.files.write_batch(
+            [("/workspace/a.txt", "hello"), ("/workspace/b.bin", b"\xff")]
+        )
+        content = sandbox.files.read("/workspace/data.bin")
+        files = sandbox.files.list()
+        sandbox.delete()
+
+    assert batch.success and batch.success_count == 2
+    assert content == b"\x00\x01\x02"
+    assert files[0].path == "/workspace/data.bin"
+    assert files[0].size == 3
+    requests = httpx_mock.get_requests()
+    upload = json.loads(requests[1].content)
+    assert upload == {
+        "path": "/workspace/data.bin",
+        "content": base64.b64encode(b"\x00\x01\x02").decode("ascii"),
+        "encoding": "base64",
+    }
+    batch_upload = json.loads(requests[2].content)
+    assert batch_upload["items"][0] == {
+        "path": "/workspace/a.txt",
+        "content": "hello",
+    }
+    assert batch_upload["items"][1]["encoding"] == "base64"
+    assert requests[3].url.params["path"] == "/workspace/data.bin"
+    assert requests[4].url.params["path"] == "/workspace"
+
+
+def test_file_operations_reject_invalid_inputs_and_deleted_sandbox(
+    httpx_mock: HTTPXMock,
+) -> None:
+    httpx_mock.add_response(status_code=201, json={"name": "files"})
+    httpx_mock.add_response(status_code=204)
+    with SandboxClient(
+        endpoint="https://platform.example",
+        workspace="research",
+        user_id="user@example.com",
+    ) as client:
+        sandbox = client.create(name="files")
+        with pytest.raises(ValueError, match="1 to 100"):
+            sandbox.files.write_batch([])
+        with pytest.raises(TypeError, match="bytes or str"):
+            sandbox.files.write("/workspace/data", cast(Any, 42))
+        sandbox.delete()
+        with pytest.raises(RuntimeError, match="deleted"):
+            sandbox.files.read("/workspace/data")
 
 
 @pytest.mark.parametrize(

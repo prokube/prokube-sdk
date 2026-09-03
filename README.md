@@ -5,7 +5,7 @@ Python SDK for the prokube.ai platform.
 ## Greenfield Sandbox v0.1
 
 The top-level `SandboxClient` implements the deliberately small, incompatible
-v0.1 API: create, stateful Python execution, and idempotent delete. Actor
+v0.1 API: create, stateful Python execution, file operations, and idempotent delete. Actor
 activation, pause, suspend, and resume remain transparent runtime details.
 
 ```python
@@ -25,10 +25,13 @@ with SandboxClient(
         sandbox.run_code("value = 41")
         result = sandbox.run_code("value += 1; print(value)")
         print(result.stdout)
+        sandbox.files.write("/workspace/input.bin", b"\x00\x01")
+        assert sandbox.files.read("/workspace/input.bin") == b"\x00\x01"
+        files = sandbox.files.list("/workspace")
 ```
 
 The older `prokube.sandbox.Sandbox` API remains available for deployments using
-the pre-greenfield backend, but its pool, file, command, and explicit lifecycle
+the pre-greenfield backend, but its pool, command, and explicit lifecycle
 methods are not supported by the v0.1 backend.
 
 Run the opt-in deployment test with:
@@ -42,7 +45,7 @@ uv run pytest tests/e2e/test_sandbox_v1_live.py -v
 ```
 
 Measure lazy create, cold first-code, active code, a 64 KiB code payload,
-code-mediated 1 KiB and 1 MiB file I/O, delete, and optionally transparent
+1 KiB and 1 MiB file API I/O, delete, and optionally transparent
 resume-to-code with:
 
 ```bash
@@ -53,14 +56,13 @@ uv run python scripts/benchmark_sandbox_v1.py \
   --rounds 10
 ```
 
-The file measurements execute `pathlib` inside `run_code`; v0.1 intentionally
-does not expose a file-upload API. `--suspend-command` accepts a local command
-with a `{name}` placeholder when transparent resume-to-code should also be
-measured.
+The public `sandbox.files` API supports single and batch upload, binary download,
+and directory listing. `--suspend-command` accepts a local command with a
+`{name}` placeholder when transparent resume-to-code should also be measured.
 
-`scripts/load_test_sandbox_v1_files.py` builds a deterministic archive, uploads
-and extracts 10,000 files through `run_code`, verifies their count, byte size,
-and aggregate digest, and can repeat verification after an external suspend.
+`scripts/load_test_sandbox_v1_files.py` uploads 10,000 deterministic files in
+100-item API batches, samples binary downloads, verifies count, byte size, and
+aggregate digest, and can repeat verification after an external suspend.
 `scripts/load_test_sandbox_v1_capacity.py` keeps one Actor active, starts a
 second Actor request, proves that it remains parked, pauses or suspends the
 first Actor, and measures how long the second request takes to acquire the

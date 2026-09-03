@@ -2,7 +2,11 @@
 
 from prokube._version import __version__
 from prokube.sandbox.v1 import (
+    BatchFileResult,
+    BatchFileWriteResult,
     CodeResult,
+    FileInfo,
+    FileManager,
     Sandbox,
     SandboxAPIError,
     SandboxAuthorizationError,
@@ -15,7 +19,11 @@ from prokube.sandbox.v1 import (
 )
 
 __all__ = [
+    "BatchFileResult",
+    "BatchFileWriteResult",
     "CodeResult",
+    "FileInfo",
+    "FileManager",
     "Sandbox",
     "SandboxAPIError",
     "SandboxAuthorizationError",

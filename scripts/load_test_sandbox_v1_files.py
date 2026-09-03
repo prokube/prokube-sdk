@@ -1,17 +1,14 @@
 #!/usr/bin/env python3
-"""Upload and verify a large file set through the v0.1 run_code channel."""
+"""Upload and verify a large file set through the v0.1 files API."""
 
 from __future__ import annotations
 
 import argparse
-import base64
 import hashlib
-import io
 import json
 import os
 import shlex
 import subprocess
-import tarfile
 import time
 import uuid
 
@@ -26,12 +23,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--user-id", default=os.environ.get("PROKUBE_USER_ID"))
     parser.add_argument("--files", type=int, default=10_000)
     parser.add_argument("--bytes-per-file", type=int, default=128)
+    parser.add_argument("--download-samples", type=int, default=100)
     parser.add_argument("--suspend-command")
     args = parser.parse_args()
     if not args.endpoint or not args.workspace:
         parser.error("--endpoint and --workspace are required")
-    if args.files < 1 or args.bytes_per_file < 1:
-        parser.error("--files and --bytes-per-file must be positive")
+    if args.files < 1 or args.bytes_per_file < 1 or args.download_samples < 0:
+        parser.error(
+            "file counts and sizes must be non-negative, with at least one file"
+        )
     return args
 
 
@@ -44,18 +44,21 @@ def file_content(index: int, size: int) -> bytes:
     return bytes(content[:size])
 
 
-def build_archive(file_count: int, bytes_per_file: int) -> tuple[bytes, str]:
-    output = io.BytesIO()
+def build_files(
+    file_count: int, bytes_per_file: int
+) -> tuple[list[tuple[str, bytes]], str]:
+    files = []
     digest = hashlib.sha256()
-    with tarfile.open(fileobj=output, mode="w:gz", compresslevel=6) as archive:
-        for index in range(file_count):
-            content = file_content(index, bytes_per_file)
-            digest.update(content)
-            info = tarfile.TarInfo(f"{index // 1000:02d}/file-{index:05d}.bin")
-            info.size = len(content)
-            info.mode = 0o600
-            archive.addfile(info, io.BytesIO(content))
-    return output.getvalue(), digest.hexdigest()
+    for index in range(file_count):
+        content = file_content(index, bytes_per_file)
+        digest.update(content)
+        files.append(
+            (
+                f"/workspace/load-test-10000/{index // 1000:02d}/file-{index:05d}.bin",
+                content,
+            )
+        )
+    return files, digest.hexdigest()
 
 
 def timed_run_code(sandbox: Sandbox, code: str) -> tuple[float, str]:
@@ -69,18 +72,10 @@ def timed_run_code(sandbox: Sandbox, code: str) -> tuple[float, str]:
 
 def main() -> None:
     args = parse_args()
-    archive_started = time.perf_counter()
-    archive, expected_digest = build_archive(args.files, args.bytes_per_file)
-    archive_seconds = time.perf_counter() - archive_started
-    encoded = base64.b64encode(archive).decode()
+    build_started = time.perf_counter()
+    files, expected_digest = build_files(args.files, args.bytes_per_file)
+    build_seconds = time.perf_counter() - build_started
     destination = "/workspace/load-test-10000"
-    upload_code = (
-        "import base64, io, tarfile; "
-        f"data=base64.b64decode({encoded!r}); "
-        f"archive=tarfile.open(fileobj=io.BytesIO(data), mode='r:gz'); "
-        f"archive.extractall({destination!r}, filter='data'); archive.close(); "
-        "print(len(data))"
-    )
     verify_code = (
         "from pathlib import Path; import hashlib, json; "
         f"files=sorted(Path({destination!r}).rglob('*.bin')); "
@@ -99,7 +94,21 @@ def main() -> None:
     ) as client:
         sandbox = client.create(name=name)
         try:
-            upload_seconds, uploaded_bytes = timed_run_code(sandbox, upload_code)
+            upload_started = time.perf_counter()
+            for offset in range(0, len(files), 100):
+                result = sandbox.files.write_batch(files[offset : offset + 100])
+                if not result.success:
+                    failures = [item for item in result.results if not item.success]
+                    raise RuntimeError(f"batch upload failed: {failures[:3]}")
+            upload_seconds = time.perf_counter() - upload_started
+
+            sample_count = min(args.download_samples, len(files))
+            download_started = time.perf_counter()
+            for path, expected in files[:sample_count]:
+                if sandbox.files.read(path) != expected:
+                    raise RuntimeError(f"download verification failed: {path}")
+            download_seconds = time.perf_counter() - download_started
+
             verify_seconds, raw_verification = timed_run_code(sandbox, verify_code)
             verification = json.loads(raw_verification)
             if verification != {
@@ -113,6 +122,8 @@ def main() -> None:
             if args.suspend_command:
                 command = shlex.split(args.suspend_command.format(name=name))
                 subprocess.run(command, check=True)
+                if sandbox.files.read(files[0][0]) != files[0][1]:
+                    raise RuntimeError("file changed across suspend/resume")
                 resume_seconds, raw_after_resume = timed_run_code(sandbox, verify_code)
                 if json.loads(raw_after_resume) != verification:
                     raise RuntimeError("file set changed across suspend/resume")
@@ -123,11 +134,11 @@ def main() -> None:
                         "sandbox": name,
                         "files": args.files,
                         "uncompressedBytes": args.files * args.bytes_per_file,
-                        "archiveBytes": len(archive),
-                        "encodedBytes": len(encoded),
-                        "guestReportedArchiveBytes": int(uploaded_bytes),
-                        "archiveBuildSeconds": round(archive_seconds, 3),
-                        "uploadAndExtractSeconds": round(upload_seconds, 3),
+                        "batches": (args.files + 99) // 100,
+                        "downloadSamples": sample_count,
+                        "fixtureBuildSeconds": round(build_seconds, 3),
+                        "batchUploadSeconds": round(upload_seconds, 3),
+                        "sampleDownloadSeconds": round(download_seconds, 3),
                         "verifySeconds": round(verify_seconds, 3),
                         "resumeAndVerifySeconds": (
                             round(resume_seconds, 3)

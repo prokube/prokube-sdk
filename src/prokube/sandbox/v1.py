@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import base64
 import re
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal
 from urllib.parse import quote, urlparse
@@ -78,6 +80,141 @@ class CodeResult:
     traceback: list[str] | None = None
 
 
+@dataclass(frozen=True)
+class FileInfo:
+    """One direct child returned by a Sandbox directory listing."""
+
+    name: str
+    path: str
+    is_dir: bool
+    size: int
+
+
+@dataclass(frozen=True)
+class BatchFileResult:
+    """Result of one item in a batch file upload."""
+
+    index: int
+    path: str
+    success: bool
+    error: str | None = None
+
+
+@dataclass(frozen=True)
+class BatchFileWriteResult:
+    """Aggregate result of a best-effort batch file upload."""
+
+    success: bool
+    total: int
+    success_count: int
+    failure_count: int
+    results: list[BatchFileResult]
+
+
+class FileManager:
+    """Upload, download, and list files in one Sandbox."""
+
+    def __init__(self, sandbox: Sandbox) -> None:
+        self._sandbox = sandbox
+
+    def write(self, path: str, content: bytes | str) -> None:
+        """Write bytes or UTF-8 text to a Sandbox path."""
+        self._sandbox._check_available()
+        if not path:
+            raise ValueError("path must not be empty")
+        payload = self._encode(path, content)
+        self._sandbox._client._request(
+            "POST",
+            f"/{quote(self._sandbox.name, safe='')}/files",
+            operation="write_file",
+            sandbox_name=self._sandbox.name,
+            json=payload,
+        )
+
+    def write_batch(
+        self, items: Sequence[tuple[str, bytes | str]]
+    ) -> BatchFileWriteResult:
+        """Write up to 100 files in request order and return per-file results."""
+        self._sandbox._check_available()
+        if not 1 <= len(items) <= 100:
+            raise ValueError("batch must contain 1 to 100 items")
+        payload = [self._encode(path, content) for path, content in items]
+        raw = self._sandbox._client._request(
+            "POST",
+            f"/{quote(self._sandbox.name, safe='')}/files/batch",
+            operation="write_files",
+            sandbox_name=self._sandbox.name,
+            json={"items": payload},
+        )
+        results = [
+            BatchFileResult(
+                index=int(item.get("index", 0)),
+                path=str(item.get("path", "")),
+                success=bool(item.get("success", False)),
+                error=str(item["error"]) if item.get("error") else None,
+            )
+            for item in raw.get("results", [])
+            if isinstance(item, dict)
+        ]
+        return BatchFileWriteResult(
+            success=bool(raw.get("success", False)),
+            total=int(raw.get("total", len(items))),
+            success_count=int(raw.get("successCount", 0)),
+            failure_count=int(raw.get("failureCount", 0)),
+            results=results,
+        )
+
+    def read(self, path: str) -> bytes:
+        """Read a Sandbox file as bytes."""
+        self._sandbox._check_available()
+        if not path:
+            raise ValueError("path must not be empty")
+        return self._sandbox._client._request_bytes(
+            "GET",
+            f"/{quote(self._sandbox.name, safe='')}/files/download",
+            operation="read_file",
+            sandbox_name=self._sandbox.name,
+            params={"path": path},
+        )
+
+    def list(self, path: str = "/workspace") -> list[FileInfo]:
+        """List direct children of a Sandbox directory."""
+        self._sandbox._check_available()
+        if not path:
+            raise ValueError("path must not be empty")
+        raw = self._sandbox._client._request(
+            "GET",
+            f"/{quote(self._sandbox.name, safe='')}/files",
+            operation="list_files",
+            sandbox_name=self._sandbox.name,
+            params={"path": path},
+        )
+        return [
+            FileInfo(
+                name=str(item.get("name", "")),
+                path=str(item.get("path", "")),
+                is_dir=bool(item.get("isDirectory", False)),
+                size=int(item.get("size", 0)),
+            )
+            for item in raw.get("files", [])
+            if isinstance(item, dict)
+        ]
+
+    @staticmethod
+    def _encode(path: str, content: bytes | str) -> dict[str, str]:
+        if not path:
+            raise ValueError("path must not be empty")
+        if isinstance(content, str):
+            return {"path": path, "content": content}
+        if not isinstance(content, bytes):
+            raise TypeError("content must be bytes or str")
+        return {
+            "path": path,
+            "content": base64.b64encode(content).decode("ascii"),
+            "encoding": "base64",
+        }
+
+
 class Sandbox:
     """A stable Sandbox identity backed by an automatically managed Actor."""
 
@@ -98,11 +235,11 @@ class Sandbox:
         self.network: Literal["offline"] = network
         self.metadata = metadata
         self._deleted = False
+        self.files = FileManager(self)
 
     def run_code(self, code: str, *, timeout: int = 300) -> CodeResult:
         """Run Python in the Sandbox's persistent execution context."""
-        if self._deleted:
-            raise RuntimeError(f"Sandbox {self.name!r} has been deleted")
+        self._check_available()
         if not code:
             raise ValueError("code must not be empty")
         if not 1 <= timeout <= 300:
@@ -142,6 +279,10 @@ class Sandbox:
         except SandboxNotFoundError:
             pass
         self._deleted = True
+
+    def _check_available(self) -> None:
+        if self._deleted:
+            raise RuntimeError(f"Sandbox {self.name!r} has been deleted")
 
     def __enter__(self) -> Sandbox:
         return self
@@ -247,6 +388,43 @@ class SandboxClient:
         timeout: float | None = None,
         **kwargs: Any,
     ) -> dict[str, Any]:
+        response = self._send(
+            method,
+            suffix,
+            operation=operation,
+            sandbox_name=sandbox_name,
+            timeout=timeout,
+            **kwargs,
+        )
+        return response.json() if response.content else {}
+
+    def _request_bytes(
+        self,
+        method: str,
+        suffix: str,
+        *,
+        operation: str,
+        sandbox_name: str,
+        **kwargs: Any,
+    ) -> bytes:
+        return self._send(
+            method,
+            suffix,
+            operation=operation,
+            sandbox_name=sandbox_name,
+            **kwargs,
+        ).content
+
+    def _send(
+        self,
+        method: str,
+        suffix: str,
+        *,
+        operation: str,
+        sandbox_name: str | None,
+        timeout: float | None = None,
+        **kwargs: Any,
+    ) -> httpx.Response:
         try:
             response = self._http.request(
                 method,
@@ -273,7 +451,7 @@ class SandboxClient:
                 retryable=True,
             ) from error
         if response.is_success:
-            return response.json() if response.content else {}
+            return response
 
         body: dict[str, Any]
         try:
@@ -312,7 +490,11 @@ class SandboxClient:
 
 
 __all__ = [
+    "BatchFileResult",
+    "BatchFileWriteResult",
     "CodeResult",
+    "FileInfo",
+    "FileManager",
     "Sandbox",
     "SandboxAPIError",
     "SandboxAuthorizationError",

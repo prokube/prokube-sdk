@@ -78,10 +78,10 @@ def main() -> None:
         "first_code_cold": [],
         "active_code": [],
         "code_payload_upload_64k": [],
-        "file_write_1k_via_code": [],
-        "file_read_1k_via_code": [],
-        "file_write_1m_via_code": [],
-        "file_read_1m_via_code": [],
+        "file_write_1k": [],
+        "file_read_1k": [],
+        "file_write_1m": [],
+        "file_read_1m": [],
         "delete": [],
     }
     if args.suspend_command:
@@ -109,34 +109,20 @@ def main() -> None:
                         sandbox, f"payload = {payload!r}; print(len(payload))"
                     )
                 )
-                timings["file_write_1k_via_code"].append(
-                    run_code_timed(
-                        sandbox,
-                        "from pathlib import Path; "
-                        "Path('/workspace/benchmark.bin').write_bytes(b'x' * 1024)",
-                    )
-                )
-                timings["file_read_1k_via_code"].append(
-                    run_code_timed(
-                        sandbox,
-                        "from pathlib import Path; "
-                        "print(len(Path('/workspace/benchmark.bin').read_bytes()))",
-                    )
-                )
-                timings["file_write_1m_via_code"].append(
-                    run_code_timed(
-                        sandbox,
-                        "from pathlib import Path; "
-                        "Path('/workspace/benchmark-1m.bin').write_bytes(b'x' * 1048576)",
-                    )
-                )
-                timings["file_read_1m_via_code"].append(
-                    run_code_timed(
-                        sandbox,
-                        "from pathlib import Path; "
-                        "print(len(Path('/workspace/benchmark-1m.bin').read_bytes()))",
-                    )
-                )
+                started = time.perf_counter()
+                sandbox.files.write("/workspace/benchmark.bin", b"x" * 1024)
+                timings["file_write_1k"].append(time.perf_counter() - started)
+                started = time.perf_counter()
+                if len(sandbox.files.read("/workspace/benchmark.bin")) != 1024:
+                    raise RuntimeError("1 KiB file download was truncated")
+                timings["file_read_1k"].append(time.perf_counter() - started)
+                started = time.perf_counter()
+                sandbox.files.write("/workspace/benchmark-1m.bin", b"x" * 1048576)
+                timings["file_write_1m"].append(time.perf_counter() - started)
+                started = time.perf_counter()
+                if len(sandbox.files.read("/workspace/benchmark-1m.bin")) != 1048576:
+                    raise RuntimeError("1 MiB file download was truncated")
+                timings["file_read_1m"].append(time.perf_counter() - started)
                 if args.suspend_command:
                     command = shlex.split(args.suspend_command.format(name=name))
                     subprocess.run(
