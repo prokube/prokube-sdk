@@ -21,6 +21,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--workspace", default=os.environ.get("PROKUBE_WORKSPACE"))
     parser.add_argument("--api-key", default=os.environ.get("PROKUBE_API_KEY"))
     parser.add_argument("--user-id", default=os.environ.get("PROKUBE_USER_ID"))
+    parser.add_argument(
+        "--runtime", choices=("python", "python-microvm"), default="python"
+    )
     parser.add_argument("--files", type=int, default=10_000)
     parser.add_argument("--bytes-per-file", type=int, default=128)
     parser.add_argument("--download-samples", type=int, default=100)
@@ -92,7 +95,7 @@ def main() -> None:
         user_id=None if args.api_key else args.user_id,
         timeout=360,
     ) as client:
-        sandbox = client.create(name=name)
+        sandbox = client.create(name=name, runtime=args.runtime)
         try:
             upload_started = time.perf_counter()
             for offset in range(0, len(files), 100):

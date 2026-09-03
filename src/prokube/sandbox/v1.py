@@ -13,6 +13,7 @@ from urllib.parse import quote, urlparse
 import httpx
 
 _NAME_PATTERN = re.compile(r"^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$")
+_SandboxRuntime = Literal["python", "python-microvm"]
 
 
 class SandboxAPIError(Exception):
@@ -223,14 +224,14 @@ class Sandbox:
         client: SandboxClient,
         *,
         name: str,
-        runtime: Literal["python"],
+        runtime: _SandboxRuntime,
         size: Literal["small"],
         network: Literal["offline"],
         metadata: dict[str, Any],
     ) -> None:
         self._client = client
         self.name = name
-        self.runtime: Literal["python"] = runtime
+        self.runtime: _SandboxRuntime = runtime
         self.size: Literal["small"] = size
         self.network: Literal["offline"] = network
         self.metadata = metadata
@@ -332,7 +333,7 @@ class SandboxClient:
         self,
         *,
         name: str | None = None,
-        runtime: Literal["python"] = "python",
+        runtime: _SandboxRuntime = "python",
         size: Literal["small"] = "small",
         network: Literal["offline"] = "offline",
     ) -> Sandbox:
@@ -340,8 +341,8 @@ class SandboxClient:
         name = name or f"sandbox-{uuid.uuid4().hex[:12]}"
         if len(name) > 63 or not _NAME_PATTERN.fullmatch(name):
             raise ValueError("name must be a valid DNS label of at most 63 characters")
-        if runtime != "python":
-            raise ValueError("runtime must be python")
+        if runtime not in {"python", "python-microvm"}:
+            raise ValueError("runtime must be python or python-microvm")
         if size != "small":
             raise ValueError("size must be small")
         if network != "offline":

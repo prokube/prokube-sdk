@@ -22,6 +22,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--workspace", default=os.environ.get("PROKUBE_WORKSPACE"))
     parser.add_argument("--api-key", default=os.environ.get("PROKUBE_API_KEY"))
     parser.add_argument("--user-id", default=os.environ.get("PROKUBE_USER_ID"))
+    parser.add_argument(
+        "--runtime", choices=("python", "python-microvm"), default="python"
+    )
     parser.add_argument("--sizes-mib", default="0,1,8,32")
     parser.add_argument("--rounds", type=int, default=3)
     parser.add_argument(
@@ -69,7 +72,7 @@ def main() -> None:
         for size_mib in args.sizes_mib:
             for round_number in range(args.rounds):
                 name = f"sdk-resume-{size_mib}m-{uuid.uuid4().hex[:8]}"
-                sandbox = client.create(name=name)
+                sandbox = client.create(name=name, runtime=args.runtime)
                 try:
                     active = sandbox.run_code("baseline = 1; print(baseline)")
                     if not active.success:

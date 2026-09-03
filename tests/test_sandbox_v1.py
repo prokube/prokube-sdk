@@ -87,6 +87,21 @@ def test_api_key_uses_public_gateway_route_and_origin(httpx_mock: HTTPXMock) -> 
     assert request.headers["x-api-key"] == "secret"
 
 
+def test_create_supports_microvm_runtime(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(status_code=201, json={"name": "microvm-test"})
+    with SandboxClient(
+        endpoint="https://platform.example",
+        workspace="research",
+        user_id="user@example.com",
+    ) as client:
+        sandbox = client.create(name="microvm-test", runtime="python-microvm")
+
+    request = httpx_mock.get_request()
+    assert request is not None
+    assert json.loads(request.content)["runtime"] == "python-microvm"
+    assert sandbox.runtime == "python-microvm"
+
+
 def test_file_upload_download_batch_and_list(httpx_mock: HTTPXMock) -> None:
     httpx_mock.add_response(status_code=201, json={"name": "files"})
     httpx_mock.add_response(status_code=201, json={"path": "/workspace/data.bin"})
@@ -212,7 +227,7 @@ def test_typed_errors_retain_operation_context(
     ("kwargs", "message"),
     [
         ({"name": "Bad_Name"}, "DNS label"),
-        ({"runtime": "node"}, "runtime must be python"),
+        ({"runtime": "node"}, "runtime must be python or python-microvm"),
         ({"size": "large"}, "size must be small"),
         ({"network": "internet"}, "network must be offline"),
     ],
