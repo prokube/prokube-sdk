@@ -69,6 +69,63 @@ first Actor, and measures how long the second request takes to acquire the
 released worker. Both pause and suspend clear the worker assignment; pause
 retains a node-local snapshot while suspend uploads a durable snapshot.
 
+### 10,000-file demo
+
+The load test uses only the public SDK for create, upload, download, code
+verification, and delete:
+
+```bash
+PROKUBE_API_URL=https://platform.example.com/pkui \
+PROKUBE_WORKSPACE=research \
+PROKUBE_API_KEY=... \
+uv run python scripts/load_test_sandbox_v1_files.py \
+  --files 10000 \
+  --bytes-per-file 128 \
+  --download-samples 100
+```
+
+One run against the single-worker gVisor qualification deployment on 2026-09-03
+uploaded all 10,000 files in 100 batches in `51.24 s`. Downloading and comparing
+100 samples took `10.59 s`; a full in-Sandbox verification of all 1.28 MB took
+`1.13 s` and produced the expected aggregate SHA-256 digest. These are diagnostic
+measurements, not an SLO.
+
+### Durable suspend and resume
+
+The public v0.1 SDK deliberately has no `suspend()` method. Production auto-idle
+calls durable Substrate `SuspendActor` after 3,600 idle seconds at the next
+300-second sweep, so the effective default is approximately 60-65 minutes. Test
+environments should invoke `SuspendActor` explicitly instead of lowering that
+global timeout on a shared cluster. Pass any blocking operator command with a
+`{name}` placeholder to the benchmark:
+
+```bash
+uv run python scripts/benchmark_sandbox_v1_resume_sizes.py \
+  --endpoint https://platform.example.com/pkui \
+  --workspace research \
+  --api-key ... \
+  --sizes-mib 0,1,8,32 \
+  --rounds 5 \
+  --suspend-command '<operator SuspendActor command> {name}'
+```
+
+The 2026-09-03 qualification used random, poorly compressible files and measured:
+
+| Workspace data | Upload p50 | Durable suspend p50 | Resume-to-code p50 |
+|---:|---:|---:|---:|
+| 0 MiB | 0.00 s | 0.64 s | 0.55 s |
+| 1 MiB | 0.49 s | 0.71 s | 0.53 s |
+| 8 MiB | 3.85 s | 0.84 s | 0.68 s |
+| 32 MiB | 11.86 s | 1.19 s | 1.05 s |
+
+The 10,000-file workload was also explicitly suspended. Suspending its 1.28 MB
+plus filesystem metadata took `1.92 s`; the first file read, including transparent
+resume, took `1.66 s`, and all 10,000 files retained the expected digest.
+
+The qualification deployment stores durable snapshots in Google Cloud Storage,
+not RustFS or MinIO. RustFS is the Substrate Kind-development object store; the
+active cluster profile uses a `gs://` snapshot location.
+
 ## Installation
 
 ```bash

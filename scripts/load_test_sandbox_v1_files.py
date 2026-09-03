@@ -118,13 +118,21 @@ def main() -> None:
             }:
                 raise RuntimeError(f"verification failed: {verification}")
 
-            resume_seconds = None
+            suspend_seconds = None
+            resume_read_seconds = None
+            verify_after_resume_seconds = None
             if args.suspend_command:
                 command = shlex.split(args.suspend_command.format(name=name))
+                suspend_started = time.perf_counter()
                 subprocess.run(command, check=True)
+                suspend_seconds = time.perf_counter() - suspend_started
+                resume_started = time.perf_counter()
                 if sandbox.files.read(files[0][0]) != files[0][1]:
                     raise RuntimeError("file changed across suspend/resume")
-                resume_seconds, raw_after_resume = timed_run_code(sandbox, verify_code)
+                resume_read_seconds = time.perf_counter() - resume_started
+                verify_after_resume_seconds, raw_after_resume = timed_run_code(
+                    sandbox, verify_code
+                )
                 if json.loads(raw_after_resume) != verification:
                     raise RuntimeError("file set changed across suspend/resume")
 
@@ -140,9 +148,19 @@ def main() -> None:
                         "batchUploadSeconds": round(upload_seconds, 3),
                         "sampleDownloadSeconds": round(download_seconds, 3),
                         "verifySeconds": round(verify_seconds, 3),
-                        "resumeAndVerifySeconds": (
-                            round(resume_seconds, 3)
-                            if resume_seconds is not None
+                        "suspendSeconds": (
+                            round(suspend_seconds, 3)
+                            if suspend_seconds is not None
+                            else None
+                        ),
+                        "resumeFirstReadSeconds": (
+                            round(resume_read_seconds, 3)
+                            if resume_read_seconds is not None
+                            else None
+                        ),
+                        "verifyAfterResumeSeconds": (
+                            round(verify_after_resume_seconds, 3)
+                            if verify_after_resume_seconds is not None
                             else None
                         ),
                         "digest": expected_digest,
