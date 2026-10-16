@@ -2,6 +2,72 @@
 
 Python SDK for the prokube.ai platform.
 
+## Personal Sandboxes: `pk` and Python (preview)
+
+Install this feature branch in a virtual environment (Python 3.10+, Git):
+
+```sh
+pip install 'git+https://github.com/prokube/prokube-sdk.git@56-personal-sandbox-cli'
+pk login https://hen-public-troodon.prokube.cloud
+pk sandbox create my-project --connect
+```
+
+Login opens the existing platform SSO in your browser and also prints a fallback
+link. Later, `pk login` reuses the saved platform and credential-store choice.
+The platform must already have your personal Sandbox identity provisioned.
+Detach from the tmux session with Ctrl-B, then D; reconnect with
+`pk sandbox connect my-project`. Connecting requires stock OpenSSH (`ssh`).
+
+```sh
+pk sandbox list
+pk sandbox exec my-project -- python3 -c 'print("hello")'
+pk sandbox cp ./example.py my-project:/workspace/example.py
+pk sandbox suspend my-project
+pk sandbox resume my-project
+pk sandbox ssh-config my-project
+pk auth status
+pk logout
+```
+
+CLI and Python share the same login and serialized refresh-token rotation:
+
+```python
+from prokube import SandboxClient
+
+with SandboxClient() as client:
+    sandbox = client.get("my-project")
+    print(sandbox.run("printf hello").stdout)
+    sandbox.write_file("example.txt", b"hello")
+    print(sandbox.read_file("example.txt"))
+```
+
+Use `AsyncSandboxClient` with `async with` and await its operations for async code.
+Closing a client or disconnecting leaves the Sandbox running; delete explicitly
+with `pk sandbox delete my-project`.
+
+Credentials use the system keyring by default. On systems without a supported
+keyring, explicitly select `pk login URL --credential-store=file`; this stores
+credentials in owner-readable (0600) files. Profiles and credentials live under
+`~/.config/prokube` (`PROKUBE_CONFIG_DIR` overrides it). Use
+`pk --profile NAME login URL` for another platform profile. Public profile JSON
+contains no tokens. `pk logout` removes local credentials, not your SSO session.
+
+`pk login URL --no-browser` prints the login link without launching a browser;
+the browser must reach this machine's localhost callback (port 8000 or 18000).
+An existing UI JWT can also be imported with `--token-file PATH` or
+`--token-stdin`; imported tokens have no refresh token and need reimporting when
+expired. Python never launches a browser implicitly.
+
+This preview pins the upstream env Python client to a Git revision; it is not
+yet a standalone PyPI release. Personal-Sandbox API-key authentication awaits
+the platform validator. The existing SDK API below remains available.
+
+Validation: 244 unit tests and live macOS acceptance against the Linux-hosted
+platform cover real Dex/Keycloak PKCE login, concurrent refresh, CLI/SDK
+lifecycle, file transfer, process stdin/output, suspend/resume and SSH/tmux.
+Live acceptance uses explicit file storage; native keyring and other client
+operating systems have not received equivalent live validation.
+
 ## Installation
 
 ```bash
