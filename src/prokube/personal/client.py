@@ -24,6 +24,8 @@ from .errors import (
     SandboxError,
     SandboxNotFound,
 )
+from .policy import EgressRule
+from .secrets import MAX_SECRET_BYTES, check_environment, secret_command
 
 
 def check_name(name: str) -> str:
@@ -133,8 +135,16 @@ class AsyncSandboxClient:
             409: SandboxAlreadyExists("Sandbox already exists."),
         }
         if response.status_code in errors:
+            if response.status_code == 409 and path.endswith("/egress"):
+                raise SandboxError(
+                    "Egress policy changed concurrently. Read it again before applying."
+                )
             raise errors[response.status_code]
         if response.status_code >= 400:
+            if response.status_code == 412 and path.endswith("/egress"):
+                raise SandboxError(
+                    "Policy needs native administration, or HTTPS interception requires a new trust-enabled Sandbox."
+                )
             raise SandboxError(f"Sandbox API returned HTTP {response.status_code}.")
         return response.json() if response.content else None
 
@@ -142,6 +152,9 @@ class AsyncSandboxClient:
         upstream = await self._ready()
         env = await invoke(upstream.create(check_name(name), template_name="coding-v1"))
         return AsyncSandbox(self, env)
+
+    async def egress_options(self):
+        return await self.request("GET", "v1/egress-options")
 
     async def get(self, name: str):
         upstream = await self._ready()
@@ -189,11 +202,15 @@ class AsyncSandbox:
         self._client, self._env = client, env
         self.id = env.id
 
-    async def run(self, command: str, *, stdin=None, timeout=None):
+    async def run(self, command: str, *, stdin=None, timeout=None, env=None):
+        check_environment(env)
         await self._client._ready()
-        return await invoke(self._env.shell(command, stdin=stdin, timeout=timeout))
+        return await invoke(
+            self._env.shell(command, stdin=stdin, timeout=timeout, env=env)
+        )
 
     async def start_process(self, command: list[str], **options):
+        check_environment(options.get("env"))
         await self._client._ready()
         return AsyncProcess(await invoke(self._env.start_process(command, **options)))
 
@@ -227,6 +244,41 @@ class AsyncSandbox:
     async def delete(self):
         await self._client._ready()
         await invoke(self._env.delete())
+
+    async def get_egress(self):
+        return await self._client.request("GET", f"v1/sandboxes/{self.id}/egress")
+
+    async def set_egress(
+        self, rules: list[EgressRule | dict], *, revision: str | None = None
+    ):
+        if revision is None:
+            revision = (await self.get_egress())["revision"]
+        return await self._client.request(
+            "PUT",
+            f"v1/sandboxes/{self.id}/egress",
+            json={
+                "revision": revision,
+                "rules": [
+                    r.to_dict() if isinstance(r, EgressRule) else r for r in rules
+                ],
+            },
+        )
+
+    async def write_secret(self, name: str, value: bytes) -> str:
+        """Atomically write a developer-owned 0600 file; guest/snapshots can read it."""
+        if not isinstance(value, bytes) or len(value) > MAX_SECRET_BYTES:
+            raise SandboxError("Secret must be bytes, at most 1 MiB.")
+        command, path = secret_command(name, "write")
+        result = await self.run(command, stdin=value, timeout=30)
+        if result.exit_code:
+            raise SandboxError("Secret file delivery failed.")
+        return path
+
+    async def remove_secret(self, name: str):
+        command, _ = secret_command(name, "remove")
+        result = await self.run(command, timeout=30)
+        if result.exit_code:
+            raise SandboxError("Secret file removal failed.")
 
 
 class AsyncProcess:
@@ -318,6 +370,9 @@ class SandboxClient:
     def list(self):
         return self._loop.call(self._async.list())
 
+    def egress_options(self):
+        return self._loop.call(self._async.egress_options())
+
     def close(self):
         if not self._closed:
             self._closed = True
@@ -367,6 +422,18 @@ class Sandbox:
 
     def delete(self):
         return self._client._loop.call(self._async.delete())
+
+    def get_egress(self):
+        return self._client._loop.call(self._async.get_egress())
+
+    def set_egress(self, rules, *, revision=None):
+        return self._client._loop.call(self._async.set_egress(rules, revision=revision))
+
+    def write_secret(self, name: str, value: bytes) -> str:
+        return self._client._loop.call(self._async.write_secret(name, value))
+
+    def remove_secret(self, name: str):
+        return self._client._loop.call(self._async.remove_secret(name))
 
 
 class Process:

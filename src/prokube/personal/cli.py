@@ -61,6 +61,44 @@ def parser():
     execute.add_argument("name")
     execute.add_argument("argv", nargs=argparse.REMAINDER)
     execute.add_argument("--timeout", type=int, default=3600)
+    execute.add_argument(
+        "--env-file",
+        type=Path,
+        help="JSON environment map; use before the Sandbox name",
+    )
+    egress = actions.add_parser(
+        "egress", help="Manage allowed outbound HTTPS destinations"
+    )
+    policies = egress.add_subparsers(dest="policy_action", required=True)
+    policies.add_parser(
+        "options", help="List platform-approved hosts and credential aliases"
+    )
+    allow = policies.add_parser(
+        "allow", help="Add hosts without replacing existing rules"
+    )
+    allow.add_argument("name")
+    allow.add_argument("hosts", nargs="+")
+    allow.add_argument("--protocol", choices=["tls", "https"], default="tls")
+    allow.add_argument(
+        "--credential", default="", help="Platform-approved gateway credential alias"
+    )
+    for name in ("get", "clear", "apply"):
+        command = policies.add_parser(name)
+        command.add_argument("name")
+        if name == "apply":
+            command.add_argument("--file", "-f", type=Path, required=True)
+    secrets = actions.add_parser(
+        "secret", help="Deliver or remove developer-owned 0600 secret files"
+    )
+    secret_actions = secrets.add_subparsers(dest="secret_action", required=True)
+    for name in ("set", "remove"):
+        command = secret_actions.add_parser(name)
+        command.add_argument("name")
+        command.add_argument("secret_name")
+        if name == "set":
+            source = command.add_mutually_exclusive_group(required=True)
+            source.add_argument("--from-file", type=Path)
+            source.add_argument("--stdin", action="store_true")
     for name in ("suspend", "resume", "delete"):
         actions.add_parser(name).add_argument("name")
     copy = actions.add_parser("cp", help="Copy a file; remote paths use sandbox:/path")
@@ -161,7 +199,64 @@ def run(args) -> int:
         print(config.read_text(), end="")
         return 0
     with SandboxClient(profile) as client:
-        if args.action == "create":
+        if args.action == "egress":
+            if args.policy_action == "options":
+                result = client.egress_options()
+            else:
+                sandbox = client.get(args.name)
+                if args.policy_action == "get":
+                    result = sandbox.get_egress()
+                elif args.policy_action == "clear":
+                    result = sandbox.set_egress([])
+                elif args.policy_action == "allow":
+                    current = sandbox.get_egress()
+                    rules = {r["host"]: r for r in current["rules"]}
+                    for host in args.hosts:
+                        previous = rules.get(host)
+                        if previous and (
+                            previous["protocol"] != args.protocol
+                            or previous.get("credential", "") != args.credential
+                        ):
+                            raise SandboxError(
+                                "A host already has a different rule. Use egress apply to replace it explicitly."
+                            )
+                        rules[host] = {
+                            "host": host,
+                            "protocol": args.protocol,
+                            "credential": args.credential,
+                        }
+                    result = sandbox.set_egress(
+                        list(rules.values()), revision=current["revision"]
+                    )
+                else:
+                    document = json.loads(args.file.read_text())
+                    if (
+                        not isinstance(document, dict)
+                        or set(document) - {"rules", "revision"}
+                        or not isinstance(document.get("rules"), list)
+                    ):
+                        raise SandboxError(
+                            "Policy file must contain rules and optionally revision."
+                        )
+                    result = sandbox.set_egress(
+                        document["rules"], revision=document.get("revision")
+                    )
+            print(json.dumps(result, indent=2))
+        elif args.action == "secret":
+            from .secrets import MAX_SECRET_BYTES
+
+            sandbox = client.get(args.name)
+            if args.secret_action == "remove":
+                sandbox.remove_secret(args.secret_name)
+                print("Secret file removed.")
+            else:
+                if args.from_file:
+                    with args.from_file.open("rb") as source:
+                        value = source.read(MAX_SECRET_BYTES + 1)
+                else:
+                    value = sys.stdin.buffer.read(MAX_SECRET_BYTES + 1)
+                print(sandbox.write_secret(args.secret_name, value))
+        elif args.action == "create":
             sandbox = client.create(args.name)
             print(json.dumps({"id": sandbox.id}) if args.json else sandbox.id)
             if args.connect:
@@ -184,7 +279,16 @@ def run(args) -> int:
             argv = args.argv[1:] if args.argv[:1] == ["--"] else args.argv
             if not argv:
                 raise SandboxError("Specify a command after --.")
-            process = client.get(args.name).start_process(argv, timeout=args.timeout)
+            from .secrets import check_environment
+
+            environment = (
+                check_environment(json.loads(args.env_file.read_text()))
+                if args.env_file
+                else None
+            )
+            process = client.get(args.name).start_process(
+                argv, timeout=args.timeout, env=environment
+            )
             try:
                 for event in process.output(follow=True):
                     if event.stdout is not None:

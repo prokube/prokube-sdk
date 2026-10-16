@@ -14,6 +14,7 @@ import pty
 import queue
 import secrets
 import select
+import shlex
 import signal
 import struct
 import subprocess
@@ -267,6 +268,7 @@ def main():
             with SandboxClient(profile) as client:
                 sandbox = client.get(name)
                 assert sandbox.run("printf sync-sdk").stdout == "sync-sdk"
+                policy_and_secret_acceptance(sandbox, env, root, identity)
                 process = sandbox.start_process(["cat"], stdin=True)
                 process.write_input(b"sdk-input", close=True)
                 assert (
@@ -335,6 +337,164 @@ def main():
                 os.environ.pop("PROKUBE_CONFIG_DIR", None)
             else:
                 os.environ["PROKUBE_CONFIG_DIR"] = old
+
+
+def policy_and_secret_acceptance(sandbox, env, root, identity):
+    """Only the newly created fixture Sandbox is changed."""
+    options = json.loads(run_cli(env, "sandbox", "egress", "options"))
+    assert "example.com" in options["hosts"]
+    assert sandbox.get_egress()["rules"] == []
+    curl = "curl -fsS --connect-timeout 3 --max-time 8 https://example.com >/dev/null"
+    assert sandbox.run(curl).exit_code != 0
+    policy_file = root / "policy.json"
+    policy_file.write_text(
+        json.dumps({"rules": [{"host": "example.com", "protocol": "tls"}]})
+    )
+    applied = json.loads(
+        run_cli(
+            env, "sandbox", "egress", "apply", sandbox.id, "--file", str(policy_file)
+        )
+    )
+    assert applied["revision"] and applied["rules"][0]["host"] == "example.com"
+    applied = json.loads(
+        run_cli(env, "sandbox", "egress", "allow", sandbox.id, "example.com")
+    )
+    assert len(applied["rules"]) == 1
+    # Native policy propagation includes DNS and gateway caches.
+    for _ in range(20):
+        if sandbox.run(curl).exit_code == 0:
+            break
+        time.sleep(1)
+    else:
+        raise AssertionError("Allowed HTTPS destination did not become reachable")
+    assert (
+        sandbox.run(
+            "curl -fsS --connect-timeout 3 --max-time 8 https://pypi.org >/dev/null"
+        ).exit_code
+        != 0
+    )
+    from prokube.personal.errors import SandboxError
+
+    for rules, revision in [
+        ([], "stale"),
+        ([{"host": "api.ate-system.svc", "protocol": "tls"}], applied["revision"]),
+    ]:
+        try:
+            sandbox.set_egress(rules, revision=revision)
+        except SandboxError:
+            pass
+        else:
+            raise AssertionError("Rejected policy input was accepted")
+    run_cli(env, "sandbox", "egress", "clear", sandbox.id)
+    for _ in range(20):
+        if sandbox.run(curl).exit_code != 0:
+            break
+        time.sleep(1)
+    else:
+        raise AssertionError("New connections remained allowed after policy clear")
+    print(
+        "PASS: native EgressPolicy default deny, allow, unrelated-host deny, revision conflict, unapproved-host deny and clear",
+        flush=True,
+    )
+
+    if identity.get("gatewayToken"):
+        assert options["https_interception"] and any(
+            c["name"] == "e2e-header" for c in options["credentials"]
+        )
+        sandbox.set_egress(
+            [{"host": "httpbin.org", "protocol": "https", "credential": "e2e-header"}]
+        )
+        command = "curl -fsS --connect-timeout 3 --max-time 15 -H 'X-Prokube-Test: placeholder' https://httpbin.org/headers"
+        for _ in range(20):
+            result = sandbox.run(command)
+            if result.exit_code == 0:
+                break
+            time.sleep(1)
+        else:
+            raise AssertionError("Gateway-injected HTTPS request did not succeed")
+        headers = json.loads(result.stdout)["headers"]
+        assert headers.get("X-Prokube-Test") == "fixture " + identity["gatewayToken"]
+        without = sandbox.run(
+            "curl -fsS --connect-timeout 3 --max-time 15 https://httpbin.org/headers"
+        )
+        assert (
+            without.exit_code == 0
+            and "X-Prokube-Test" not in json.loads(without.stdout)["headers"]
+        )
+        sandbox.suspend()
+        sandbox.resume()
+        after = sandbox.run(command)
+        assert (
+            after.exit_code == 0
+            and json.loads(after.stdout)["headers"].get("X-Prokube-Test")
+            == "fixture " + identity["gatewayToken"]
+        )
+        sandbox.set_egress([])
+        print(
+            "PASS: real HTTPS gateway header replacement with isolated Kubernetes dummy Secret, projected CA verification, missing-header behavior and resume",
+            flush=True,
+        )
+
+    value = secrets.token_urlsafe(32)
+    secret_file = root / "secret-input"
+    secret_file.touch(mode=0o600)
+    secret_file.write_text(value)
+    path = run_cli(
+        env,
+        "sandbox",
+        "secret",
+        "set",
+        sandbox.id,
+        "api-key",
+        "--from-file",
+        str(secret_file),
+    )
+    assert sandbox.read_file(path) == value.encode()
+    stat = sandbox.run("stat -c '%a %U' " + shlex.quote(path))
+    assert stat.stdout.strip() == "600 developer"
+    assert (
+        sandbox.run("stat -c '%a' /workspace/home/.prokube-secrets").stdout.strip()
+        == "700"
+    )
+    rotated = secrets.token_urlsafe(32).encode()
+    assert sandbox.write_secret("api-key", rotated) == path
+    assert sandbox.read_file(path) == rotated
+    # Explicitly verify/document the persistent, guest-visible nature of files.
+    sandbox.suspend()
+    sandbox.resume()
+    assert sandbox.read_file(path) == rotated
+    run_cli(env, "sandbox", "secret", "remove", sandbox.id, "api-key")
+    assert sandbox.run("test ! -e " + shlex.quote(path)).exit_code == 0
+    env_file = root / "private-env.json"
+    env_file.touch(mode=0o600)
+    env_file.write_text(json.dumps({"PK_TEST_SECRET": value}))
+    # Report only a boolean; the injected value is never printed by the guest.
+    assert (
+        run_cli(
+            env,
+            "sandbox",
+            "exec",
+            "--env-file",
+            str(env_file),
+            sandbox.id,
+            "--",
+            "python3",
+            "-c",
+            "import os; print(bool(os.environ.get('PK_TEST_SECRET')))",
+        )
+        == "True"
+    )
+    assert sandbox.run('test -z "${PK_TEST_SECRET+x}"').exit_code == 0
+    assert (
+        sandbox.run(
+            'test -n "$PK_TEST_SECRET"', env={"PK_TEST_SECRET": value}
+        ).exit_code
+        == 0
+    )
+    print(
+        "PASS: CLI/SDK secret delivery, 0600/developer ownership, rotation, snapshot persistence, removal and process-scoped env injection",
+        flush=True,
+    )
 
 
 if __name__ == "__main__":
