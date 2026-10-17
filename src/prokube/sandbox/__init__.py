@@ -1,6 +1,5 @@
-"""Sandbox module for prokube SDK."""
+"""Sandboxes on Agent Substrate: Actors named sbx-<name> in the workspace's Atespace."""
 
-from prokube.sandbox.pool import SandboxPool
-from prokube.sandbox.sandbox import Sandbox, SandboxPage
+from prokube.sandbox.client import AsyncSandboxClient, SandboxClient, actor_name
 
-__all__ = ["Sandbox", "SandboxPage", "SandboxPool"]
+__all__ = ["AsyncSandboxClient", "SandboxClient", "actor_name"]

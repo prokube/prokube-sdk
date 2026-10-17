@@ -2,337 +2,125 @@
 
 Python SDK for the prokube.ai platform.
 
+> Preview: sandboxes run on [Agent Substrate](https://github.com/agent-substrate/substrate).
+> The SDK is a thin layer over the upstream
+> [env client](https://github.com/agent-substrate/env/tree/main/clients/python)
+> and the Substrate control-plane API (ate API).
+
 ## Installation
 
 ```bash
-# From source with uv
-uv pip install git+https://github.com/prokube/prokube-sdk.git
-
-# Or with pip
 pip install git+https://github.com/prokube/prokube-sdk.git
-
-# For development
-git clone https://github.com/prokube/prokube-sdk.git
-cd prokube-sdk
-uv sync --dev
+# or
+uv pip install git+https://github.com/prokube/prokube-sdk.git
 ```
 
-## Quick Start
+The upstream env client is not on PyPI; it is installed from its Git
+repository at a pinned commit, so `git` must be available.
+
+## Login
 
 ```python
-from prokube.sandbox import Sandbox
+from prokube.auth import login, logout
 
-# Claim a sandbox from a warm pool (fast, but adoption is asynchronous)
-sbx = Sandbox.from_pool("python-pool")
-sbx.wait_until_ready()
-
-# Or create directly (cold start, ~10-30s)
-sbx = Sandbox.create(image="pk-sandbox:python-datascience")
-sbx.wait_until_ready()
-
-# Execute code (stateful - variables persist between calls)
-sbx.run_code("import pandas as pd")
-sbx.run_code("df = pd.read_csv('/workspace/data.csv')")
-result = sbx.run_code("print(df.describe())")
-print(result.stdout)
-
-# Run shell commands
-result = sbx.commands.run("pip install scikit-learn")
-print(result.exit_code)
-
-# File operations
-sbx.files.write("/workspace/data.csv", b"col1,col2\n1,2\n3,4")
-batch_result = sbx.files.write_batch(
-    [
-        ("/workspace/app.py", "print('hello')"),
-        ("/workspace/data.bin", b"\x00\x01"),
-    ]
-)
-assert batch_result.success
-content = sbx.files.read("/workspace/output.txt")
-files = sbx.files.list("/workspace")
-
-# Pause / resume: both are asynchronous on the backend.
-sbx.pause()  # blocks until the sandbox reports Paused
-sbx.resume()  # returns immediately, phase is Resuming
-sbx.wait_until_ready()  # block until the new pod is Running
-
-# Cleanup. Deletion (including the persistence purge that releases the name)
-# is asynchronous; pass wait=True when you need guaranteed reclamation.
-sbx.kill(wait=True)
+login("https://my-platform.example.com")  # opens the browser
+logout("https://my-platform.example.com")
 ```
 
-### Context Manager
+`login` runs the OAuth Authorization Code flow with PKCE against the
+platform's Dex (`https://<domain>/dex`, public client `prokube-cli`, redirect
+to `http://localhost:8000/callback` or `:18000`). It prints the URL as well,
+for when no browser opens.
+
+Tokens are stored in the OS keyring. Without a usable keyring they go to
+`~/.config/prokube/tokens/<domain>.json` with mode 0600 (`PROKUBE_CONFIG_DIR`
+moves the directory). To skip the keyring, set
+`PYTHON_KEYRING_BACKEND=keyring.backends.fail.Keyring`. The SDK refreshes the
+ID token shortly before it expires and stores the rotated refresh token.
+
+## Quick start
 
 ```python
-from prokube.sandbox import Sandbox
+from prokube.sandbox import SandboxClient
 
-with Sandbox.from_pool("python-pool") as sbx:
-    sbx.wait_until_ready()
-    result = sbx.run_code("print(42)")
-    print(result.stdout)
-# Sandbox is automatically cleaned up
+with SandboxClient("https://my-platform.example.com", "my-workspace") as client:
+    client.create("demo", template="python-v1")
+    result = client.run("demo", "python3 -c 'print(6 * 7)'")
+    print(result.exit_code, result.stdout)
+
+    client.write_file("demo", "/workspace/hello.txt", "hello")
+    print(client.read_file("demo", "/workspace/hello.txt"))
+
+    for actor in client.list():
+        print(actor.metadata.name, actor.status.state)
+
+    client.suspend("demo")
+    client.resume("demo")
+    client.delete("demo")
 ```
 
-## Configuration
+`url` and `workspace` default to `PROKUBE_URL` and `PROKUBE_WORKSPACE`.
+`SandboxClient` works in scripts and in notebooks.
 
-Configuration can be provided via environment variables or explicitly:
-
-### Environment Variables
-
-```bash
-export PROKUBE_WORKSPACE=my-workspace
-export PROKUBE_API_URL=https://prokube.ai/pkui  # Required for external access
-export PROKUBE_TIMEOUT=300  # Optional, default 300 seconds
-```
-
-**Note:** In-cluster Agent Gateway access does not require SDK auth credentials.
-`PROKUBE_API_KEY` enables external access and takes precedence over `PROKUBE_USER_ID`
-or `KF_USER` when present.
-
-### In-Cluster Notebooks
-
-Inside a prokube.ai workspace notebook, only the workspace namespace is required.
-If `PROKUBE_API_URL` is not set, the SDK defaults to the in-cluster Agent Gateway
-service and routes sandbox traffic through `/_platform/sandbox/<workspace>`.
-
-```bash
-export PROKUBE_WORKSPACE=henrik
-```
+### Async
 
 ```python
-from prokube.sandbox import Sandbox
+from prokube.sandbox import AsyncSandboxClient
 
-with Sandbox.from_pool("python-pool") as sbx:
-    sbx.wait_until_ready()
-    result = sbx.run_code("print('Hello from inside the workspace!')")
-    print(result.stdout)
-```
+async with AsyncSandboxClient("https://my-platform.example.com", "my-workspace") as client:
+    await client.create("demo", template="python-v1")
+    print((await client.run("demo", "uname -a")).stdout)
 
-This uses:
-`http://agentgateway-proxy.agentgateway-system.svc.cluster.local/_platform/sandbox/henrik/sandboxes/claim`.
-
-### Explicit Configuration
-
-```python
-from prokube.sandbox import Sandbox
-
-sbx = Sandbox.from_pool(
-    pool="python-pool",
-    api_url="https://prokube.ai/pkui",
-    workspace="my-workspace",
-    user_id="user@example.com",
-)
-```
-
-### External Access (API Key)
-
-For accessing prokube from outside the cluster, use an API key:
-
-```bash
-export PROKUBE_API_URL=https://prokube.ai/pkui
-export PROKUBE_WORKSPACE=my-workspace
-export PROKUBE_API_KEY=your-api-key
-```
-
-```python
-from prokube.sandbox import Sandbox
-
-# API key is picked up from PROKUBE_API_KEY env var
-with Sandbox.from_pool("python-pool") as sbx:
-    sbx.wait_until_ready()
-    result = sbx.run_code("print('Hello from outside the cluster!')")
-    print(result.stdout)
-```
-
-Or pass the API key explicitly (no env vars needed):
-
-```python
-from prokube.sandbox import Sandbox
-
-with Sandbox.from_pool(
-    pool="python-pool",
-    api_url="https://prokube.ai/pkui",
-    workspace="my-workspace",
-    api_key="your-api-key",
-) as sbx:
-    sbx.wait_until_ready()
-    result = sbx.run_code("print('Hello from outside the cluster!')")
-    print(result.stdout)
-```
-
-When using an API key, the SDK automatically routes requests to the external
-API endpoints and skips the internal version compatibility check.
-
-## API Reference
-
-### Sandbox
-
-The main class for interacting with sandboxes.
-
-```python
-class Sandbox:
-    name: str  # Sandbox name
-    workspace: str  # Workspace (Kubernetes namespace)
-    status: str  # Pending, Running, Paused, Pausing, Resuming,
-    # Deleting, Succeeded, Failed, Unknown
-
-    @classmethod
-    def from_pool(cls, pool: str, **config) -> Sandbox:
-        """Claim sandbox from WarmPool (fast; poll with wait_until_ready)."""
-
-    @classmethod
-    def create(cls, image: str, **config) -> Sandbox:
-        """Create sandbox directly (cold start)."""
-
-    @classmethod
-    def list_page(
-        cls,
-        *,
-        limit: int = 25,
-        continue_token: str | None = None,
-        api_url: str | None = None,
-        workspace: str | None = None,
-        user_id: str | None = None,
-        api_key: str | None = None,
-        timeout: int | None = None,
-    ) -> SandboxPage:
-        """List one bounded page of sandboxes, across every phase."""
-
-    def run_code(
-        self, code: str, language: str = "python", timeout: int = 300
-    ) -> CodeResult:
-        """Execute code with stateful Jupyter kernel."""
-
-    def pause(self, wait: bool = True, timeout: int = 300) -> None:
-        """Pause the sandbox; blocks until it reports Paused by default."""
-
-    def resume(self) -> None:
-        """Request a resume; returns immediately with phase Resuming."""
-
-    def wait_until_ready(self, timeout: int = 120) -> None:
-        """Block until the sandbox phase is Running."""
-
-    def kill(self, wait: bool = False, timeout: int = 300) -> None:
-        """Destroy the sandbox; deletion completes asynchronously."""
-
-    @property
-    def commands(self) -> CommandRunner:
-        """Access shell command runner."""
-
-    @property
-    def files(self) -> FileManager:
-        """Access file operations."""
-```
-
-`list_page` returns one name-ordered listing across every sandbox phase. The
-continuation token is an opaque keyset cursor: pass it back together with the
-same `limit` to fetch the next page. Idle warm-pool capacity is internal
-infrastructure and never appears in the listing.
-
-Each sandbox on a page owns its own HTTP client. Use the page as a context
-manager (or call `page.close()`) to release them without destroying the remote
-sandboxes:
-
-```python
-with Sandbox.list_page(limit=10) as page:
-    for sandbox in page.sandboxes:
-        print(sandbox.name)
-    next_token = page.continue_token if page.has_more else None
-
-if next_token:
-    with Sandbox.list_page(
-        limit=10,
-        continue_token=next_token,
-    ) as page:
+    # The upstream env handle, e.g. for streaming output:
+    process = await client.env("demo").start_process(["python3", "train.py"])
+    async for output in process.output(follow=True):
         ...
 ```
 
-### CommandRunner
+## How it maps to Substrate
+
+| SDK | Substrate |
+|-----|-----------|
+| workspace | Atespace with the same name |
+| sandbox `demo` | Actor `sbx-demo` in that Atespace |
+| `create`, `list`, `get`, `delete`, `suspend`, `resume` | `ateapi.Control` (`CreateActor`, `ListActors`, ...) |
+| `run`, `read_file`, `write_file`, `env()` | env guest API via `ate_env` |
+| return values | `Actor` protos and `ate_env.ShellResult` |
+| errors | `ate_env` errors (`NotFoundError`, `PermissionDeniedError`, `RpcError`, ...) |
+
+A new sandbox is `SUSPENDED`; its first command or `resume()` starts it.
+`delete` removes a sandbox in any state. Templates come from the shared
+template Atespace unless `template_atespace` names another one.
+
+## Credentials
+
+Every call sends `authorization: Bearer <Dex ID token>`; Agent Gateway passes
+it through to Substrate, which authorizes the caller. By default the token
+comes from the stored login. Any callable that returns a token can replace it:
 
 ```python
-class CommandRunner:
-    def run(self, command: str, timeout: int = 300) -> CommandResult:
-        """Execute shell command."""
-
-
-class CommandResult(BaseModel):  # Pydantic model
-    stdout: str
-    stderr: str
-    exit_code: int
-    duration_ms: int
-
-    @property
-    def success(self) -> bool: ...
+client = SandboxClient(url, "my-workspace", token_provider=lambda: my_token)
 ```
 
-### FileManager
+## Endpoints
 
-```python
-class FileManager:
-    def write(self, path: str, content: bytes | str) -> None:
-        """Upload file to sandbox."""
-
-    def write_batch(
-        self, items: list[tuple[str, bytes | str]]
-    ) -> BatchFileWriteResponse:
-        """Best-effort batch upload with per-file results."""
-
-    def read(self, path: str) -> bytes:
-        """Download file from sandbox."""
-
-    def list(self, path: str = "/workspace") -> list[FileInfo]:
-        """List files in directory."""
-
-
-class BatchFileWriteResponse(BaseModel):
-    success: bool  # True only if every file write succeeded
-    total: int  # Total requested file writes
-    success_count: int  # Number of successful writes
-    failure_count: int  # Number of failed writes
-    results: list[BatchFileWriteResult]
-
-
-class BatchFileWriteResult(BaseModel):
-    index: int  # Original request position
-    path: str  # Sandbox path for this entry
-    success: bool  # Whether this file write succeeded
-    error: str | None  # Failure detail for best-effort partial failures
-```
-
-### CodeResult
-
-```python
-class CodeResult(BaseModel):  # Pydantic model
-    stdout: str
-    stderr: str
-    success: bool
-    execution_time_ms: int
-    error_name: str | None  # Set on failure
-    error_value: str | None  # Set on failure
-    traceback: list[str] | None  # Set on failure
-    session_id: str | None  # For stateful execution
-```
+All platform addresses are derived from the platform URL in
+[`src/prokube/endpoints.py`](src/prokube/endpoints.py). The Agent Gateway
+routes are provisional until prokube/prokube-neo#87 and #97 settle them.
 
 ## Development
 
 ```bash
-# Clone the repository
-git clone https://github.com/prokube/prokube-sdk.git
-cd prokube-sdk
-
-# Install dependencies
-uv sync --dev
-
-# Run tests
+uv sync --extra dev
 uv run pytest
-
-# Run linter
-uv run ruff check .
-
-# Format code
-uv run ruff format .
+uv run ruff check src tests
+uv run ruff format src tests
+uv run pyright
 ```
+
+The ate API stubs in `src/prokube/sandbox/_ateapi/` are generated from the
+pinned Substrate proto. To move the pin, edit `scripts/gen-ateapi.sh` and run
+it.
 
 ## License
 
