@@ -147,9 +147,10 @@ client = SandboxClient(url, "my-workspace", token_provider=lambda: my_token)
 ## Endpoints
 
 All platform addresses are derived from the platform URL in
-[`src/prokube/endpoints.py`](src/prokube/endpoints.py), including the SSH
-WebSocket URL. The Agent Gateway routes are provisional until
-prokube/prokube-neo#87 and #97 settle them.
+[`src/prokube/endpoints.py`](src/prokube/endpoints.py): ate-api and the env
+guest API over native gRPC at `<domain>:443`, and SSH over
+`wss://<domain>/svc/sandbox/v1alpha/atespaces/<workspace>/envs/sbx-<name>/ports/8022/ssh`.
+The Agent Gateway routes behind them are defined in prokube/prokube-neo#97.
 
 ## Development
 

@@ -82,8 +82,8 @@ def test_ssh_url_goes_through_the_env_port_proxy():
     url = endpoints.ssh_url("https://platform.example.com/", "team-a", "sbx-demo")
 
     assert url == (
-        "wss://platform.example.com/v1alpha/atespaces/team-a/envs/sbx-demo"
-        "/ports/8022/ssh"
+        "wss://platform.example.com/svc/sandbox/v1alpha/atespaces/team-a"
+        "/envs/sbx-demo/ports/8022/ssh"
     )
 
 

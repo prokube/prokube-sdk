@@ -1,8 +1,9 @@
 """Every platform address the SDK uses, derived from the platform URL.
 
 The platform URL (``https://<domain>``) is the only input. The Agent Gateway
-routes are still being settled in prokube/prokube-neo#87 and #97; when they
-change, this module is the only place to adjust.
+routes are defined in prokube/prokube-neo#97 (``paas/substrate/README.md``,
+"Endpoints for CLI and SDK"); when they change, this module is the only place
+to adjust.
 """
 
 from __future__ import annotations
@@ -69,10 +70,11 @@ def _grpc_target(url: str) -> str:
 def ssh_url(url: str, atespace: str, actor: str) -> str:
     """WebSocket URL of an Actor's SSH bridge, used by ``pk sandbox proxy``.
 
-    Assumes ate-env-api's port proxy (path form) under the platform URL.
-    Provisional until prokube/prokube-neo#87 settles the public route.
+    Agent Gateway forwards ``/svc/sandbox/`` to ate-env-api's port proxy
+    (path form) after the data-plane check.
     """
     host = normalize_url(url).removeprefix("https://")
     return (
-        f"wss://{host}/v1alpha/atespaces/{atespace}/envs/{actor}/ports/{SSH_PORT}/ssh"
+        f"wss://{host}/svc/sandbox/v1alpha/atespaces/{atespace}/envs/{actor}"
+        f"/ports/{SSH_PORT}/ssh"
     )

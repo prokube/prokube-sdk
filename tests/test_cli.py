@@ -366,5 +366,5 @@ def test_proxy_opens_the_ssh_websocket_with_the_login_token(logged_in, monkeypat
     result = pk("sandbox", "proxy", "demo")
 
     assert result.exit_code == 0, result.output
-    path = "/v1alpha/atespaces/team-a/envs/sbx-demo/ports/8022/ssh"
+    path = "/svc/sandbox/v1alpha/atespaces/team-a/envs/sbx-demo/ports/8022/ssh"
     assert opened == [(f"wss://platform.example.com{path}", logged_in)]
