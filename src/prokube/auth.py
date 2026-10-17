@@ -119,6 +119,12 @@ def login(url: str, *, open_browser: bool = True, timeout: float = 300) -> Login
     return LoginSession(url)
 
 
+def config_dir() -> Path:
+    """The SDK's config directory: ``$PROKUBE_CONFIG_DIR`` or ``~/.config/prokube``."""
+    default = Path.home() / ".config" / "prokube"
+    return Path(os.environ.get("PROKUBE_CONFIG_DIR", default))
+
+
 def logout(url: str) -> None:
     """Forget the stored tokens for the platform url."""
     url = endpoints.normalize_url(url)
@@ -273,6 +279,4 @@ def _save_tokens(url: str, tokens: dict[str, Any]) -> None:
 
 
 def _token_file(url: str) -> Path:
-    default = Path.home() / ".config" / "prokube"
-    config_dir = Path(os.environ.get("PROKUBE_CONFIG_DIR", default))
-    return config_dir / "tokens" / f"{urlparse(url).netloc.replace(':', '_')}.json"
+    return config_dir() / "tokens" / f"{urlparse(url).netloc.replace(':', '_')}.json"

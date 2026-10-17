@@ -77,6 +77,48 @@ async with AsyncSandboxClient("https://my-platform.example.com", "my-workspace")
         ...
 ```
 
+## Command line
+
+```bash
+pip install 'prokube-sdk[cli] @ git+https://github.com/prokube/prokube-sdk.git'
+
+pk login https://my-platform.example.com --workspace my-workspace
+pk auth status
+
+pk sandbox create demo --template coding --connect   # ends in an SSH session
+pk sandbox list
+pk sandbox exec demo -- python3 -c 'print(6 * 7)'
+pk sandbox cp train.py demo:/workspace/
+pk sandbox cp demo:/workspace/model.pt .
+pk sandbox suspend demo
+pk sandbox resume demo
+pk sandbox delete demo
+pk logout
+```
+
+`pk login` remembers the platform and the default workspace in
+`~/.config/prokube/config.json`. `--url` and `--workspace` (or `PROKUBE_URL`
+and `PROKUBE_WORKSPACE`) override them per command.
+
+### SSH
+
+`pk sandbox connect demo` installs your public key (`~/.ssh/id_ed25519.pub`,
+or the key given with `--identity`) in the sandbox, pins the sandbox's host key
+in `~/.config/prokube/ssh/known_hosts` and runs `ssh` as user `developer`. Both
+keys go through the authenticated file API, so the host key is pinned before
+the first connection. SSH travels over a WebSocket; `pk sandbox proxy` is the
+`ProxyCommand` and sends your login token.
+
+To use `ssh`, `scp`, `rsync` or an IDE such as VS Code Remote-SSH directly, run
+`pk sandbox ssh-config demo` once and add this line at the top of
+`~/.ssh/config`:
+
+```
+Include ~/.config/prokube/ssh/hosts/*.conf
+```
+
+Then `ssh pk.my-workspace.demo` works.
+
 ## How it maps to Substrate
 
 | SDK | Substrate |
@@ -105,8 +147,9 @@ client = SandboxClient(url, "my-workspace", token_provider=lambda: my_token)
 ## Endpoints
 
 All platform addresses are derived from the platform URL in
-[`src/prokube/endpoints.py`](src/prokube/endpoints.py). The Agent Gateway
-routes are provisional until prokube/prokube-neo#87 and #97 settle them.
+[`src/prokube/endpoints.py`](src/prokube/endpoints.py), including the SSH
+WebSocket URL. The Agent Gateway routes are provisional until
+prokube/prokube-neo#87 and #97 settle them.
 
 ## Development
 

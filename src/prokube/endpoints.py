@@ -29,6 +29,11 @@ SCOPES = "openid profile email offline_access"
 TEMPLATE_ATESPACE = "sandbox-templates"
 
 
+# Port of the runtime image's WebSocket bridge to sshd (websocat on :8022, path
+# /ssh, prokube/sandbox-images#16).
+SSH_PORT = 8022
+
+
 def normalize_url(url: str) -> str:
     """Check that url is an HTTPS platform URL and strip the trailing slash."""
     parsed = urlparse(url)
@@ -59,3 +64,15 @@ def env_target(url: str) -> str:
 def _grpc_target(url: str) -> str:
     parsed = urlparse(normalize_url(url))
     return f"{parsed.hostname}:{parsed.port or 443}"
+
+
+def ssh_url(url: str, atespace: str, actor: str) -> str:
+    """WebSocket URL of an Actor's SSH bridge, used by ``pk sandbox proxy``.
+
+    Assumes ate-env-api's port proxy (path form) under the platform URL.
+    Provisional until prokube/prokube-neo#87 settles the public route.
+    """
+    host = normalize_url(url).removeprefix("https://")
+    return (
+        f"wss://{host}/v1alpha/atespaces/{atespace}/envs/{actor}/ports/{SSH_PORT}/ssh"
+    )
