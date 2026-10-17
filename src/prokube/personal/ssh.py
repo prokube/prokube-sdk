@@ -36,6 +36,10 @@ def _request(profile, token, method, path, **kwargs):
         raise SandboxError("Cannot reach the Sandbox connection endpoint.") from error
     if response.status_code == 401:
         raise AuthenticationRequired("Session expired. Run pk login.")
+    if response.status_code == 412:
+        raise SandboxError(
+            "Sandbox cannot start in its current state. Check pk sandbox list. If CRASHED, explicitly use pk sandbox revert NAME to restore the last snapshot (newer changes are discarded), then connect again."
+        )
     if response.status_code >= 400:
         raise SandboxError(f"Sandbox connection refused (HTTP {response.status_code}).")
     return response.json()

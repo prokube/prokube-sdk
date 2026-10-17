@@ -141,6 +141,14 @@ class AsyncSandboxClient:
                 )
             raise errors[response.status_code]
         if response.status_code >= 400:
+            if response.status_code == 412 and path.endswith("/resume"):
+                raise SandboxError(
+                    "Sandbox cannot resume in its current state. For CRASHED Sandboxes, explicitly run pk sandbox revert NAME to restore the last snapshot (newer changes are discarded), then resume."
+                )
+            if response.status_code == 412 and path.endswith("/revert"):
+                raise SandboxError(
+                    "Revert requires a CRASHED Sandbox with a completed durable snapshot. Check pk sandbox list; recovery may require native administration."
+                )
             if response.status_code == 412 and path.endswith("/egress"):
                 raise SandboxError(
                     "Policy needs native administration, or HTTPS interception requires a new trust-enabled Sandbox."
@@ -240,6 +248,10 @@ class AsyncSandbox:
 
     async def resume(self):
         return await self._client.request("POST", f"v1/sandboxes/{self.id}/resume")
+
+    async def revert(self):
+        """Discard crashed execution and return to the saved snapshot, SUSPENDED."""
+        return await self._client.request("POST", f"v1/sandboxes/{self.id}/revert")
 
     async def delete(self):
         await self._client._ready()
@@ -419,6 +431,9 @@ class Sandbox:
 
     def resume(self):
         return self._client._loop.call(self._async.resume())
+
+    def revert(self):
+        return self._client._loop.call(self._async.revert())
 
     def delete(self):
         return self._client._loop.call(self._async.delete())

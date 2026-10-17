@@ -101,6 +101,10 @@ def parser():
             source.add_argument("--stdin", action="store_true")
     for name in ("suspend", "resume", "delete"):
         actions.add_parser(name).add_argument("name")
+    actions.add_parser(
+        "revert",
+        help="Recover a CRASHED Sandbox from its last saved snapshot; discards newer changes",
+    ).add_argument("name")
     copy = actions.add_parser("cp", help="Copy a file; remote paths use sandbox:/path")
     copy.add_argument("source")
     copy.add_argument("destination")
@@ -320,7 +324,12 @@ def run(args) -> int:
         else:
             sandbox = client.get(args.name)
             getattr(sandbox, args.action)()
-            print(f"{args.action}: {args.name}")
+            if args.action == "revert":
+                print(
+                    f"Reverted {args.name} to its saved snapshot (SUSPENDED). Run pk sandbox connect {args.name} to start it."
+                )
+            else:
+                print(f"{args.action}: {args.name}")
     return 0
 
 

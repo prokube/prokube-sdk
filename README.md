@@ -7,7 +7,7 @@ Python SDK for the prokube.ai platform.
 Install this feature branch in a virtual environment (Python 3.10+, Git):
 
 ```sh
-pip install --upgrade 'git+https://github.com/prokube/prokube-sdk.git@57-sandbox-egress-secrets'
+pip install --upgrade 'git+https://github.com/prokube/prokube-sdk.git@58-sandbox-revert'
 pk login https://hen-public-troodon.prokube.cloud
 pk sandbox create my-project --connect
 ```
@@ -62,11 +62,28 @@ This preview pins the upstream env Python client to a Git revision; it is not
 yet a standalone PyPI release. Personal-Sandbox API-key authentication awaits
 the platform validator. The existing SDK API below remains available.
 
-Validation: 259 unit tests and live macOS acceptance against the Linux-hosted
+Validation: 262 unit tests and live macOS acceptance against the Linux-hosted
 platform cover real Dex/Keycloak PKCE login, concurrent refresh, CLI/SDK
 lifecycle, file transfer, process stdin/output, suspend/resume and SSH/tmux.
 Live acceptance uses explicit file storage; native keyring and other client
 operating systems have not received equivalent live validation.
+
+### Crash recovery
+
+`connect` and `resume` do not automatically roll a crashed Sandbox back. If a
+Sandbox is `CRASHED` and has a completed durable snapshot, explicitly recover it:
+
+```sh
+pk sandbox revert my-project
+pk sandbox connect my-project
+```
+
+`revert` discards execution state newer than the saved snapshot and leaves the
+Sandbox `SUSPENDED`; `connect` or `resume` then restores it. Running Sandboxes and
+Sandboxes without a completed durable snapshot are rejected. Python exposes the
+same `sandbox.revert()` method (await it on the async client).
+Before shutting down the cluster, use `pk sandbox suspend NAME` and wait for
+success to save a fresh snapshot. A node shutdown alone does not create one.
 
 ### Egress policies
 
