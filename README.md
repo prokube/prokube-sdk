@@ -153,7 +153,9 @@ Presets and sizes are the platform's
 (`GET https://<domain>/svc/sandbox/v1alpha/presets` and `.../sizes`,
 prokube/prokube-neo#132 and #127); an unknown name lists them. A preset is a
 shared template with a golden snapshot, so its sandboxes start fast; a new
-sandbox gets the preset's network rules as its Substrate `EgressPolicy`.
+sandbox gets the preset's network rules as its Substrate `EgressPolicy`. When
+the presets cannot be read, `pk sandbox list` shows each sandbox's template
+instead and prints a warning.
 
 A custom image gets its own template `<workspace>/NAME-v<n>`, one version
 higher than the highest existing one; templates never change. It starts

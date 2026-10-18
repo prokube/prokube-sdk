@@ -297,7 +297,10 @@ def test_check_name_rejects_preset_names_and_shared_families(name):
             name, f"{name}-v1", ["coding-small-v1", "coding-medium-v1"], PRESETS, SIZES
         )
 
-    assert str(error.value) == f"{name!r} is taken by a preset. Choose another name."
+    assert str(error.value) == (
+        f"{name!r} is taken by a preset. Choose another sandbox name for a "
+        "custom image."
+    )
 
 
 @pytest.mark.parametrize("name", ["My-Tool", "tool_1", "-tool", "tool-", ""])

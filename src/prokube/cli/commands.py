@@ -528,19 +528,29 @@ async def _stream(
 async def _describe(
     client: AsyncSandboxClient, actors: list[ateapi.Actor]
 ) -> list[tuple[str, str, str]]:
-    """Each sandbox's preset (or "custom"), size and, if custom, image."""
-    presets, sizes = await client.presets(), await client.sizes()
+    """Each sandbox's preset (or "custom"), size and, if custom, image.
+
+    Without the presets, each sandbox shows its template instead.
+    """
+    sizes = await client.sizes()
+    try:
+        presets = await client.presets()
+    except (TemplateError, httpx.HTTPError) as error:
+        presets = None
+        click.echo(f"Warning: {error}; showing templates instead of presets.", err=True)
 
     async def describe(actor: ateapi.Actor) -> tuple[str, str, str]:
-        preset = presets.of(actor.actor_template)
+        ref = actor.actor_template
+        preset = presets.of(ref) if presets else None
         if preset:
             return preset.name, preset.size, ""
+        label = "custom" if presets else f"{ref.atespace}/{ref.name}"
         try:
             template = await client.template(_name(actor))
         except EnvError:  # e.g. its template is gone
-            return "custom", "-", "-"
+            return label, "-", "-"
         size = sizes.of(template)
-        return "custom", size.name if size else "custom", template.containers[0].image
+        return label, size.name if size else "custom", template.containers[0].image
 
     return list(await asyncio.gather(*(describe(actor) for actor in actors)))
 

@@ -318,7 +318,10 @@ def check_name(
         )
     taken = {preset.name for preset in presets.presets}
     if name in taken | {family(template) for template in shared}:
-        raise TemplateError(f"{name!r} is taken by a preset. Choose another name.")
+        raise TemplateError(
+            f"{name!r} is taken by a preset. Choose another sandbox name for a "
+            "custom image."
+        )
     names = [versioned] + [variant_name(versioned, size) for size in sizes.sizes]
     if max(len(n) for n in names) > MAX_NAME_LENGTH:
         raise TemplateError(

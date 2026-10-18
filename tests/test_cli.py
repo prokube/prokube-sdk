@@ -81,6 +81,7 @@ class FakeSandboxes:
         self.env_guest = True
         self.env_error: Exception | None = None
         self.resized: dict[str, str] = {}
+        self.presets_error: Exception | None = None
 
     def __call__(self, url: str, workspace: str) -> "FakeSandboxes":
         self.targets.append((url, workspace))
@@ -114,6 +115,8 @@ class FakeSandboxes:
         return self.env_guest
 
     async def presets(self):
+        if self.presets_error:
+            raise self.presets_error
         return PRESETS
 
     async def sizes(self):
@@ -309,6 +312,26 @@ def test_create_list_and_lifecycle(sandboxes, logged_in):
         ("resume", "demo"),
         ("delete", "demo"),
     ]
+
+
+def test_list_without_presets_shows_templates_and_one_warning(sandboxes, logged_in):
+    sandboxes.presets_error = TemplateError(
+        "Cannot read the sandbox presets from https://x/presets: HTTP 404"
+    )
+
+    result = pk("sandbox", "list")
+
+    assert result.exit_code == 0, result.output
+    assert result.stdout.splitlines() == [
+        "NAME  STATE      PRESET                             SIZE   IMAGE",
+        f"one   RUNNING    sandbox-templates/coding-small-v1  small  {IMAGE}",
+        f"web   SUSPENDED  team-a/web-v1                      small  {IMAGE}",
+        "gone  SUSPENDED  team-a/gone-v1                     -      -",
+    ]
+    assert result.stderr == (
+        "Warning: Cannot read the sandbox presets from https://x/presets: HTTP 404; "
+        "showing templates instead of presets.\n"
+    )
 
 
 def test_create_from_a_preset(sandboxes, logged_in):
