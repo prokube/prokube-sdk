@@ -146,7 +146,7 @@ class AsyncSandboxClient:
         )
         try:
             await _call(self._control.CreateActorEgressPolicy(request))
-        except RpcError as error:  # the policy sync applied the same rules first
+        except RpcError as error:  # it has one already; keep that
             if error.code != grpc.StatusCode.ALREADY_EXISTS:
                 raise
         return created

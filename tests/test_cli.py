@@ -33,7 +33,7 @@ NO_ENV_GUEST = (
 def actor(
     name: str,
     state: str = "ACTOR_STATE_SUSPENDED",
-    template: tuple[str, str] = ("sandbox-templates", "coding-small-v1"),
+    template: tuple[str, str] = ("sandbox-templates", "pk-default-small-v1"),
 ) -> ateapi.Actor:
     return ateapi.Actor(
         metadata=ateapi.ResourceMetadata(atespace="team-a", name=name),
@@ -103,19 +103,21 @@ class FakeSandboxes:
 
     async def create(self, name, *, preset):
         self.calls.append(("create", name, preset))
-        return actor("sbx-" + name, template=("sandbox-templates", "python-small-v1"))
+        return actor(
+            "sbx-" + name, template=("sandbox-templates", "pk-default-large-v1")
+        )
 
     async def resize(self, name, *, preset):
         self.calls.append(("resize", name, preset))
-        if preset == "python":
+        if preset == "other":
             raise PresetError(
-                "Preset 'python' has another image than sandbox 'demo'. Create a "
+                "Preset 'other' has another image than sandbox 'demo'. Create a "
                 "new sandbox from it instead."
             )
         return actor(
             "sbx-" + name,
             "ACTOR_STATE_RUNNING",
-            ("sandbox-templates", "coding-large-v1"),
+            ("sandbox-templates", "pk-default-medium-v1"),
         )
 
     async def presets(self):
@@ -297,21 +299,23 @@ def test_sdk_errors_are_one_line_messages(sandboxes, logged_in, monkeypatch):
 
 
 def test_create_list_and_lifecycle(sandboxes, logged_in):
-    result = pk("sandbox", "create", "demo", "--preset", "python")
-    assert result.output == "Created demo (SUSPENDED, preset python, size small)\n"
+    result = pk("sandbox", "create", "demo", "--preset", "pk-default-large")
+    assert result.output == (
+        "Created demo (SUSPENDED, preset pk-default-large, size large)\n"
+    )
 
     result = pk("sandbox", "list")
     assert result.output.splitlines() == [
-        "NAME  STATE      PRESET          SIZE",
-        "one   RUNNING    coding          small",
-        "two   SUSPENDED  team-a/mine-v1  -",
+        "NAME  STATE      PRESET            SIZE",
+        "one   RUNNING    pk-default-small  small",
+        "two   SUSPENDED  team-a/mine-v1    -",
     ]
 
     assert pk("sandbox", "suspend", "demo").output == "demo: SUSPENDED\n"
     assert pk("sandbox", "resume", "demo").output == "demo: RUNNING\n"
     assert pk("sandbox", "delete", "demo").output == "Deleted demo\n"
     assert sandboxes.calls == [
-        ("create", "demo", "python"),
+        ("create", "demo", "pk-default-large"),
         ("suspend", "demo"),
         ("resume", "demo"),
         ("delete", "demo"),
@@ -334,9 +338,9 @@ def test_list_without_presets_shows_templates_and_one_warning(sandboxes, logged_
 
     assert result.exit_code == 0, result.output
     assert result.stdout.splitlines() == [
-        "NAME  STATE      PRESET                             SIZE",
-        "one   RUNNING    sandbox-templates/coding-small-v1  -",
-        "two   SUSPENDED  team-a/mine-v1                     -",
+        "NAME  STATE      PRESET                                 SIZE",
+        "one   RUNNING    sandbox-templates/pk-default-small-v1  -",
+        "two   SUSPENDED  team-a/mine-v1                         -",
     ]
     assert result.stderr == (
         "Warning: Cannot read the sandbox presets from https://x/presets: HTTP 404; "
@@ -345,22 +349,22 @@ def test_list_without_presets_shows_templates_and_one_warning(sandboxes, logged_
 
 
 def test_resize_switches_the_preset_and_says_what_is_kept(sandboxes, logged_in):
-    result = pk("sandbox", "resize", "demo", "--preset", "coding-large")
+    result = pk("sandbox", "resize", "demo", "--preset", "pk-default-medium")
 
     assert result.exit_code == 0, result.output
-    assert sandboxes.calls == [("resize", "demo", "coding-large")]
+    assert sandboxes.calls == [("resize", "demo", "pk-default-medium")]
     assert result.output.splitlines() == [
         "Resizing demo: /workspace is kept, running processes restart.",
-        "demo: RUNNING, preset coding-large, size large",
+        "demo: RUNNING, preset pk-default-medium, size medium",
     ]
 
 
 def test_preset_errors_are_one_line_messages(sandboxes, logged_in):
-    result = pk("sandbox", "resize", "demo", "--preset", "python")
+    result = pk("sandbox", "resize", "demo", "--preset", "other")
 
     assert result.exit_code == 1
     assert result.output.splitlines()[-1] == (
-        "Error: Preset 'python' has another image than sandbox 'demo'. Create a "
+        "Error: Preset 'other' has another image than sandbox 'demo'. Create a "
         "new sandbox from it instead."
     )
 
@@ -370,11 +374,16 @@ def test_preset_list_marks_the_default(sandboxes, logged_in):
 
     assert result.exit_code == 0, result.output
     assert result.output.splitlines() == [
-        "NAME          SIZE   DESCRIPTION",
-        "coding *      small  Coding: opencode, SSH and a terminal",
-        "coding-large  large  Coding, large",
-        "python        small  Python",
-        "sdk           small  SDK: restores memory, for fast agent runs",
+        "NAME                      SIZE    DESCRIPTION",
+        "pk-default-small *        small   Small: /workspace survives a suspend",
+        "pk-default-medium         medium  Medium: /workspace survives a suspend",
+        "pk-default-large          large   Large: /workspace survives a suspend",
+        "pk-default-small-memory   small   Small, keeps memory: memory and running "
+        "processes survive a suspend",
+        "pk-default-medium-memory  medium  Medium, keeps memory: memory and running "
+        "processes survive a suspend",
+        "pk-default-large-memory   large   Large, keeps memory: memory and running "
+        "processes survive a suspend",
     ]
 
 
@@ -573,7 +582,7 @@ def test_create_install_ssh_writes_the_entry_and_the_include(
     assert "Host pk.team-a.demo\n" in ssh.host_config_file("pk.team-a.demo").read_text()
     assert ssh.include_pattern() in ssh.user_config_file().read_text()
     assert result.output.splitlines()[0] == (
-        "Created demo (SUSPENDED, preset python, size small)"
+        "Created demo (SUSPENDED, preset pk-default-large, size large)"
     )
     assert "SSH host: pk.team-a.demo" in result.output
 

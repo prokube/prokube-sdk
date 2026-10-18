@@ -1,9 +1,9 @@
 """The platform's sandbox presets (prokube/pkui#4678, phase 5).
 
 A preset is a shared template in ``sandbox-templates`` with a golden snapshot,
-so sandboxes from it start fast, plus default network rules. The list comes
-from ``GET /svc/sandbox/v1alpha/presets`` (prokube/prokube-neo#132) and is
-never hardcoded here.
+so sandboxes from it start fast. The list and the default network rules of
+new sandboxes come from ``GET /svc/sandbox/v1alpha/presets``
+(prokube/prokube-neo#132) and are never hardcoded here.
 """
 
 from __future__ import annotations
@@ -24,7 +24,11 @@ class PresetError(ValueError):
 
 @dataclass(frozen=True)
 class Preset:
-    """A preset; ``network`` is the EgressPolicy a new sandbox from it gets."""
+    """A preset; ``network`` is the EgressPolicy a new sandbox from it gets.
+
+    That is the preset's own ``network`` if it has one, else the top-level one
+    shared by all presets.
+    """
 
     name: str
     template: str
@@ -53,6 +57,7 @@ class Presets:
 
     @classmethod
     def from_json(cls, data: Mapping[str, Any]) -> Presets:
+        shared = data.get("network", {})
         return cls(
             default=data["default"],
             presets=tuple(
@@ -64,7 +69,7 @@ class Presets:
                     size=p["size"],
                     env_guest=p.get("envGuest", True),
                     network=json_format.ParseDict(
-                        p.get("network", {}), ateapi.EgressPolicy()
+                        p.get("network", shared), ateapi.EgressPolicy()
                     ),
                 )
                 for p in data["presets"]

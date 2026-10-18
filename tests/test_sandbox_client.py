@@ -19,7 +19,7 @@ URL = "https://platform.example.com"
 PRESETS_URL = f"{URL}/svc/sandbox/v1alpha/presets"
 SHARED = "sandbox-templates"
 CODING = "registry.example.com/pk-sandbox-coding@sha256:" + "a" * 64
-PYTHON = "registry.example.com/pk-sandbox-python@sha256:" + "b" * 64
+OTHER_IMAGE = "registry.example.com/other@sha256:" + "b" * 64
 SUSPENDED = ateapi.ACTOR_STATE_SUSPENDED
 RUNNING = ateapi.ACTOR_STATE_RUNNING
 
@@ -58,14 +58,12 @@ class FakeControl:
         self.requests: list[tuple[str, object]] = []
         self.pages = [ateapi.ListActorsResponse()]
         self.actors: dict[str, ateapi.Actor] = {}
-        self.templates = {
-            "coding-small-v1": template("coding-small-v1"),
-            "coding-large-v1": template("coding-large-v1"),
-            "python-small-v1": template("python-small-v1", PYTHON),
-            "sdk-small-v1": template(
-                "sdk-small-v1", fidelity=ateapi.SNAPSHOT_FIDELITY_MEMORY
-            ),
-        }
+        memory = ateapi.SNAPSHOT_FIDELITY_MEMORY
+        self.templates: dict[str, ateapi.ActorTemplate] = {}
+        for size in ("small", "medium", "large"):
+            plain, kept = f"pk-default-{size}-v1", f"pk-default-{size}-memory-v1"
+            self.templates[plain] = template(plain)
+            self.templates[kept] = template(kept, fidelity=memory)
 
     def methods(self) -> list[str]:
         return [method for method, _ in self.requests]
@@ -451,12 +449,12 @@ def presets_api(httpx_mock):
 
 @pytest.fixture
 def sandbox(client, presets_api):
-    """The client with a running sandbox demo from the coding preset."""
+    """The client with a running sandbox demo from the small preset."""
     client._control.actors["sbx-demo"] = ateapi.Actor(
         metadata=ateapi.ResourceMetadata(
             atespace="team-a", name="sbx-demo", uid="u-1", version=3
         ),
-        actor_template=ref(SHARED, "coding-small-v1"),
+        actor_template=ref(SHARED, "pk-default-small-v1"),
         status=ateapi.ActorStatus(state=RUNNING),
     )
     return client
@@ -469,7 +467,7 @@ async def test_create_from_the_default_preset_sets_its_network(client, presets_a
     assert created.metadata == ateapi.ResourceMetadata(
         atespace="team-a", name="sbx-demo"
     )
-    assert created.actor_template == ref(SHARED, "coding-small-v1")
+    assert created.actor_template == ref(SHARED, "pk-default-small-v1")
     egress = client._control.requests[-1][1]
     assert egress.actor == ref("team-a", "sbx-demo")
     assert egress.egress_policy == ateapi.EgressPolicy(
@@ -479,15 +477,12 @@ async def test_create_from_the_default_preset_sets_its_network(client, presets_a
 
 
 async def test_create_from_a_named_preset(client, presets_api):
-    created = await client.create("demo", preset="python")
+    created = await client.create("demo", preset="pk-default-large")
 
-    assert created.actor_template == ref(SHARED, "python-small-v1")
-    assert not client._control.requests[-1][1].egress_policy.rules
+    assert created.actor_template == ref(SHARED, "pk-default-large-v1")
 
 
-async def test_create_accepts_network_rules_the_policy_sync_set_first(
-    client, presets_api
-):
+async def test_create_keeps_an_existing_egress_policy(client, presets_api):
     async def already_exists(request):
         raise grpc.aio.AioRpcError(
             grpc.StatusCode.ALREADY_EXISTS,
@@ -500,7 +495,7 @@ async def test_create_accepts_network_rules_the_policy_sync_set_first(
 
     created = await client.create("demo")
 
-    assert created.actor_template == ref(SHARED, "coding-small-v1")
+    assert created.actor_template == ref(SHARED, "pk-default-small-v1")
 
 
 async def test_create_from_an_unknown_preset_creates_nothing(client, presets_api):
@@ -513,7 +508,7 @@ async def test_create_from_an_unknown_preset_creates_nothing(client, presets_api
 async def test_resize_suspends_switches_the_preset_and_resumes(sandbox):
     control = sandbox._control
 
-    resized = await sandbox.resize("demo", preset="coding-large")
+    resized = await sandbox.resize("demo", preset="pk-default-medium")
 
     assert control.methods() == [
         "GetActor",
@@ -526,48 +521,65 @@ async def test_resize_suspends_switches_the_preset_and_resumes(sandbox):
     update = control.requests[4][1]
     assert update.actor.metadata.uid == "u-1"
     assert update.actor.metadata.version == 4  # after the suspend
-    assert update.actor.actor_template == ref(SHARED, "coding-large-v1")
+    assert update.actor.actor_template == ref(SHARED, "pk-default-medium-v1")
     assert resized.status.state == RUNNING
-    assert resized.actor_template == ref(SHARED, "coding-large-v1")
+    assert resized.actor_template == ref(SHARED, "pk-default-medium-v1")
 
 
 async def test_resize_keeps_a_suspended_sandbox_suspended(sandbox):
     control = sandbox._control
     control.actors["sbx-demo"].status.state = SUSPENDED
 
-    resized = await sandbox.resize("demo", preset="coding-large")
+    resized = await sandbox.resize("demo", preset="pk-default-medium")
 
     assert resized.status.state == SUSPENDED
     assert control.methods()[-2:] == ["SuspendActor", "UpdateActor"]
 
 
 async def test_resize_to_the_current_preset_changes_nothing(sandbox):
-    resized = await sandbox.resize("demo", preset="coding")
+    resized = await sandbox.resize("demo", preset="pk-default-small")
 
     assert resized.status.state == RUNNING
     assert sandbox._control.methods() == ["GetActor"]
 
 
-@pytest.mark.parametrize(
-    ("preset", "what"),
-    [("python", "image"), ("sdk", "snapshot fidelity")],
-)
-async def test_resize_refuses_another_image_or_snapshot_fidelity(sandbox, preset, what):
+async def test_resize_refuses_another_snapshot_fidelity(sandbox):
     with pytest.raises(PresetError) as error:
-        await sandbox.resize("demo", preset=preset)
+        await sandbox.resize("demo", preset="pk-default-medium-memory")
 
     assert str(error.value) == (
-        f"Preset {preset!r} has another {what} than sandbox 'demo'. "
-        "Create a new sandbox from it instead."
+        "Preset 'pk-default-medium-memory' has another snapshot fidelity than "
+        "sandbox 'demo'. Create a new sandbox from it instead."
     )
     assert "SuspendActor" not in sandbox._control.methods()
+
+
+async def test_resize_refuses_another_image(sandbox):
+    sandbox._control.templates["pk-default-large-v1"] = template(
+        "pk-default-large-v1", OTHER_IMAGE
+    )
+
+    with pytest.raises(PresetError, match="has another image than sandbox 'demo'"):
+        await sandbox.resize("demo", preset="pk-default-large")
+
+    assert "SuspendActor" not in sandbox._control.methods()
+
+
+async def test_resize_works_within_the_memory_presets(sandbox):
+    sandbox._control.actors["sbx-demo"].actor_template.CopyFrom(
+        ref(SHARED, "pk-default-small-memory-v1")
+    )
+
+    resized = await sandbox.resize("demo", preset="pk-default-large-memory")
+
+    assert resized.actor_template == ref(SHARED, "pk-default-large-memory-v1")
 
 
 async def test_has_env_guest_reads_the_sandboxs_template(sandbox):
     assert await sandbox.has_env_guest("demo")
 
-    sandbox._control.templates["coding-small-v1"] = template(
-        "coding-small-v1", env_guest=False
+    sandbox._control.templates["pk-default-small-v1"] = template(
+        "pk-default-small-v1", env_guest=False
     )
     assert not await sandbox.has_env_guest("demo")
 
@@ -603,9 +615,9 @@ def test_presets_url_in_a_workspace_pod_is_the_in_cluster_gateway():
 def test_sync_client_wraps_the_preset_calls(presets_api):
     with sync_client() as client:
         created = client.create("demo")
-        resized = client.resize("demo", preset="coding-large")
+        resized = client.resize("demo", preset="pk-default-medium")
 
         assert client.presets() == PRESETS
-        assert created.actor_template == ref(SHARED, "coding-small-v1")
-        assert resized.actor_template == ref(SHARED, "coding-large-v1")
+        assert created.actor_template == ref(SHARED, "pk-default-small-v1")
+        assert resized.actor_template == ref(SHARED, "pk-default-medium-v1")
         assert client.has_env_guest("demo")

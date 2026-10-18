@@ -59,8 +59,8 @@ with SandboxClient("https://my-platform.example.com", "my-workspace") as client:
     client.delete("demo")
 
     print(client.presets())                      # the platform's presets
-    client.create("big", preset="coding-large")
-    client.resize("big", preset="coding")
+    client.create("big", preset="pk-default-large")
+    client.resize("big", preset="pk-default-small")
 ```
 
 `url` and `workspace` default to `PROKUBE_URL` and `PROKUBE_WORKSPACE`.
@@ -146,18 +146,21 @@ token.
 ```bash
 pk preset list                                     # the platform's presets, default marked *
 pk sandbox create demo                             # from the default preset
-pk sandbox create big --preset coding-large
-pk sandbox resize demo --preset coding-large
+pk sandbox create agent --preset pk-default-small-memory
+pk sandbox resize demo --preset pk-default-medium
 pk sandbox list                                    # NAME, STATE, PRESET, SIZE
 ```
 
 The presets are the platform's (`GET https://<domain>/svc/sandbox/v1alpha/presets`,
 prokube/prokube-neo#132); an unknown name lists them. A preset is a shared
 template with a golden snapshot, so its sandboxes start fast. A new sandbox
-gets the preset's network rules as its Substrate `EgressPolicy`.
+gets the platform's default network rules (or its preset's own, if it has
+them) as its Substrate `EgressPolicy`.
 
 `pk sandbox resize` switches a sandbox to another preset with the same image
-and snapshot fidelity, for example a larger one. A running sandbox is
+and snapshot fidelity: another size within the same group, for example
+`pk-default-small` to `pk-default-medium`, but not to
+`pk-default-medium-memory`. A running sandbox is
 suspended first and resumed afterwards: `/workspace` is kept, running
 processes restart. A suspended sandbox stays suspended. Network rules and
 credentials stay. When the presets cannot be read, `pk sandbox list` shows

@@ -158,7 +158,7 @@ def create(
     url: str | None,
     workspace: str | None,
 ) -> None:
-    """Create sandbox NAME from a preset, with the preset's network rules."""
+    """Create sandbox NAME from a preset, with the platform's network rules."""
 
     async def run(client: AsyncSandboxClient) -> tuple[ateapi.Actor, Presets]:
         return await client.create(name, preset=preset), await client.presets()
