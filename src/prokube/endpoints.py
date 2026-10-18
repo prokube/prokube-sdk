@@ -30,7 +30,7 @@ SCOPES = "openid profile email offline_access"
 # workspace (prokube/prokube-neo#98).
 TEMPLATE_ATESPACE = "sandbox-templates"
 # Template `pk sandbox create` uses when none is given (prokube/prokube-neo#98).
-DEFAULT_TEMPLATE = "coding-v1"
+DEFAULT_TEMPLATE = "coding-v2"
 
 
 # Agent Gateway's in-cluster Service, used from workspace pods that have no

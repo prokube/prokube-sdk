@@ -144,11 +144,12 @@ class AsyncSandboxClient:
         return await _call(self._control.CreateActor(request))
 
     async def resize(self, name: str, size: str) -> Actor:
-        """Give a sandbox another size and return it running.
+        """Give a sandbox another size.
 
-        Suspends it, switches it to the size variant of its template (created
-        if missing; the template itself at its own size) and resumes it.
-        /workspace is kept; running processes restart.
+        Switches it to the size variant of its template (created if missing;
+        the template itself at its own size). A running sandbox is suspended
+        first and resumed afterwards: /workspace is kept, running processes
+        restart. A suspended sandbox stays suspended.
         """
         sizes = await self.sizes()
         actor = await self.get(name)
@@ -156,11 +157,14 @@ class AsyncSandboxClient:
         target = await self._at_size(base, sizes.get(size), sizes)
         if target == actor.actor_template:
             return actor
+        was_running = actor.status.state == ateapi.ACTOR_STATE_RUNNING
+        # A no-op for a suspended sandbox; also uploads a paused one's snapshot.
         actor = await self.suspend(name)
         actor.actor_template.CopyFrom(target)
         actor.ClearField("status")
-        await _call(self._control.UpdateActor(ateapi.UpdateActorRequest(actor=actor)))
-        return await self.resume(name)
+        request = ateapi.UpdateActorRequest(actor=actor)
+        actor = await _call(self._control.UpdateActor(request))
+        return await self.resume(name) if was_running else actor
 
     async def sizes(self) -> Sizes:
         """The sandbox sizes the platform offers and its default size."""
@@ -192,7 +196,9 @@ class AsyncSandboxClient:
     ) -> ActorTemplate:
         """Create template ``<workspace>/<name>-v<n>``, the next version of name.
 
-        Only the image, size and env can be chosen; the rest is fixed (see
+        name must not be an approved template's (``coding`` for ``coding-v2``)
+        and must leave room for ``-v<n>-<size>`` within 63 characters. Only the
+        image, size and env can be chosen; the rest is fixed (see
         prokube.sandbox.templates). A tag in ``image`` is resolved to a digest
         where the registry allows anonymous pulls. ``size`` defaults to the
         platform's default size. ``env`` values are literal and readable by
@@ -200,13 +206,18 @@ class AsyncSandboxClient:
         Commands, files, the terminal and SSH work only with images based on
         pk-sandbox-coding; for other images pass ``env_guest=False``.
         """
-        image = await resolve_image(image)
-        chosen = (await self.sizes()).get(size)
-        existing = [t.metadata.name for t in await self._list_templates(self.workspace)]
+        sizes = await self.sizes()
+        chosen = sizes.get(size)
+        approved = await self._list_templates(endpoints.TEMPLATE_ATESPACE)
+        existing = await self._list_templates(self.workspace)
+        versioned = templates.next_version(name, [t.metadata.name for t in existing])
+        templates.check_name(
+            name, versioned, [t.metadata.name for t in approved], sizes
+        )
         template = templates.build_template(
             self.workspace,
-            templates.next_version(name, existing),
-            image=image,
+            versioned,
+            image=await resolve_image(image),
             size=chosen,
             env=env,
             env_guest=env_guest,

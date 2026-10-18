@@ -543,6 +543,24 @@ async def test_create_template_makes_the_next_version(client, sizes_api):
     assert client._control.methods()[-1] == "CreateActorTemplate"
 
 
+async def test_create_template_refuses_an_approved_templates_name(client, sizes_api):
+    client._control.templates[(endpoints.TEMPLATE_ATESPACE, "coding-v2")] = approved()
+
+    with pytest.raises(TemplateError, match="'coding' is the name of an approved"):
+        await client.create_template("coding", image=IMAGE)
+
+    assert "CreateActorTemplate" not in client._control.methods()
+
+
+async def test_create_template_refuses_a_name_without_room_for_variants(
+    client, sizes_api
+):
+    with pytest.raises(TemplateError, match="must have at most 63 characters"):
+        await client.create_template("a" * 60, image=IMAGE)
+
+    assert "CreateActorTemplate" not in client._control.methods()
+
+
 async def test_create_template_resolves_the_image_and_uses_the_default_size(
     client, sizes_api, monkeypatch
 ):
@@ -617,6 +635,17 @@ async def test_resize_suspends_switches_the_template_and_resumes(with_templates)
     assert update.actor.actor_template == ref("team-a", "coding-v2-medium")
     assert resized.status.state == RUNNING
     assert resized.actor_template == ref("team-a", "coding-v2-medium")
+
+
+async def test_resize_keeps_a_suspended_sandbox_suspended(with_templates):
+    control = with_templates._control
+    control.actors["sbx-demo"].status.state = SUSPENDED
+
+    resized = await with_templates.resize("demo", "medium")
+
+    assert resized.status.state == SUSPENDED
+    assert resized.actor_template == ref("team-a", "coding-v2-medium")
+    assert control.methods()[-2:] == ["SuspendActor", "UpdateActor"]
 
 
 async def test_resize_back_to_the_templates_own_size_uses_the_original(

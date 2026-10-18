@@ -360,8 +360,9 @@ def resume(name: str, url: str | None, workspace: str | None) -> None:
 def resize(name: str, size: str, url: str | None, workspace: str | None) -> None:
     """Give sandbox NAME another size.
 
-    Suspends the sandbox, switches it to its template's size variant and
-    resumes it. /workspace is kept; running processes restart.
+    Switches the sandbox to its template's size variant. A running sandbox is
+    suspended and resumed: /workspace is kept, running processes restart. A
+    suspended sandbox stays suspended.
     """
     click.echo(
         f"Resizing {name} to {size}: /workspace is kept, running processes restart."
@@ -396,8 +397,8 @@ def template() -> None:
 @click.option(
     "--image",
     required=True,
-    help="Container image, IMAGE@sha256:<digest>. A tag is resolved to its "
-    "digest when the registry allows anonymous pulls.",
+    help="Container image: a public one by tag or as IMAGE@sha256:<digest>, a "
+    "private one by digest only (see above).",
 )
 @click.option(
     "--size",
@@ -430,6 +431,13 @@ def template_create(
     """Create template NAME-v<n> in the workspace, the next version of NAME.
 
     SDK, terminal and SSH work only with images based on `pk-sandbox-coding`.
+
+    Public images work by tag, which is resolved to its digest, or by digest.
+    Private images work only from this prefix and must be pinned by digest; a
+    workspace's own private registry is not supported yet:
+
+    \b
+      europe-west3-docker.pkg.dev/prokube-internal/prokube-customer/pk-sandbox-coding*
     """
     variables = _parse_env(env)
     created = _with_client(

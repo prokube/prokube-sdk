@@ -138,6 +138,12 @@ def test_template_size_matches_cpu_memory_and_pool():
     assert SIZES.of(build(size=SIZES.get("gpu"))) == SIZES.get("gpu")
 
 
+def test_template_size_compares_quantities_by_value():
+    same_value = build(size=Size("x", "1000m", "2048Mi", "default"))
+
+    assert SIZES.of(same_value) == SIZES.get("small")
+
+
 def test_template_size_is_custom_when_nothing_matches():
     other_pool = build(size=Size("x", "1", "2Gi", "other"))
     other_memory = build(size=Size("x", "1", "3Gi", "default"))
@@ -169,7 +175,8 @@ def test_same_except_size_sees_other_differences():
 
 
 def test_next_version_follows_the_highest_existing_one():
-    existing = ["mine-v1", "mine-v3", "mine-v2-medium", "mine-v10x", "other-v7"]
+    existing = ["mine-v1", "mine-v3", "mine-v2-medium", "mine-v10x", "mine-v07"]
+    existing += ["other-v7"]
 
     assert templates.next_version("mine", existing) == "mine-v4"
     assert templates.next_version("new", existing) == "new-v1"
@@ -179,4 +186,43 @@ def test_next_version_follows_the_highest_existing_one():
 def test_variant_name_appends_the_size():
     assert (
         templates.variant_name("coding-v2", SIZES.get("medium")) == "coding-v2-medium"
+    )
+
+
+def test_family_is_the_name_without_its_version():
+    assert templates.family("coding-v2") == "coding"
+    assert templates.family("my-tool-v12") == "my-tool"
+    assert templates.family("coding-v2-medium") == "coding-v2-medium"
+    assert templates.family("t125-gs") == "t125-gs"
+
+
+def test_check_name_accepts_a_new_name():
+    templates.check_name("my-tool", "my-tool-v1", ["coding-v2", "python-v1"], SIZES)
+
+
+def test_check_name_rejects_an_approved_family():
+    with pytest.raises(TemplateError) as error:
+        templates.check_name("coding", "coding-v1", ["coding-v1", "coding-v2"], SIZES)
+
+    assert str(error.value) == (
+        "'coding' is the name of an approved template. Choose another name."
+    )
+
+
+@pytest.mark.parametrize("name", ["My-Tool", "tool_1", "-tool", "tool-", ""])
+def test_check_name_needs_a_dns_label(name):
+    with pytest.raises(TemplateError, match="must be a lowercase DNS label"):
+        templates.check_name(name, f"{name}-v1", [], SIZES)
+
+
+def test_check_name_leaves_room_for_every_size_variant():
+    fits = "a" * (63 - len("-v1-medium"))  # medium is the longest size name
+    too_long = fits + "a"
+
+    templates.check_name(fits, f"{fits}-v1", [], SIZES)
+    with pytest.raises(TemplateError) as error:
+        templates.check_name(too_long, f"{too_long}-v1", [], SIZES)
+    assert str(error.value) == (
+        f"Template name {too_long!r} is too long: '{too_long}-v1' and its size "
+        "variants must have at most 63 characters."
     )

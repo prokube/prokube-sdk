@@ -151,20 +151,26 @@ The sizes are the platform's (`GET https://<domain>/svc/sandbox/v1alpha/sizes`,
 prokube/prokube-neo#127); an unknown size lists them.
 
 `pk template create NAME` creates `<workspace>/NAME-v<n>`, one version higher
-than the highest existing one; templates never change. Only the image, size and
+than the highest existing one; templates never change. NAME must be a DNS
+label, must not be an approved template's (`coding` for `coding-v2`) and must
+leave room for `-v<n>-<size>` within 63 characters. Only the image, size and
 env can be chosen; storage location, snapshot settings, sandbox runtime,
 capabilities, volumes and worker pool are fixed
 ([`templates.py`](src/prokube/sandbox/templates.py)). The image is pinned by
-digest: pass `IMAGE@sha256:<digest>`, or a tag of a public image, which is
-resolved anonymously. Env values are readable by every workspace member; pass
+digest: a public image works by tag, which is resolved anonymously, or by
+digest. Private images work only from
+`europe-west3-docker.pkg.dev/prokube-internal/prokube-customer/pk-sandbox-coding*`,
+pinned by digest (prokube/prokube-neo#126); a workspace's own private registry
+is not supported yet. Env values are readable by every workspace member; pass
 secrets through credential injection. SDK, terminal and SSH work only with
 images based on `pk-sandbox-coding`; for any other image, pass `--no-env-guest`.
 `exec`, `cp` and `connect` then say that the sandbox has no env guest.
 
 A template at another size is its size variant `<workspace>/<template>-<size>`,
-created on first use. `pk sandbox resize` suspends the sandbox, switches it to
-the variant (or back to the template itself at its own size) and resumes it:
-`/workspace` is kept, running processes restart.
+created on first use. `pk sandbox resize` switches the sandbox to the variant
+(or back to the template itself at its own size). A running sandbox is
+suspended first and resumed afterwards: `/workspace` is kept, running processes
+restart. A suspended sandbox stays suspended.
 
 ## How it maps to Substrate
 
@@ -175,7 +181,7 @@ the variant (or back to the template itself at its own size) and resumes it:
 | `create`, `list`, `get`, `delete`, `suspend`, `resume` | `ateapi.Control` (`CreateActor`, `ListActors`, ...) |
 | `run`, `read_file`, `write_file`, `env()` | env guest API via `ate_env` |
 | `list_templates`, `create_template`, size variants | `ListActorTemplates`, `CreateActorTemplate` |
-| `resize` | `SuspendActor`, `UpdateActor` (new `actor_template`), `ResumeActor` |
+| `resize` | `SuspendActor`, `UpdateActor` (new `actor_template`), `ResumeActor` if it was running |
 | return values | `Actor` protos and `ate_env.ShellResult` |
 | errors | `ate_env` errors (`NotFoundError`, `PermissionDeniedError`, `RpcError`, ...) |
 

@@ -12,6 +12,7 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from prokube.sandbox._ateapi import ateapi_pb2 as ateapi
@@ -38,6 +39,15 @@ CA_ENV = (
 # whose guest container has this wakeup probe support exec, files and SSH.
 ENV_GUEST_PATH = "/readyz"
 ENV_GUEST_PORT = 80
+# Kubernetes name limit; a custom template's size variants must fit it, too.
+MAX_NAME_LENGTH = 63
+DNS_LABEL = re.compile(r"[a-z0-9]([-a-z0-9]*[a-z0-9])?")
+VERSIONED = re.compile(r"(?P<family>.+)-v(?P<version>[1-9][0-9]*)")
+# Suffixes of Kubernetes quantities ("500m", "2Gi").
+QUANTITY = re.compile(r"([0-9.]+(?:[eE][-+]?[0-9]+)?)(Ki|Mi|Gi|Ti|Pi|Ei|[numkMGTPE]?)")
+MULTIPLIERS = {"": 1, "n": Decimal("1e-9"), "u": Decimal("1e-6"), "m": Decimal("1e-3")}
+MULTIPLIERS |= {suffix: 1000 ** (i + 1) for i, suffix in enumerate("kMGTPE")}
+MULTIPLIERS |= {f"{suffix}i": 1024 ** (i + 1) for i, suffix in enumerate("KMGTPE")}
 
 
 class TemplateError(ValueError):
@@ -81,15 +91,20 @@ class Sizes:
         raise TemplateError(f"Unknown size {name!r}. Sizes: {choices}")
 
     def of(self, template: ActorTemplate) -> Size | None:
-        """The size whose cpu, memory and pool equal the template's; None is custom."""
+        """The size whose cpu, memory and pool equal the template's; None is custom.
+
+        Quantities compare by value, so "1" equals "1000m".
+        """
         limits = {limit.name: limit.quantity for limit in template.resources.limits}
-        pool = template.worker_selector.match_labels.get(POOL_LABEL)
+        actual = (
+            _quantity(limits.get("cpu")),
+            _quantity(limits.get("memory")),
+            template.worker_selector.match_labels.get(POOL_LABEL),
+        )
+        if None in actual:
+            return None
         for size in self.sizes:
-            if (size.cpu, size.memory, size.pool) == (
-                limits.get("cpu"),
-                limits.get("memory"),
-                pool,
-            ):
+            if (_quantity(size.cpu), _quantity(size.memory), size.pool) == actual:
                 return size
         return None
 
@@ -187,9 +202,42 @@ def with_size(template: ActorTemplate, size: Size) -> ActorTemplate:
 
 def next_version(name: str, existing: Iterable[str]) -> str:
     """``<name>-v<k+1>``, where k is the highest version among existing names."""
-    pattern = re.compile(rf"{re.escape(name)}-v(\d+)")
-    versions = [int(m.group(1)) for n in existing if (m := pattern.fullmatch(n))]
+    versions = [
+        int(m["version"])
+        for n in existing
+        if (m := VERSIONED.fullmatch(n)) and m["family"] == name
+    ]
     return f"{name}-v{max(versions, default=0) + 1}"
+
+
+def family(name: str) -> str:
+    """``coding`` for ``coding-v2``; an unversioned name is its own family."""
+    match = VERSIONED.fullmatch(name)
+    return match["family"] if match else name
+
+
+def check_name(
+    name: str, versioned: str, approved: Iterable[str], sizes: Sizes
+) -> None:
+    """Raise TemplateError unless ``versioned`` (``<name>-v<n>``) can be created.
+
+    The rules are pkui's: a DNS label, not the family of an approved template,
+    and short enough for every size variant ``<name>-v<n>-<size>``.
+    """
+    if not DNS_LABEL.fullmatch(name):
+        raise TemplateError(
+            f"Template name {name!r} must be a lowercase DNS label (a-z, 0-9, '-')."
+        )
+    if name in {family(template) for template in approved}:
+        raise TemplateError(
+            f"{name!r} is the name of an approved template. Choose another name."
+        )
+    names = [versioned] + [variant_name(versioned, size) for size in sizes.sizes]
+    if max(len(n) for n in names) > MAX_NAME_LENGTH:
+        raise TemplateError(
+            f"Template name {name!r} is too long: {versioned!r} and its size "
+            f"variants must have at most {MAX_NAME_LENGTH} characters."
+        )
 
 
 def variant_name(template: str, size: Size) -> str:
@@ -221,3 +269,14 @@ def has_env_guest(template: ActorTemplate) -> bool:
         and container.wakeup_probe.http_get.port == ENV_GUEST_PORT
         for container in template.containers
     )
+
+
+def _quantity(value: str | None) -> Decimal | None:
+    """The value of a Kubernetes quantity such as "500m" or "2Gi"; None if invalid."""
+    match = QUANTITY.fullmatch(value or "")
+    if not match:
+        return None
+    try:
+        return Decimal(match[1]) * MULTIPLIERS[match[2]]
+    except InvalidOperation:
+        return None

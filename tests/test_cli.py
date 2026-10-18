@@ -318,7 +318,7 @@ def test_create_defaults_to_the_coding_template(sandboxes, logged_in):
     assert (
         "create",
         "demo",
-        "coding-v1",
+        "coding-v2",
         "sandbox-templates",
         None,
     ) in sandboxes.calls
@@ -514,7 +514,7 @@ def test_create_install_ssh_writes_the_entry_and_the_include(
     assert "Host pk.team-a.demo\n" in ssh.host_config_file("pk.team-a.demo").read_text()
     assert ssh.include_pattern() in ssh.user_config_file().read_text()
     assert result.output.splitlines()[0] == (
-        "Created demo (SUSPENDED, template sandbox-templates/coding-v1)"
+        "Created demo (SUSPENDED, template sandbox-templates/coding-v2)"
     )
     assert "SSH host: pk.team-a.demo" in result.output
 
@@ -624,13 +624,17 @@ def test_template_create_needs_key_value_env(sandboxes, logged_in):
     assert sandboxes.calls == []
 
 
-def test_template_create_help_names_the_base_image():
-    help_text = " ".join(pk("template", "create", "--help").output.split())
+def test_template_create_help_names_the_base_image_and_private_images():
+    result = pk("template", "create", "--help")
+    help_text = " ".join(result.output.split())
 
     assert (
         "SDK, terminal and SSH work only with images based on `pk-sandbox-coding`."
         in help_text
     )
+    assert "Private images work only from this prefix and must be pinned" in help_text
+    prefix = "europe-west3-docker.pkg.dev/prokube-internal/prokube-customer/"
+    assert f"  {prefix}pk-sandbox-coding*\n" in result.output
 
 
 def test_template_list_shows_each_size_or_custom(sandboxes, logged_in):
