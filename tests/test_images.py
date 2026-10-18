@@ -1,24 +1,33 @@
 import pytest
 
-from prokube.sandbox.images import resolve_image
-from prokube.sandbox.templates import TemplateError
+from prokube.sandbox.images import canonical_image
+from prokube.sandbox.settings import SettingsError
 
 DIGEST = "sha256:" + "c" * 64
 
 
-async def test_an_image_with_a_digest_is_kept():
-    image = f"registry.example.com/team/pk-sandbox-coding@{DIGEST}"
-
-    assert await resolve_image(image) == image
-    assert await resolve_image(f"busybox:1.37.0@{DIGEST}") == f"busybox:1.37.0@{DIGEST}"
+@pytest.mark.parametrize(
+    ("image", "canonical"),
+    [
+        ("registry.example.com/team/coding", "registry.example.com/team/coding"),
+        ("busybox", "docker.io/library/busybox"),
+        ("busybox:1.37.0", "docker.io/library/busybox"),
+        ("docker.io/busybox", "docker.io/library/busybox"),
+        ("index.docker.io/me/tool:1", "docker.io/me/tool"),
+        ("me/tool", "docker.io/me/tool"),
+        ("localhost:5000/app:dev", "localhost:5000/app"),
+    ],
+)
+async def test_a_digest_is_kept_and_the_name_made_canonical(image, canonical):
+    assert await canonical_image(f"{image}@{DIGEST}") == f"{canonical}@{DIGEST}"
 
 
 @pytest.mark.parametrize(
     "image", ["busybox@sha256:abc", f"busybox@sha512:{'c' * 64}", f"a@b@{DIGEST}"]
 )
 async def test_a_malformed_digest_is_rejected(image):
-    with pytest.raises(TemplateError, match="expected NAME@sha256"):
-        await resolve_image(image)
+    with pytest.raises(SettingsError, match="expected NAME@sha256"):
+        await canonical_image(image)
 
 
 async def test_a_docker_hub_tag_resolves_with_an_anonymous_token(httpx_mock):
@@ -44,7 +53,9 @@ async def test_a_docker_hub_tag_resolves_with_an_anonymous_token(httpx_mock):
         headers={"docker-content-digest": DIGEST},
     )
 
-    assert await resolve_image("busybox:1.37.0") == f"busybox:1.37.0@{DIGEST}"
+    assert await canonical_image("busybox:1.37.0") == (
+        f"docker.io/library/busybox@{DIGEST}"
+    )
     accept = httpx_mock.get_requests()[0].headers["accept"]
     assert accept.startswith("application/vnd.oci.image.index.v1+json")
 
@@ -61,10 +72,10 @@ async def test_registry_host_port_repository_and_default_tag(httpx_mock):
         headers={"docker-content-digest": DIGEST},
     )
 
-    assert await resolve_image("localhost:5000/team/app") == (
+    assert await canonical_image("localhost:5000/team/app") == (
         f"localhost:5000/team/app@{DIGEST}"
     )
-    assert await resolve_image("ghcr.io/org/tool:v2") == f"ghcr.io/org/tool:v2@{DIGEST}"
+    assert await canonical_image("ghcr.io/org/tool:v2") == f"ghcr.io/org/tool@{DIGEST}"
 
 
 async def test_a_private_image_asks_for_a_digest(httpx_mock):
@@ -83,8 +94,8 @@ async def test_a_private_image_asks_for_a_digest(httpx_mock):
         status_code=403,
     )
 
-    with pytest.raises(TemplateError) as error:
-        await resolve_image("private.example.com/team/img:1.0")
+    with pytest.raises(SettingsError) as error:
+        await canonical_image("private.example.com/team/img:1.0")
 
     assert str(error.value) == (
         "Cannot resolve private.example.com/team/img:1.0 to a digest without "
@@ -99,5 +110,5 @@ async def test_a_missing_tag_asks_for_a_digest(httpx_mock):
         status_code=404,
     )
 
-    with pytest.raises(TemplateError, match="NAME@sha256:<digest>"):
-        await resolve_image("quay.io/org/app:nope")
+    with pytest.raises(SettingsError, match="NAME@sha256:<digest>"):
+        await canonical_image("quay.io/org/app:nope")
