@@ -33,6 +33,7 @@ dependencies = [
 # The pk command line.
 cli = [
     "click>=8.1.0",
+    "mcp>=2.3,<3",
     "websockets>=15.0",
 ]
 dev = [
