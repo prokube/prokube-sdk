@@ -26,11 +26,9 @@ REDIRECT_URIS = (
 # offline_access makes Dex return a refresh token.
 SCOPES = "openid profile email offline_access"
 
-# Atespace holding the approved sandbox templates, viewable by every
-# workspace (prokube/prokube-neo#98).
+# Atespace holding the presets' templates, viewable by every workspace
+# (prokube/prokube-neo#98, #132).
 TEMPLATE_ATESPACE = "sandbox-templates"
-# Template `pk sandbox create` uses when none is given (prokube/prokube-neo#98).
-DEFAULT_TEMPLATE = "coding-v2"
 
 
 # Agent Gateway's in-cluster Service, used from workspace pods that have no
@@ -75,13 +73,14 @@ def _grpc_target(url: str) -> str:
     return f"{parsed.hostname}:{parsed.port or 443}"
 
 
-def sizes_url(url: str | None) -> str:
-    """The platform's sandbox sizes (prokube/prokube-neo#127).
+def sandbox_config_url(url: str | None, name: str) -> str:
+    """The platform's sandbox ``sizes`` or ``presets``.
 
-    Without a platform URL, the same route on Agent Gateway's in-cluster Service.
+    Served by prokube/prokube-neo#127 and #132. Without a platform URL, the
+    same route on Agent Gateway's in-cluster Service.
     """
     base = normalize_url(url) if url else f"http://{IN_CLUSTER_GATEWAY}"
-    return f"{base}/svc/sandbox/v1alpha/sizes"
+    return f"{base}/svc/sandbox/v1alpha/{name}"
 
 
 def ssh_url(url: str, atespace: str, actor: str) -> str:

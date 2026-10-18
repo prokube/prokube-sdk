@@ -19,10 +19,19 @@ from prokube.sandbox import client as client_module
 from prokube.sandbox._ateapi import ateapi_pb2 as ateapi
 from prokube.sandbox.client import _BearerToken
 from tests.conftest import make_jwt
-from tests.test_templates import IMAGE, SIZES, SIZES_JSON
+from tests.test_templates import (
+    IMAGE,
+    OPENCODE_POLICY,
+    PRESETS,
+    PRESETS_JSON,
+    SIZES,
+    SIZES_JSON,
+)
 
 URL = "https://platform.example.com"
 SIZES_URL = f"{URL}/svc/sandbox/v1alpha/sizes"
+PRESETS_URL = f"{URL}/svc/sandbox/v1alpha/presets"
+SHARED = endpoints.TEMPLATE_ATESPACE
 SUSPENDED = ateapi.ACTOR_STATE_SUSPENDED
 RUNNING = ateapi.ACTOR_STATE_RUNNING
 
@@ -31,13 +40,14 @@ def actor(name: str, atespace: str = "team-a") -> ateapi.Actor:
     return ateapi.Actor(metadata=ateapi.ResourceMetadata(atespace=atespace, name=name))
 
 
-def not_found(what: str) -> grpc.aio.AioRpcError:
+def rpc_error(code: grpc.StatusCode, details: str) -> grpc.aio.AioRpcError:
     return grpc.aio.AioRpcError(
-        grpc.StatusCode.NOT_FOUND,
-        grpc.aio.Metadata(),
-        grpc.aio.Metadata(),
-        details=f"{what} not found",
+        code, grpc.aio.Metadata(), grpc.aio.Metadata(), details=details
     )
+
+
+def not_found(what: str) -> grpc.aio.AioRpcError:
+    return rpc_error(grpc.StatusCode.NOT_FOUND, f"{what} not found")
 
 
 class FakeControl:
@@ -58,6 +68,8 @@ class FakeControl:
 
     async def CreateActor(self, request):
         self.requests.append(("CreateActor", request))
+        self.actors[request.actor.metadata.name] = ateapi.Actor()
+        self.actors[request.actor.metadata.name].CopyFrom(request.actor)
         return request.actor
 
     async def ListActors(self, request):
@@ -104,6 +116,10 @@ class FakeControl:
         if key not in self.templates:
             raise not_found("actor template")
         return self.templates[key]
+
+    async def CreateActorEgressPolicy(self, request):
+        self.requests.append(("CreateActorEgressPolicy", request))
+        return request.egress_policy
 
     async def ListActorTemplates(self, request):
         """Pages of two templates; the page token is the offset."""
@@ -169,23 +185,6 @@ async def client():
 def test_sandbox_names_get_the_sbx_prefix_once():
     assert actor_name("demo") == "sbx-demo"
     assert actor_name("sbx-demo") == "sbx-demo"
-
-
-async def test_create_makes_an_actor_in_the_workspace_atespace(client):
-    created = await client.create("demo", template="python-v1")
-
-    [(method, request)] = client._control.requests
-    assert method == "CreateActor"
-    assert created.metadata.atespace == "team-a"
-    assert created.metadata.name == "sbx-demo"
-    assert created.actor_template.atespace == endpoints.TEMPLATE_ATESPACE
-    assert created.actor_template.name == "python-v1"
-
-
-async def test_create_accepts_a_template_from_another_atespace(client):
-    created = await client.create("demo", template="mine", template_atespace="team-a")
-
-    assert created.actor_template == ateapi.ObjectRef(atespace="team-a", name="mine")
 
 
 async def test_list_follows_pages_and_keeps_only_sandboxes(client):
@@ -426,7 +425,7 @@ def sync_client() -> SandboxClient:
 
 def test_sync_client_wraps_the_async_one():
     with sync_client() as client:
-        created = client.create("demo", template="python-v1")
+        created = client.get("demo")
         result = client.run("demo", "echo hi")
         client.write_file("demo", "/workspace/a.txt", b"x")
 
@@ -448,177 +447,158 @@ def test_sync_client_reports_construction_errors():
         SandboxClient(URL, "team-a")
 
 
-# --- Templates, sizes and resize ------------------------------------------
+# --- Presets, custom images, sizes and resize ------------------------------
+
+OTHER_IMAGE = IMAGE.replace("a" * 64, "b" * 64)
 
 
-def approved(name: str = "coding-v2", image: str = IMAGE) -> ateapi.ActorTemplate:
-    """An approved template at the default size, like coding-v2."""
-    return templates.build_template(
-        endpoints.TEMPLATE_ATESPACE, name, image=image, size=SIZES.get()
+def shared_template(name: str, image: str = IMAGE, size: str = "small"):
+    """A preset's template in sandbox-templates, with a golden snapshot."""
+    template = templates.build_template(SHARED, name, image=image, size=SIZES.get(size))
+    template.snapshot_config.golden_snapshot_config.mode = (
+        ateapi.GOLDEN_SNAPSHOT_MODE_ENABLED
     )
-
-
-@pytest.fixture
-def sizes_api(httpx_mock):
-    httpx_mock.add_response(
-        url=SIZES_URL, json=SIZES_JSON, is_reusable=True, is_optional=True
-    )
-    return httpx_mock
-
-
-@pytest.fixture
-def with_templates(client, sizes_api):
-    """The client with sandbox-templates/coding-v2 and a sandbox demo on it."""
-    client._control.templates[(endpoints.TEMPLATE_ATESPACE, "coding-v2")] = approved()
-    client._control.actors["sbx-demo"] = ateapi.Actor(
-        metadata=ateapi.ResourceMetadata(
-            atespace="team-a", name="sbx-demo", uid="u-1", version=3
-        ),
-        actor_template=ateapi.ObjectRef(
-            atespace=endpoints.TEMPLATE_ATESPACE, name="coding-v2"
-        ),
-        status=ateapi.ActorStatus(state=RUNNING),
-    )
-    return client
+    return template
 
 
 def ref(atespace: str, name: str) -> ateapi.ObjectRef:
     return ateapi.ObjectRef(atespace=atespace, name=name)
 
 
-async def test_sizes_are_read_with_the_callers_token(client, httpx_mock):
-    httpx_mock.add_response(
-        url=SIZES_URL, match_headers={"authorization": "Bearer token"}, json=SIZES_JSON
-    )
-
-    assert await client.sizes() == SIZES
-
-
-async def test_unreadable_sizes_are_a_clear_error(client, httpx_mock):
-    httpx_mock.add_response(url=SIZES_URL, status_code=404, text="route not found")
-
-    with pytest.raises(TemplateError) as error:
-        await client.sizes()
-
-    assert (
-        str(error.value) == f"Cannot read the sandbox sizes from {SIZES_URL}: HTTP 404"
-    )
-
-
-def test_sizes_url_in_a_workspace_pod_is_the_in_cluster_gateway():
-    assert endpoints.sizes_url(None) == (
-        "http://agentgateway-proxy.agentgateway-system.svc.cluster.local:80"
-        "/svc/sandbox/v1alpha/sizes"
-    )
-
-
-async def test_list_templates_returns_the_approved_and_the_workspaces_own(client):
+@pytest.fixture
+def platform(client, httpx_mock):
+    """The platform's sizes and presets, and the presets' templates."""
+    for url, body in ((SIZES_URL, SIZES_JSON), (PRESETS_URL, PRESETS_JSON)):
+        httpx_mock.add_response(url=url, json=body, is_reusable=True, is_optional=True)
     stored = client._control.templates
-    for name in ("coding-v1", "coding-v2", "python-v2"):
-        stored[(endpoints.TEMPLATE_ATESPACE, name)] = approved(name)
-    stored[("team-a", "mine-v1")] = approved("mine-v1")
-    stored[("team-b", "theirs-v1")] = approved("theirs-v1")
-
-    found = await client.list_templates()
-
-    assert [t.metadata.name for t in found] == [
-        "coding-v1",
-        "coding-v2",
-        "python-v2",
-        "mine-v1",
-    ]
+    stored[(SHARED, "coding-small-v1")] = shared_template("coding-small-v1")
+    stored[(SHARED, "coding-medium-v1")] = shared_template(
+        "coding-medium-v1", size="medium"
+    )
+    stored[(SHARED, "python-small-v1")] = shared_template(
+        "python-small-v1", image=OTHER_IMAGE
+    )
+    return httpx_mock
 
 
-async def test_create_template_makes_the_next_version(client, sizes_api):
-    client._control.templates[("team-a", "mine-v1")] = approved("mine-v1")
-    client._control.templates[("team-a", "mine-v2")] = approved("mine-v2")
+@pytest.fixture
+def sandbox(client, platform):
+    """The client with a running sandbox demo from the coding preset."""
+    client._control.actors["sbx-demo"] = ateapi.Actor(
+        metadata=ateapi.ResourceMetadata(
+            atespace="team-a", name="sbx-demo", uid="u-1", version=3
+        ),
+        actor_template=ref(SHARED, "coding-small-v1"),
+        status=ateapi.ActorStatus(state=RUNNING),
+    )
+    return client
 
-    created = await client.create_template(
-        "mine", image=IMAGE, size="medium", env={"MODE": "dev"}
+
+async def test_create_from_the_default_preset_sets_its_network(client, platform):
+    created = await client.create("demo")
+
+    assert client._control.methods() == ["CreateActor", "CreateActorEgressPolicy"]
+    assert created.metadata == ateapi.ResourceMetadata(
+        atespace="team-a", name="sbx-demo"
+    )
+    assert created.actor_template == ref(SHARED, "coding-small-v1")
+    egress = client._control.requests[-1][1]
+    assert egress.actor == ref("team-a", "sbx-demo")
+    assert egress.egress_policy == ateapi.EgressPolicy(
+        metadata=ateapi.ResourceMetadata(atespace="team-a", name="default"),
+        rules=OPENCODE_POLICY.rules,
     )
 
-    assert created == templates.build_template(
-        "team-a", "mine-v3", image=IMAGE, size=SIZES.get("medium"), env={"MODE": "dev"}
-    )
-    assert client._control.methods()[-1] == "CreateActorTemplate"
+
+async def test_create_from_a_named_preset(client, platform):
+    created = await client.create("demo", preset="python")
+
+    assert created.actor_template == ref(SHARED, "python-small-v1")
+    assert not client._control.requests[-1][1].egress_policy.rules
 
 
-async def test_create_template_refuses_an_approved_templates_name(client, sizes_api):
-    client._control.templates[(endpoints.TEMPLATE_ATESPACE, "coding-v2")] = approved()
+async def test_create_accepts_network_rules_the_policy_sync_set_first(client, platform):
+    async def already_exists(request):
+        raise rpc_error(grpc.StatusCode.ALREADY_EXISTS, "egress policy exists")
 
-    with pytest.raises(TemplateError, match="'coding' is the name of an approved"):
-        await client.create_template("coding", image=IMAGE)
+    client._control.CreateActorEgressPolicy = already_exists
 
-    assert "CreateActorTemplate" not in client._control.methods()
+    created = await client.create("demo")
+
+    assert created.actor_template == ref(SHARED, "coding-small-v1")
 
 
-async def test_create_template_refuses_a_name_without_room_for_variants(
-    client, sizes_api
+async def test_create_with_a_custom_image_makes_the_next_template_version(
+    client, platform
 ):
-    with pytest.raises(TemplateError, match="must have at most 63 characters"):
-        await client.create_template("a" * 60, image=IMAGE)
+    client._control.templates[("team-a", "web-v1")] = shared_template("web-v1")
 
-    assert "CreateActorTemplate" not in client._control.methods()
+    created = await client.create(
+        "web", image=IMAGE, size="medium", env={"MODE": "dev"}
+    )
+
+    assert created.actor_template == ref("team-a", "web-v2")
+    assert client._control.templates[("team-a", "web-v2")] == (
+        templates.build_template(
+            "team-a",
+            "web-v2",
+            image=IMAGE,
+            size=SIZES.get("medium"),
+            env={"MODE": "dev"},
+        )
+    )
+    assert client._control.methods()[-2:] == ["CreateActorTemplate", "CreateActor"]
 
 
-async def test_create_template_resolves_the_image_and_uses_the_default_size(
-    client, sizes_api, monkeypatch
+async def test_create_with_a_custom_image_resolves_it_and_uses_the_default_size(
+    client, platform, monkeypatch
 ):
     async def resolve(image):
         return f"{image}@sha256:{'d' * 64}"
 
     monkeypatch.setattr(client_module, "resolve_image", resolve)
 
-    created = await client.create_template("web", image="nginx:1", env_guest=False)
+    await client.create("web", image="nginx:1", env_guest=False)
 
-    assert created.metadata.name == "web-v1"
+    created = client._control.templates[("team-a", "web-v1")]
     assert created.containers[0].image == f"nginx:1@sha256:{'d' * 64}"
     assert SIZES.of(created) == SIZES.get("small")
     assert not templates.has_env_guest(created)
 
 
-async def test_create_with_a_size_creates_the_variant_once(with_templates):
-    client = with_templates
+@pytest.mark.parametrize("name", ["coding", "coding-small"])
+async def test_create_refuses_a_preset_name_for_a_custom_image(client, platform, name):
+    with pytest.raises(TemplateError, match="is taken by a preset"):
+        await client.create(name, image=IMAGE)
 
-    first = await client.create("one", template="coding-v2", size="medium")
-    second = await client.create("two", template="coding-v2", size="medium")
-
-    variant_ref = ref("team-a", "coding-v2-medium")
-    assert first.actor_template == second.actor_template == variant_ref
-    assert client._control.methods().count("CreateActorTemplate") == 1
-    variant = client._control.templates[("team-a", "coding-v2-medium")]
-    assert SIZES.of(variant) == SIZES.get("medium")
-    assert templates.same_except_size(variant, approved())
+    assert {"CreateActorTemplate", "CreateActor"}.isdisjoint(client._control.methods())
 
 
-async def test_create_at_the_templates_own_size_uses_the_template(with_templates):
-    created = await with_templates.create("one", template="coding-v2", size="small")
-
-    assert created.actor_template == ref(endpoints.TEMPLATE_ATESPACE, "coding-v2")
-    assert "CreateActorTemplate" not in with_templates._control.methods()
+async def test_create_refuses_a_custom_name_without_room_for_variants(client, platform):
+    with pytest.raises(TemplateError, match="must have at most 63 characters"):
+        await client.create("a" * 59, image=IMAGE)
 
 
-async def test_create_refuses_a_variant_name_taken_by_another_template(
-    with_templates,
-):
-    other = templates.with_size(
-        approved(image=IMAGE.replace("a" * 64, "b" * 64)), SIZES.get("medium")
-    )
-    with_templates._control.templates[("team-a", "coding-v2-medium")] = other
+@pytest.mark.parametrize(
+    ("options", "message"),
+    [
+        ({"size": "medium"}, "need a custom image"),
+        ({"env": {"A": "1"}}, "need a custom image"),
+        ({"env_guest": False}, "need a custom image"),
+        ({"preset": "coding", "image": IMAGE}, "not both"),
+    ],
+)
+async def test_create_refuses_options_that_do_not_fit(client, options, message):
+    with pytest.raises(TemplateError, match=message):
+        await client.create("demo", **options)
 
-    with pytest.raises(TemplateError) as error:
-        await with_templates.create("one", template="coding-v2", size="medium")
-
-    assert str(error.value) == (
-        "team-a/coding-v2-medium exists but is not sandbox-templates/coding-v2 "
-        "at size medium."
-    )
+    assert client._control.requests == []
 
 
-async def test_resize_suspends_switches_the_template_and_resumes(with_templates):
-    control = with_templates._control
+async def test_resize_to_a_size_suspends_switches_and_resumes(sandbox):
+    control = sandbox._control
 
-    resized = await with_templates.resize("demo", "medium")
+    resized = await sandbox.resize("demo", size="medium")
 
     assert control.methods() == [
         "GetActor",
@@ -632,91 +612,159 @@ async def test_resize_suspends_switches_the_template_and_resumes(with_templates)
     update = control.requests[5][1]
     assert update.actor.metadata.uid == "u-1"
     assert update.actor.metadata.version == 4  # after the suspend
-    assert update.actor.actor_template == ref("team-a", "coding-v2-medium")
+    assert update.actor.actor_template == ref("team-a", "coding-small-v1-medium")
     assert resized.status.state == RUNNING
-    assert resized.actor_template == ref("team-a", "coding-v2-medium")
+    variant = control.templates[("team-a", "coding-small-v1-medium")]
+    assert SIZES.of(variant) == SIZES.get("medium")
+    assert variant.snapshot_config.golden_snapshot_config.mode == (
+        ateapi.GOLDEN_SNAPSHOT_MODE_DISABLED
+    )
 
 
-async def test_resize_keeps_a_suspended_sandbox_suspended(with_templates):
-    control = with_templates._control
+async def test_resize_keeps_a_suspended_sandbox_suspended(sandbox):
+    control = sandbox._control
     control.actors["sbx-demo"].status.state = SUSPENDED
 
-    resized = await with_templates.resize("demo", "medium")
+    resized = await sandbox.resize("demo", size="medium")
 
     assert resized.status.state == SUSPENDED
-    assert resized.actor_template == ref("team-a", "coding-v2-medium")
     assert control.methods()[-2:] == ["SuspendActor", "UpdateActor"]
 
 
-async def test_resize_back_to_the_templates_own_size_uses_the_original(
-    with_templates,
-):
-    control = with_templates._control
-    await with_templates.resize("demo", "medium")
+async def test_resize_back_to_the_templates_own_size_uses_the_original(sandbox):
+    control = sandbox._control
+    await sandbox.resize("demo", size="medium")
     # A custom template with the same name must not be mistaken for the original.
-    control.templates[("team-a", "coding-v2")] = approved(
-        image=IMAGE.replace("a" * 64, "b" * 64)
+    control.templates[("team-a", "coding-small-v1")] = shared_template(
+        "coding-small-v1", image=OTHER_IMAGE
     )
 
-    resized = await with_templates.resize("demo", "small")
+    resized = await sandbox.resize("demo", size="small")
 
-    assert resized.actor_template == ref(endpoints.TEMPLATE_ATESPACE, "coding-v2")
+    assert resized.actor_template == ref(SHARED, "coding-small-v1")
     assert control.methods().count("CreateActorTemplate") == 1
 
 
-async def test_resize_to_another_variant_starts_from_the_original(with_templates):
-    await with_templates.resize("demo", "medium")
+async def test_resize_to_another_variant_starts_from_the_original(sandbox):
+    await sandbox.resize("demo", size="medium")
 
-    resized = await with_templates.resize("demo", "gpu")
+    resized = await sandbox.resize("demo", size="gpu")
 
-    assert resized.actor_template == ref("team-a", "coding-v2-gpu")
-    variant = with_templates._control.templates[("team-a", "coding-v2-gpu")]
+    assert resized.actor_template == ref("team-a", "coding-small-v1-gpu")
+    variant = sandbox._control.templates[("team-a", "coding-small-v1-gpu")]
     assert dict(variant.worker_selector.match_labels) == {
         "prokube.ai/sandbox-pool": "gpu"
     }
 
 
-async def test_resize_to_the_current_size_changes_nothing(with_templates):
-    resized = await with_templates.resize("demo", "small")
+async def test_resize_refuses_a_variant_name_taken_by_another_template(sandbox):
+    other = templates.with_size(
+        shared_template("x", image=OTHER_IMAGE), SIZES.get("medium")
+    )
+    sandbox._control.templates[("team-a", "coding-small-v1-medium")] = other
+
+    with pytest.raises(TemplateError) as error:
+        await sandbox.resize("demo", size="medium")
+
+    assert str(error.value) == (
+        "team-a/coding-small-v1-medium exists but is not "
+        "sandbox-templates/coding-small-v1 at size medium."
+    )
+
+
+async def test_resize_to_the_current_size_changes_nothing(sandbox):
+    resized = await sandbox.resize("demo", size="small")
 
     assert resized.status.state == RUNNING
-    assert with_templates._control.methods() == ["GetActor", "GetActorTemplate"]
+    assert sandbox._control.methods() == ["GetActor", "GetActorTemplate"]
 
 
-async def test_resize_to_an_unknown_size_touches_nothing(with_templates):
+async def test_resize_to_an_unknown_size_touches_nothing(sandbox):
     with pytest.raises(TemplateError, match="Unknown size 'huge'"):
-        await with_templates.resize("demo", "huge")
+        await sandbox.resize("demo", size="huge")
 
-    assert "SuspendActor" not in with_templates._control.methods()
+    assert "SuspendActor" not in sandbox._control.methods()
 
 
-async def test_has_env_guest_reads_the_sandboxs_template(with_templates):
-    assert await with_templates.has_env_guest("demo")
+async def test_resize_to_a_preset_with_the_same_image(sandbox):
+    control = sandbox._control
+
+    resized = await sandbox.resize("demo", preset="coding-large")
+
+    assert resized.actor_template == ref(SHARED, "coding-medium-v1")
+    assert resized.status.state == RUNNING
+    assert {"CreateActorTemplate", "CreateActorEgressPolicy"}.isdisjoint(
+        control.methods()
+    )
+
+
+async def test_resize_refuses_a_preset_with_another_image(sandbox):
+    with pytest.raises(TemplateError, match="'python' has another image"):
+        await sandbox.resize("demo", preset="python")
+
+    assert "SuspendActor" not in sandbox._control.methods()
+
+
+async def test_resize_needs_a_preset_or_a_size(sandbox):
+    for options in ({}, {"preset": "coding", "size": "small"}):
+        with pytest.raises(TemplateError, match="either a preset or a size"):
+            await sandbox.resize("demo", **options)
+
+
+async def test_has_env_guest_reads_the_sandboxs_template(sandbox):
+    assert await sandbox.has_env_guest("demo")
 
     plain = templates.build_template(
         "team-a", "web-v1", image=IMAGE, size=SIZES.get(), env_guest=False
     )
-    with_templates._control.templates[("team-a", "web-v1")] = plain
-    with_templates._control.actors["sbx-demo"].actor_template.CopyFrom(
-        ref("team-a", "web-v1")
+    sandbox._control.templates[("team-a", "web-v1")] = plain
+    sandbox._control.actors["sbx-demo"].actor_template.CopyFrom(ref("team-a", "web-v1"))
+    assert not await sandbox.has_env_guest("demo")
+
+
+async def test_sizes_are_read_with_the_callers_token(client, httpx_mock):
+    httpx_mock.add_response(
+        url=SIZES_URL, match_headers={"authorization": "Bearer token"}, json=SIZES_JSON
     )
-    assert not await with_templates.has_env_guest("demo")
+
+    assert await client.sizes() == SIZES
 
 
-def test_sync_client_wraps_the_template_calls(sizes_api):
+async def test_unreadable_presets_are_a_clear_error(client, httpx_mock):
+    httpx_mock.add_response(url=PRESETS_URL, status_code=404, text="route not found")
+
+    with pytest.raises(TemplateError) as error:
+        await client.presets()
+
+    assert str(error.value) == (
+        f"Cannot read the sandbox presets from {PRESETS_URL}: HTTP 404"
+    )
+
+
+def test_platform_config_in_a_workspace_pod_is_the_in_cluster_gateway():
+    assert endpoints.sandbox_config_url(None, "presets") == (
+        "http://agentgateway-proxy.agentgateway-system.svc.cluster.local:80"
+        "/svc/sandbox/v1alpha/presets"
+    )
+
+
+def test_sync_client_wraps_the_preset_and_resize_calls(httpx_mock):
+    for url, body in ((SIZES_URL, SIZES_JSON), (PRESETS_URL, PRESETS_JSON)):
+        httpx_mock.add_response(url=url, json=body, is_reusable=True)
     with sync_client() as client:
         control = client._client._control
         assert isinstance(control, FakeControl)
-        control.templates[(endpoints.TEMPLATE_ATESPACE, "coding-v2")] = approved()
+        for name, size in (
+            ("coding-small-v1", "small"),
+            ("coding-medium-v1", "medium"),
+        ):
+            control.templates[(SHARED, name)] = shared_template(name, size=size)
 
-        created = client.create_template("mine", image=IMAGE)
-        sandbox = client.create("demo", template="coding-v2", size="medium")
+        created = client.create("demo")
+        resized = client.resize("demo", preset="coding-large")
 
+        assert client.presets() == PRESETS
         assert client.sizes() == SIZES
-        assert [t.metadata.name for t in client.list_templates()] == [
-            "coding-v2",
-            "mine-v1",
-            "coding-v2-medium",
-        ]
-        assert created.metadata.name == "mine-v1"
-        assert sandbox.actor_template == ref("team-a", "coding-v2-medium")
+        assert created.actor_template == ref(SHARED, "coding-small-v1")
+        assert resized.actor_template == ref(SHARED, "coding-medium-v1")
+        assert client.template("demo").metadata.name == "coding-medium-v1"

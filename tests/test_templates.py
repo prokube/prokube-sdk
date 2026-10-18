@@ -2,10 +2,11 @@ import pytest
 
 from prokube.sandbox import templates
 from prokube.sandbox._ateapi import ateapi_pb2 as ateapi
-from prokube.sandbox.templates import Size, Sizes, TemplateError
+from prokube.sandbox.templates import Presets, Size, Sizes, TemplateError
 
-# The shape of GET /svc/sandbox/v1alpha/sizes (prokube/prokube-neo#127). The
-# values are test data; the SDK never hardcodes sizes.
+# The shapes of GET /svc/sandbox/v1alpha/sizes and .../presets
+# (prokube/prokube-neo#127, #132). The values are test data; the SDK never
+# hardcodes sizes or presets.
 SIZES_JSON = {
     "default": "small",
     "sizes": [
@@ -16,6 +17,53 @@ SIZES_JSON = {
 }
 SIZES = Sizes.from_json(SIZES_JSON)
 IMAGE = "registry.example.com/pk-sandbox-coding@sha256:" + "a" * 64
+OPENCODE_RULE = {
+    "tlsPassthrough": {
+        "hostnames": ["opencode.ai", "models.opencode.ai"],
+        "ports": {"numbers": [443]},
+    }
+}
+PRESETS_JSON = {
+    "default": "coding",
+    "presets": [
+        {
+            "name": "coding",
+            "template": "coding-small-v1",
+            "title": "Coding",
+            "description": "opencode, SSH and a terminal",
+            "size": "small",
+            "envGuest": True,
+            "network": {"rules": [OPENCODE_RULE]},
+        },
+        {
+            "name": "coding-large",
+            "template": "coding-medium-v1",
+            "title": "Coding, large",
+            "size": "medium",
+            "envGuest": True,
+            "network": {"rules": [OPENCODE_RULE]},
+        },
+        {
+            "name": "python",
+            "template": "python-small-v1",
+            "title": "Python",
+            "size": "small",
+            "envGuest": True,
+            "network": {"rules": []},
+        },
+    ],
+}
+PRESETS = Presets.from_json(PRESETS_JSON)
+OPENCODE_POLICY = ateapi.EgressPolicy(
+    rules=[
+        ateapi.EgressRule(
+            tls_passthrough=ateapi.TlsPassthroughRule(
+                hostnames=["opencode.ai", "models.opencode.ai"],
+                ports=ateapi.Ports(numbers=[443]),
+            )
+        )
+    ]
+)
 TRUST_BUNDLE = "/run/ate/egress-trust-bundle/trust-bundle.pem"
 
 
@@ -71,8 +119,9 @@ def test_built_template_has_the_fixed_fields():
     assert [(m.name, m.mount_path) for m in container.volume_mounts] == [
         ("workspace", "/workspace"),
         ("egress-trust", "/run/ate/egress-trust-bundle"),
+        ("identity", "/run/ate/actor"),
     ]
-    workspace, egress_trust = template.volumes
+    workspace, egress_trust, identity = template.volumes
     assert workspace == ateapi.Volume(
         name="workspace", durable_dir=ateapi.DurableDirVolumeSource()
     )
@@ -82,6 +131,11 @@ def test_built_template_has_the_fixed_fields():
         "system-roots.ate.dev",
     ]
     assert source.trust_bundle.path == "trust-bundle.pem"
+    [source] = identity.system_info.data_sources
+    assert [(i.field, i.path) for i in source.actor_metadata.items] == [
+        (ateapi.ACTOR_METADATA_FIELD_NAME, "name"),
+        (ateapi.ACTOR_METADATA_FIELD_UID, "uid"),
+    ]
 
 
 def test_built_template_has_the_size_and_its_pool():
@@ -155,16 +209,22 @@ def test_template_size_is_custom_when_nothing_matches():
     assert SIZES.of(no_pool) is None
 
 
-def test_with_size_changes_only_resources_and_pool():
-    template = build()
-    template.status.golden_snapshot_status.error_message = "x"
+def test_with_size_changes_only_resources_pool_and_golden_snapshot():
+    preset = build()
+    preset.snapshot_config.golden_snapshot_config.mode = (
+        ateapi.GOLDEN_SNAPSHOT_MODE_ENABLED
+    )
+    preset.status.golden_snapshot_status.error_message = "x"
 
-    variant = templates.with_size(template, SIZES.get("gpu"))
+    variant = templates.with_size(preset, SIZES.get("gpu"))
 
     assert SIZES.of(variant) == SIZES.get("gpu")
     assert not variant.HasField("status")
-    assert templates.same_except_size(variant, template)
-    assert SIZES.of(template) == SIZES.get("small")  # the original is unchanged
+    assert variant.snapshot_config.golden_snapshot_config.mode == (
+        ateapi.GOLDEN_SNAPSHOT_MODE_DISABLED
+    )
+    assert templates.same_except_size(variant, preset)
+    assert SIZES.of(preset) == SIZES.get("small")  # the original is unchanged
 
 
 def test_same_except_size_sees_other_differences():
@@ -196,33 +256,64 @@ def test_family_is_the_name_without_its_version():
     assert templates.family("t125-gs") == "t125-gs"
 
 
-def test_check_name_accepts_a_new_name():
-    templates.check_name("my-tool", "my-tool-v1", ["coding-v2", "python-v1"], SIZES)
+def test_presets_come_from_the_platform_json():
+    coding = PRESETS.get()
+
+    assert (coding.name, coding.template, coding.size) == (
+        "coding",
+        "coding-small-v1",
+        "small",
+    )
+    assert coding.network == OPENCODE_POLICY
+    assert PRESETS.get("python").network == ateapi.EgressPolicy()
 
 
-def test_check_name_rejects_an_approved_family():
+def test_unknown_preset_lists_them():
     with pytest.raises(TemplateError) as error:
-        templates.check_name("coding", "coding-v1", ["coding-v1", "coding-v2"], SIZES)
+        PRESETS.get("rust")
 
     assert str(error.value) == (
-        "'coding' is the name of an approved template. Choose another name."
+        "Unknown preset 'rust'. Presets: coding (Coding), coding-large "
+        "(Coding, large), python (Python)"
     )
+
+
+def test_a_preset_is_found_by_its_shared_template():
+    shared = ateapi.ObjectRef(atespace="sandbox-templates", name="python-small-v1")
+    own = ateapi.ObjectRef(atespace="team-a", name="python-small-v1")
+
+    assert PRESETS.of(shared) == PRESETS.get("python")
+    assert PRESETS.of(own) is None
+
+
+def test_check_name_accepts_a_new_name():
+    templates.check_name("my-tool", "my-tool-v1", ["coding-v2"], PRESETS, SIZES)
+
+
+@pytest.mark.parametrize("name", ["coding", "coding-large", "coding-medium"])
+def test_check_name_rejects_preset_names_and_shared_families(name):
+    with pytest.raises(TemplateError) as error:
+        templates.check_name(
+            name, f"{name}-v1", ["coding-small-v1", "coding-medium-v1"], PRESETS, SIZES
+        )
+
+    assert str(error.value) == f"{name!r} is taken by a preset. Choose another name."
 
 
 @pytest.mark.parametrize("name", ["My-Tool", "tool_1", "-tool", "tool-", ""])
 def test_check_name_needs_a_dns_label(name):
     with pytest.raises(TemplateError, match="must be a lowercase DNS label"):
-        templates.check_name(name, f"{name}-v1", [], SIZES)
+        templates.check_name(name, f"{name}-v1", [], PRESETS, SIZES)
 
 
 def test_check_name_leaves_room_for_every_size_variant():
     fits = "a" * (63 - len("-v1-medium"))  # medium is the longest size name
     too_long = fits + "a"
 
-    templates.check_name(fits, f"{fits}-v1", [], SIZES)
+    templates.check_name(fits, f"{fits}-v1", [], PRESETS, SIZES)
     with pytest.raises(TemplateError) as error:
-        templates.check_name(too_long, f"{too_long}-v1", [], SIZES)
+        templates.check_name(too_long, f"{too_long}-v1", [], PRESETS, SIZES)
     assert str(error.value) == (
-        f"Template name {too_long!r} is too long: '{too_long}-v1' and its size "
-        "variants must have at most 63 characters."
+        f"Name {too_long!r} is too long for a custom image: '{too_long}-v1' and "
+        "its size variants must have at most 63 characters."
     )

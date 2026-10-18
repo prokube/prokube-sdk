@@ -27,7 +27,7 @@ import grpc
 import grpc.aio
 import httpx
 from ate_env import Client as EnvClient
-from ate_env import Env, NotFoundError, ShellResult, map_rpc_error
+from ate_env import Env, NotFoundError, RpcError, ShellResult, map_rpc_error
 
 from prokube import auth, endpoints
 from prokube.auth import TokenProvider
@@ -35,9 +35,17 @@ from prokube.sandbox import templates
 from prokube.sandbox._ateapi import ateapi_pb2 as ateapi
 from prokube.sandbox._ateapi.ateapi_pb2_grpc import ControlStub
 from prokube.sandbox.images import resolve_image
-from prokube.sandbox.templates import ActorTemplate, Size, Sizes, TemplateError
+from prokube.sandbox.templates import (
+    ActorTemplate,
+    Presets,
+    Size,
+    Sizes,
+    TemplateError,
+)
 
 SANDBOX_PREFIX = "sbx-"
+# Every Actor's EgressPolicy is a singleton with this name, as in pkui.
+EGRESS_POLICY_NAME = "default"
 
 # Namespace of the pod, which is its workspace.
 NAMESPACE_FILE = "/var/run/secrets/kubernetes.io/serviceaccount/namespace"
@@ -119,21 +127,39 @@ class AsyncSandboxClient:
         self,
         name: str,
         *,
-        template: str,
-        template_atespace: str = endpoints.TEMPLATE_ATESPACE,
+        preset: str | None = None,
+        image: str | None = None,
         size: str | None = None,
+        env: Mapping[str, str] | None = None,
+        env_guest: bool = True,
     ) -> Actor:
-        """Create a sandbox from an ActorTemplate.
+        """Create a sandbox from a preset or from a custom image.
 
-        With ``size`` (a name from sizes()), the sandbox uses the template's
-        size variant ``<workspace>/<template>-<size>``, created if missing,
-        unless the template already has that size. It starts SUSPENDED and
-        wakes on its first command or on resume().
+        A preset (default: the platform's default one) starts fast and gives
+        the sandbox its network rules. A custom ``image`` gets the workspace
+        template ``<name>-v<n>`` at ``size`` (default: the platform's default
+        size) with literal ``env``, readable by every workspace member. It
+        starts slower, has no network rules, and its tag is resolved to a
+        digest where the registry allows anonymous pulls. Commands, files,
+        the terminal and SSH work only with images based on
+        pk-sandbox-coding; for other images pass ``env_guest=False``. The
+        sandbox starts SUSPENDED and wakes on its first command or on resume().
         """
-        template_ref = ateapi.ObjectRef(atespace=template_atespace, name=template)
-        if size is not None:
-            sizes = await self.sizes()
-            template_ref = await self._at_size(template_ref, sizes.get(size), sizes)
+        network = None
+        if image is None:
+            if size or env or not env_guest:
+                raise TemplateError("Size, env and env guest need a custom image.")
+            chosen = (await self.presets()).get(preset)
+            template_ref = ateapi.ObjectRef(
+                atespace=endpoints.TEMPLATE_ATESPACE, name=chosen.template
+            )
+            network = chosen.network
+        elif preset:
+            raise TemplateError("Choose a preset or a custom image, not both.")
+        else:
+            template_ref = await self._create_template(
+                name, image=image, size=size, env=env, env_guest=env_guest
+            )
         actor = ateapi.Actor(
             metadata=ateapi.ResourceMetadata(
                 atespace=self.workspace, name=actor_name(name)
@@ -141,20 +167,31 @@ class AsyncSandboxClient:
             actor_template=template_ref,
         )
         request = ateapi.CreateActorRequest(actor=actor)
-        return await _call(self._control.CreateActor(request))
+        created = await _call(self._control.CreateActor(request))
+        if network is not None:
+            await self._create_egress_policy(name, network)
+        return created
 
-    async def resize(self, name: str, size: str) -> Actor:
-        """Give a sandbox another size.
+    async def resize(
+        self, name: str, *, preset: str | None = None, size: str | None = None
+    ) -> Actor:
+        """Switch a sandbox to another preset with the same image, or another size.
 
-        Switches it to the size variant of its template (created if missing;
-        the template itself at its own size). A running sandbox is suspended
-        first and resumed afterwards: /workspace is kept, running processes
-        restart. A suspended sandbox stays suspended.
+        Another size uses the size variant of the sandbox's template (created
+        if missing; the template itself at its own size). A running sandbox
+        is suspended first and resumed afterwards: /workspace is kept,
+        running processes restart. A suspended sandbox stays suspended.
+        Network rules and credentials stay.
         """
-        sizes = await self.sizes()
+        if (preset is None) == (size is None):
+            raise TemplateError("Pass either a preset or a size.")
         actor = await self.get(name)
-        base = await self._base_template(actor.actor_template, sizes)
-        target = await self._at_size(base, sizes.get(size), sizes)
+        if preset is not None:
+            target = await self._preset_with_same_image(actor, preset)
+        else:
+            sizes = await self.sizes()
+            base = await self._base_template(actor.actor_template, sizes)
+            target = await self._at_size(base, sizes.get(size), sizes)
         if target == actor.actor_template:
             return actor
         was_running = actor.status.state == ateapi.ACTOR_STATE_RUNNING
@@ -166,72 +203,25 @@ class AsyncSandboxClient:
         actor = await _call(self._control.UpdateActor(request))
         return await self.resume(name) if was_running else actor
 
+    async def presets(self) -> Presets:
+        """The presets the platform offers and its default preset."""
+        return Presets.from_json(await self._platform_config("presets"))
+
     async def sizes(self) -> Sizes:
         """The sandbox sizes the platform offers and its default size."""
-        url = endpoints.sizes_url(self.url)
-        token = await asyncio.to_thread(self._token_provider)
-        async with httpx.AsyncClient(timeout=30) as http:
-            response = await http.get(url, headers={"authorization": f"Bearer {token}"})
-        if response.status_code != 200:
-            raise TemplateError(
-                f"Cannot read the sandbox sizes from {url}: HTTP {response.status_code}"
-            )
-        return Sizes.from_json(response.json())
+        return Sizes.from_json(await self._platform_config("sizes"))
 
-    async def list_templates(self) -> list[ActorTemplate]:
-        """The approved templates (``sandbox-templates``) and the workspace's own."""
-        found: list[ActorTemplate] = []
-        for atespace in (endpoints.TEMPLATE_ATESPACE, self.workspace):
-            found += await self._list_templates(atespace)
-        return found
-
-    async def create_template(
-        self,
-        name: str,
-        *,
-        image: str,
-        size: str | None = None,
-        env: Mapping[str, str] | None = None,
-        env_guest: bool = True,
-    ) -> ActorTemplate:
-        """Create template ``<workspace>/<name>-v<n>``, the next version of name.
-
-        name must not be an approved template's (``coding`` for ``coding-v2``)
-        and must leave room for ``-v<n>-<size>`` within 63 characters. Only the
-        image, size and env can be chosen; the rest is fixed (see
-        prokube.sandbox.templates). A tag in ``image`` is resolved to a digest
-        where the registry allows anonymous pulls. ``size`` defaults to the
-        platform's default size. ``env`` values are literal and readable by
-        every workspace member; secrets go through credential injection.
-        Commands, files, the terminal and SSH work only with images based on
-        pk-sandbox-coding; for other images pass ``env_guest=False``.
-        """
-        sizes = await self.sizes()
-        chosen = sizes.get(size)
-        approved = await self._list_templates(endpoints.TEMPLATE_ATESPACE)
-        existing = await self._list_templates(self.workspace)
-        versioned = templates.next_version(name, [t.metadata.name for t in existing])
-        templates.check_name(
-            name, versioned, [t.metadata.name for t in approved], sizes
-        )
-        template = templates.build_template(
-            self.workspace,
-            versioned,
-            image=await resolve_image(image),
-            size=chosen,
-            env=env,
-            env_guest=env_guest,
-        )
-        request = ateapi.CreateActorTemplateRequest(actor_template=template)
-        return await _call(self._control.CreateActorTemplate(request))
+    async def template(self, name: str) -> ActorTemplate:
+        """The ActorTemplate a sandbox runs on: its image, size and env."""
+        actor = await self.get(name)
+        return await self._template(actor.actor_template)
 
     async def has_env_guest(self, name: str) -> bool:
         """Whether the sandbox's image is based on pk-sandbox-coding.
 
         Only then do run, read_file, write_file, env(), the terminal and SSH work.
         """
-        actor = await self.get(name)
-        return templates.has_env_guest(await self._template(actor.actor_template))
+        return templates.has_env_guest(await self.template(name))
 
     async def list(self) -> list[Actor]:
         """Return all sandboxes of the workspace."""
@@ -324,6 +314,89 @@ class AsyncSandboxClient:
     async def _template(self, ref: ateapi.ObjectRef) -> ActorTemplate:
         request = ateapi.GetActorTemplateRequest(actor_template=ref)
         return await _call(self._control.GetActorTemplate(request))
+
+    async def _create_template(
+        self,
+        name: str,
+        *,
+        image: str,
+        size: str | None,
+        env: Mapping[str, str] | None,
+        env_guest: bool,
+    ) -> ateapi.ObjectRef:
+        """Create ``<workspace>/<name>-v<n>``, the next version of name.
+
+        name must be neither a preset's nor a shared template's family and
+        must leave room for ``-v<n>-<size>`` within 63 characters.
+        """
+        sizes, presets = await self.sizes(), await self.presets()
+        shared = await self._list_templates(endpoints.TEMPLATE_ATESPACE)
+        existing = await self._list_templates(self.workspace)
+        versioned = templates.next_version(name, [t.metadata.name for t in existing])
+        templates.check_name(
+            name, versioned, [t.metadata.name for t in shared], presets, sizes
+        )
+        template = templates.build_template(
+            self.workspace,
+            versioned,
+            image=await resolve_image(image),
+            size=sizes.get(size),
+            env=env,
+            env_guest=env_guest,
+        )
+        request = ateapi.CreateActorTemplateRequest(actor_template=template)
+        await _call(self._control.CreateActorTemplate(request))
+        return ateapi.ObjectRef(atespace=self.workspace, name=versioned)
+
+    async def _create_egress_policy(
+        self, name: str, network: ateapi.EgressPolicy
+    ) -> None:
+        """Give a new sandbox its preset's network rules.
+
+        The policy sync may have applied the same rules first; that is fine.
+        """
+        policy = ateapi.EgressPolicy(
+            metadata=ateapi.ResourceMetadata(
+                atespace=self.workspace, name=EGRESS_POLICY_NAME
+            ),
+            rules=network.rules,
+        )
+        request = ateapi.CreateActorEgressPolicyRequest(
+            actor=self._ref(name), egress_policy=policy
+        )
+        try:
+            await _call(self._control.CreateActorEgressPolicy(request))
+        except RpcError as error:
+            if error.code != grpc.StatusCode.ALREADY_EXISTS:
+                raise
+
+    async def _preset_with_same_image(
+        self, actor: Actor, preset: str
+    ) -> ateapi.ObjectRef:
+        """The preset's template ref; refused if its image is not the sandbox's."""
+        chosen = (await self.presets()).get(preset)
+        ref = ateapi.ObjectRef(
+            atespace=endpoints.TEMPLATE_ATESPACE, name=chosen.template
+        )
+        current = await self._template(actor.actor_template)
+        target = await self._template(ref)
+        if current.containers[0].image != target.containers[0].image:
+            raise TemplateError(
+                f"Preset {preset!r} has another image than this sandbox; resizing "
+                "keeps the image. Create a new sandbox from the preset instead."
+            )
+        return ref
+
+    async def _platform_config(self, name: str) -> Any:
+        url = endpoints.sandbox_config_url(self.url, name)
+        token = await asyncio.to_thread(self._token_provider)
+        async with httpx.AsyncClient(timeout=30) as http:
+            response = await http.get(url, headers={"authorization": f"Bearer {token}"})
+        if response.status_code != 200:
+            raise TemplateError(
+                f"Cannot read the sandbox {name} from {url}: HTTP {response.status_code}"
+            )
+        return response.json()
 
     async def _list_templates(self, atespace: str) -> list[ActorTemplate]:
         found: list[ActorTemplate] = []
@@ -430,42 +503,38 @@ class SandboxClient:
         self,
         name: str,
         *,
-        template: str,
-        template_atespace: str = endpoints.TEMPLATE_ATESPACE,
+        preset: str | None = None,
+        image: str | None = None,
         size: str | None = None,
+        env: Mapping[str, str] | None = None,
+        env_guest: bool = True,
     ) -> Actor:
-        """Create a sandbox from an ActorTemplate (see AsyncSandboxClient)."""
+        """Create a sandbox from a preset or a custom image (see AsyncSandboxClient)."""
         return self._run(
             self._client.create(
-                name, template=template, template_atespace=template_atespace, size=size
+                name,
+                preset=preset,
+                image=image,
+                size=size,
+                env=env,
+                env_guest=env_guest,
             )
         )
 
-    def resize(self, name: str, size: str) -> Actor:
-        """Give a sandbox another size (see AsyncSandboxClient)."""
-        return self._run(self._client.resize(name, size))
+    def resize(
+        self, name: str, *, preset: str | None = None, size: str | None = None
+    ) -> Actor:
+        """Switch a sandbox to another preset or size (see AsyncSandboxClient)."""
+        return self._run(self._client.resize(name, preset=preset, size=size))
+
+    def presets(self) -> Presets:
+        return self._run(self._client.presets())
 
     def sizes(self) -> Sizes:
         return self._run(self._client.sizes())
 
-    def list_templates(self) -> list[ActorTemplate]:
-        return self._run(self._client.list_templates())
-
-    def create_template(
-        self,
-        name: str,
-        *,
-        image: str,
-        size: str | None = None,
-        env: Mapping[str, str] | None = None,
-        env_guest: bool = True,
-    ) -> ActorTemplate:
-        """Create the next version of a custom template (see AsyncSandboxClient)."""
-        return self._run(
-            self._client.create_template(
-                name, image=image, size=size, env=env, env_guest=env_guest
-            )
-        )
+    def template(self, name: str) -> ActorTemplate:
+        return self._run(self._client.template(name))
 
     def has_env_guest(self, name: str) -> bool:
         return self._run(self._client.has_env_guest(name))

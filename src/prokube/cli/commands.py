@@ -145,22 +145,33 @@ def sandbox() -> None:
 @sandbox.command()
 @click.argument("name")
 @click.option(
-    "-t",
-    "--template",
-    default=endpoints.DEFAULT_TEMPLATE,
-    show_default=True,
-    help="ActorTemplate to start from: NAME in --template-atespace, or "
-    "ATESPACE/NAME as pk template list shows it.",
+    "-p",
+    "--preset",
+    help="Preset to start from (default: the platform's default preset).",
 )
 @click.option(
-    "--template-atespace",
-    default=endpoints.TEMPLATE_ATESPACE,
-    show_default=True,
-    help="Atespace that holds the template.",
+    "--image",
+    help="Custom container image instead of a preset: a public one by tag or "
+    "digest, a private one from the platform's sandbox image registry by digest "
+    "(NAME@sha256:...).",
 )
 @click.option(
     "--size",
-    help="Size from the platform's list (default: the template's own size).",
+    help="Size of a custom image (default: the platform's default size).",
+)
+@click.option(
+    "--env",
+    "env",
+    multiple=True,
+    metavar="KEY=VALUE",
+    help="Environment variable of a custom image; repeatable. Every workspace "
+    "member can read it: pass secrets through credential injection instead.",
+)
+@click.option(
+    "--no-env-guest",
+    is_flag=True,
+    help="The custom image is not based on pk-sandbox-coding: no exec, cp, "
+    "terminal or SSH.",
 )
 @click.option("--connect", is_flag=True, help="Open an SSH session afterwards.")
 @_install_ssh_option
@@ -168,32 +179,49 @@ def sandbox() -> None:
 @_target_options
 def create(
     name: str,
-    template: str,
-    template_atespace: str,
+    preset: str | None,
+    image: str | None,
     size: str | None,
+    env: tuple[str, ...],
+    no_env_guest: bool,
     connect: bool,
     install_ssh: bool,
     identity: Path | None,
     url: str | None,
     workspace: str | None,
 ) -> None:
-    """Create sandbox NAME from a template.
+    """Create sandbox NAME from a preset or a custom --image.
 
-    With --size, the sandbox uses the template's size variant in the
-    workspace, created if missing.
+    A preset starts fast and comes with network rules. A custom image starts
+    slower and has no network rules. SDK, terminal and SSH work only with
+    images based on `pk-sandbox-coding`.
+
+    Public images work by tag or digest. Private images work only from the
+    platform's sandbox image registry, pinned by digest (NAME@sha256:...). If
+    you need another registry, ask your platform admin to configure it.
     """
-    if "/" in template:
-        template_atespace, template = template.split("/", 1)
-    actor = _with_client(
-        url,
-        workspace,
-        lambda client: client.create(
-            name, template=template, template_atespace=template_atespace, size=size
-        ),
-    )
-    click.echo(
-        f"Created {_name(actor)} ({_state(actor)}, template {_ref(actor.actor_template)})"
-    )
+    variables = _parse_env(env)
+
+    async def run(client: AsyncSandboxClient) -> tuple[ateapi.Actor, str]:
+        actor = await client.create(
+            name,
+            preset=preset,
+            image=image,
+            size=size,
+            env=variables,
+            env_guest=not no_env_guest,
+        )
+        return actor, _summary(actor, *(await _describe(client, [actor]))[0])
+
+    actor, summary = _with_client(url, workspace, run)
+    click.echo(f"Created {_name(actor)} ({summary})")
+    if variables:
+        click.echo(
+            "Its env is readable by every member of the workspace; pass secrets "
+            "through credential injection."
+        )
+    if no_env_guest:
+        click.echo(f"No env guest: {ENV_GUEST_HINT}")
     if connect:
         _connect(name, identity, url, workspace, install_ssh)
     elif install_ssh:
@@ -204,11 +232,17 @@ def create(
 @sandbox.command("list")
 @_target_options
 def list_(url: str | None, workspace: str | None) -> None:
-    """List the sandboxes of the workspace."""
-    actors = _with_client(url, workspace, lambda client: client.list())
-    rows = [("NAME", "STATE", "TEMPLATE")]
-    rows += [(_name(a), _state(a), a.actor_template.name) for a in actors]
-    _table(rows)
+    """List the sandboxes with their preset and size."""
+
+    async def collect(client: AsyncSandboxClient) -> list[tuple[str, ...]]:
+        actors = await client.list()
+        described = await _describe(client, actors)
+        return [
+            (_name(a), _state(a), *d) for a, d in zip(actors, described, strict=True)
+        ]
+
+    rows = _with_client(url, workspace, collect)
+    _table([("NAME", "STATE", "PRESET", "SIZE", "IMAGE"), *rows])
 
 
 @sandbox.command()
@@ -355,22 +389,32 @@ def resume(name: str, url: str | None, workspace: str | None) -> None:
 
 @sandbox.command()
 @click.argument("name")
-@click.option("--size", required=True, help="Size from the platform's list.")
+@click.option("-p", "--preset", help="Preset with the sandbox's image.")
+@click.option("--size", help="Size from the platform's list.")
 @_target_options
-def resize(name: str, size: str, url: str | None, workspace: str | None) -> None:
-    """Give sandbox NAME another size.
+def resize(
+    name: str,
+    preset: str | None,
+    size: str | None,
+    url: str | None,
+    workspace: str | None,
+) -> None:
+    """Switch sandbox NAME to another preset or size.
 
-    Switches the sandbox to its template's size variant. A running sandbox is
-    suspended and resumed: /workspace is kept, running processes restart. A
-    suspended sandbox stays suspended.
+    The preset must have the sandbox's image. A running sandbox is suspended and resumed: /workspace is kept, running
+    processes restart. A suspended sandbox stays suspended. Network rules
+    and credentials stay.
     """
-    click.echo(
-        f"Resizing {name} to {size}: /workspace is kept, running processes restart."
-    )
-    actor = _with_client(url, workspace, lambda client: client.resize(name, size))
-    click.echo(
-        f"{_name(actor)}: {_state(actor)}, template {_ref(actor.actor_template)}"
-    )
+    if (preset is None) == (size is None):
+        raise click.UsageError("Pass either --preset or --size.")
+    click.echo(f"Resizing {name}: /workspace is kept, running processes restart.")
+
+    async def run(client: AsyncSandboxClient) -> tuple[ateapi.Actor, str]:
+        actor = await client.resize(name, preset=preset, size=size)
+        return actor, _summary(actor, *(await _describe(client, [actor]))[0])
+
+    actor, summary = _with_client(url, workspace, run)
+    click.echo(f"{_name(actor)}: {summary}")
 
 
 @sandbox.command()
@@ -384,93 +428,26 @@ def delete(name: str, url: str | None, workspace: str | None) -> None:
     click.echo(f"Deleted {_name(actor)}")
 
 
-# --- Templates -------------------------------------------------------------
+# --- Presets ---------------------------------------------------------------
 
 
 @cli.group()
-def template() -> None:
-    """Create and list sandbox templates."""
+def preset() -> None:
+    """Show the platform's sandbox presets."""
 
 
-@template.command("create")
-@click.argument("name")
-@click.option(
-    "--image",
-    required=True,
-    help="Container image: a public one by tag or digest, a private one from the "
-    "platform's sandbox image registry by digest (NAME@sha256:...).",
-)
-@click.option(
-    "--size",
-    help="Size from the platform's list (default: the platform's default size).",
-)
-@click.option(
-    "--env",
-    "env",
-    multiple=True,
-    metavar="KEY=VALUE",
-    help="Environment variable; repeatable. Every workspace member can read "
-    "it: pass secrets through credential injection instead.",
-)
-@click.option(
-    "--no-env-guest",
-    is_flag=True,
-    help="The image is not based on pk-sandbox-coding: no exec, cp, terminal "
-    "or SSH in its sandboxes.",
-)
+@preset.command("list")
 @_target_options
-def template_create(
-    name: str,
-    image: str,
-    size: str | None,
-    env: tuple[str, ...],
-    no_env_guest: bool,
-    url: str | None,
-    workspace: str | None,
-) -> None:
-    """Create template NAME-v<n> in the workspace, the next version of NAME.
-
-    SDK, terminal and SSH work only with images based on `pk-sandbox-coding`.
-
-    Public images work by tag or digest. Private images work only from the
-    platform's sandbox image registry, pinned by digest (NAME@sha256:...). If
-    you need another registry, ask your platform admin to configure it.
-    """
-    variables = _parse_env(env)
-    created = _with_client(
-        url,
-        workspace,
-        lambda client: client.create_template(
-            name, image=image, size=size, env=variables, env_guest=not no_env_guest
-        ),
-    )
-    ref = f"{created.metadata.atespace}/{created.metadata.name}"
-    click.echo(f"Created template {ref} ({created.containers[0].image})")
-    if variables:
-        click.echo(
-            "Its env is readable by every member of the workspace; pass secrets "
-            "through credential injection."
+def preset_list(url: str | None, workspace: str | None) -> None:
+    """List the presets; the default one is marked with *."""
+    presets = _with_client(url, workspace, lambda client: client.presets())
+    rows = [("NAME", "SIZE", "DESCRIPTION")]
+    for p in presets.presets:
+        name = f"{p.name} *" if p.name == presets.default else p.name
+        rows.append(
+            (name, p.size, p.title + (f": {p.description}" if p.description else ""))
         )
-    if no_env_guest:
-        click.echo(f"No env guest: {ENV_GUEST_HINT}")
-    click.echo(f"Use it: pk sandbox create NAME --template {ref}")
-
-
-@template.command("list")
-@_target_options
-def template_list(url: str | None, workspace: str | None) -> None:
-    """List the approved templates and the workspace's own, with their size."""
-
-    async def collect(client: AsyncSandboxClient) -> list[tuple[str, str]]:
-        sizes = await client.sizes()
-        rows = []
-        for found in await client.list_templates():
-            size = sizes.of(found)
-            name = f"{found.metadata.atespace}/{found.metadata.name}"
-            rows.append((name, size.name if size else "custom"))
-        return rows
-
-    _table([("NAME", "SIZE"), *_with_client(url, workspace, collect)])
+    _table(rows)
 
 
 # --- Helpers ---------------------------------------------------------------
@@ -546,6 +523,32 @@ async def _stream(
         elif output.exit is not None:
             return output.exit.exit_code
     raise click.ClickException("The output stream ended before the command exited.")
+
+
+async def _describe(
+    client: AsyncSandboxClient, actors: list[ateapi.Actor]
+) -> list[tuple[str, str, str]]:
+    """Each sandbox's preset (or "custom"), size and, if custom, image."""
+    presets, sizes = await client.presets(), await client.sizes()
+
+    async def describe(actor: ateapi.Actor) -> tuple[str, str, str]:
+        preset = presets.of(actor.actor_template)
+        if preset:
+            return preset.name, preset.size, ""
+        try:
+            template = await client.template(_name(actor))
+        except EnvError:  # e.g. its template is gone
+            return "custom", "-", "-"
+        size = sizes.of(template)
+        return "custom", size.name if size else "custom", template.containers[0].image
+
+    return list(await asyncio.gather(*(describe(actor) for actor in actors)))
+
+
+def _summary(actor: ateapi.Actor, preset: str, size: str, image: str) -> str:
+    return f"{_state(actor)}, preset {preset}, size {size}" + (
+        f", image {image}" if image else ""
+    )
 
 
 def _with_env_guest(
@@ -659,10 +662,6 @@ def _remote(argument: str) -> tuple[str, str] | None:
 
 def _name(actor: ateapi.Actor) -> str:
     return actor.metadata.name.removeprefix(SANDBOX_PREFIX)
-
-
-def _ref(ref: ateapi.ObjectRef) -> str:
-    return f"{ref.atespace}/{ref.name}"
 
 
 def _state(actor: ateapi.Actor) -> str:

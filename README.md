@@ -44,7 +44,7 @@ ID token shortly before it expires and stores the rotated refresh token.
 from prokube.sandbox import SandboxClient
 
 with SandboxClient("https://my-platform.example.com", "my-workspace") as client:
-    client.create("demo", template="python-v1")
+    client.create("demo")                        # from the default preset
     result = client.run("demo", "python3 -c 'print(6 * 7)'")
     print(result.exit_code, result.stdout)
 
@@ -58,10 +58,10 @@ with SandboxClient("https://my-platform.example.com", "my-workspace") as client:
     client.resume("demo")
     client.delete("demo")
 
-    print(client.sizes())                        # the platform's sizes
-    client.create_template("mytool", image="ghcr.io/me/mytool:1.0", size="medium")
-    client.create("big", template="python-v1", size="large")
-    client.resize("big", "small")
+    print(client.presets(), client.sizes())      # the platform's presets and sizes
+    client.create("py", preset="python")
+    client.create("mytool", image="ghcr.io/me/mytool:1.0", size="medium")
+    client.resize("py", size="large")
 ```
 
 `url` and `workspace` default to `PROKUBE_URL` and `PROKUBE_WORKSPACE`.
@@ -74,7 +74,7 @@ only accept paths under `/workspace`; use `run` for files elsewhere.
 from prokube.sandbox import AsyncSandboxClient
 
 async with AsyncSandboxClient("https://my-platform.example.com", "my-workspace") as client:
-    await client.create("demo", template="python-v1")
+    await client.create("demo")
     print((await client.run("demo", "uname -a")).stdout)
 
     # The upstream env handle, e.g. for streaming output:
@@ -91,7 +91,7 @@ pip install 'prokube-sdk[cli] @ git+https://github.com/prokube/prokube-sdk.git'
 pk login https://my-platform.example.com --workspace my-workspace
 pk auth status
 
-pk sandbox create demo --template coding --connect   # ends in an SSH session
+pk sandbox create demo --connect                    # ends in an SSH session
 pk sandbox list
 pk sandbox exec demo -- python3 -c 'print(6 * 7)'
 pk sandbox cp train.py demo:/workspace/
@@ -137,39 +137,47 @@ keys go through the authenticated file API, so the host key is pinned before
 the first connection. SSH travels over a WebSocket; `pk sandbox proxy` is the
 `ProxyCommand` and sends your login token.
 
-### Templates and sizes
+### Presets, custom images and sizes
 
 ```bash
-pk template list                                   # approved and own templates, with size
-pk template create mytool --image ghcr.io/me/mytool:1.0 --size medium --env MODE=dev
-pk sandbox create demo --template my-workspace/mytool-v1
-pk sandbox create big --template coding-v2 --size large
-pk sandbox resize demo --size small
+pk preset list                                     # the platform's presets, default marked *
+pk sandbox create demo                             # from the default preset
+pk sandbox create py --preset python
+pk sandbox create mytool --image ghcr.io/me/mytool:1.0 --size medium --env MODE=dev
+pk sandbox resize demo --preset coding-large       # same image, another size
+pk sandbox resize mytool --size small
+pk sandbox list                                    # NAME, STATE, PRESET, SIZE, IMAGE
 ```
 
-The sizes are the platform's (`GET https://<domain>/svc/sandbox/v1alpha/sizes`,
-prokube/prokube-neo#127); an unknown size lists them.
+Presets and sizes are the platform's
+(`GET https://<domain>/svc/sandbox/v1alpha/presets` and `.../sizes`,
+prokube/prokube-neo#132 and #127); an unknown name lists them. A preset is a
+shared template with a golden snapshot, so its sandboxes start fast; a new
+sandbox gets the preset's network rules as its Substrate `EgressPolicy`.
 
-`pk template create NAME` creates `<workspace>/NAME-v<n>`, one version higher
-than the highest existing one; templates never change. NAME must be a DNS
-label, must not be an approved template's (`coding` for `coding-v2`) and must
-leave room for `-v<n>-<size>` within 63 characters. Only the image, size and
-env can be chosen; storage location, snapshot settings, sandbox runtime,
-capabilities, volumes and worker pool are fixed
-([`templates.py`](src/prokube/sandbox/templates.py)). The image is pinned by
-digest. Public images work by tag (resolved anonymously) or digest. Private
-images work only from the platform's sandbox image registry, pinned by digest
-(`NAME@sha256:...`); if you need another registry, ask your platform admin to
-configure it. Env values are readable by every workspace member; pass
-secrets through credential injection. SDK, terminal and SSH work only with
-images based on `pk-sandbox-coding`; for any other image, pass `--no-env-guest`.
-`exec`, `cp` and `connect` then say that the sandbox has no env guest.
+A custom image gets its own template `<workspace>/NAME-v<n>`, one version
+higher than the highest existing one; templates never change. It starts
+slower than a preset and has no network rules. NAME must be a DNS label, must
+not be taken by a preset and must leave room for `-v<n>-<size>` within 63
+characters. Only the image, size and env can be chosen; storage location,
+snapshot settings, sandbox runtime, capabilities, volumes (including
+`/run/ate/actor` with the sandbox's name and uid) and worker pool are fixed
+([`templates.py`](src/prokube/sandbox/templates.py)). Public images work by
+tag (resolved anonymously) or digest. Private images work only from the
+platform's sandbox image registry, pinned by digest (`NAME@sha256:...`); if
+you need another registry, ask your platform admin to configure it. Env
+values are readable by every workspace member; pass secrets through
+credential injection. SDK, terminal and SSH work only with images based on
+`pk-sandbox-coding`; for any other image, pass `--no-env-guest`. `exec`, `cp`
+and `connect` then say that the sandbox has no env guest.
 
-A template at another size is its size variant `<workspace>/<template>-<size>`,
-created on first use. `pk sandbox resize` switches the sandbox to the variant
-(or back to the template itself at its own size). A running sandbox is
-suspended first and resumed afterwards: `/workspace` is kept, running processes
-restart. A suspended sandbox stays suspended.
+`pk sandbox resize --preset` switches to another preset with the same image.
+`--size` switches to the size variant `<workspace>/<template>-<size>` of the
+sandbox's template, created on first use without a golden snapshot (or back to
+the template itself at its own size). A running sandbox is suspended first
+and resumed afterwards: `/workspace` is kept, running processes restart. A
+suspended sandbox stays suspended. Network rules and credentials stay. A size
+that matches none of the platform's sizes shows as `custom`.
 
 ## How it maps to Substrate
 
@@ -179,14 +187,14 @@ restart. A suspended sandbox stays suspended.
 | sandbox `demo` | Actor `sbx-demo` in that Atespace |
 | `create`, `list`, `get`, `delete`, `suspend`, `resume` | `ateapi.Control` (`CreateActor`, `ListActors`, ...) |
 | `run`, `read_file`, `write_file`, `env()` | env guest API via `ate_env` |
-| `list_templates`, `create_template`, size variants | `ListActorTemplates`, `CreateActorTemplate` |
+| `create` from a preset | `CreateActor` on `sandbox-templates/<template>`, then `CreateActorEgressPolicy` |
+| `create` from a custom image, size variants | `CreateActorTemplate` in the workspace's Atespace |
 | `resize` | `SuspendActor`, `UpdateActor` (new `actor_template`), `ResumeActor` if it was running |
 | return values | `Actor` protos and `ate_env.ShellResult` |
 | errors | `ate_env` errors (`NotFoundError`, `PermissionDeniedError`, `RpcError`, ...) |
 
 A new sandbox is `SUSPENDED`; its first command or `resume()` starts it.
-`delete` removes a sandbox in any state. Templates come from the shared
-template Atespace unless `template_atespace` names another one.
+`delete` removes a sandbox in any state.
 
 ## Credentials
 
@@ -214,7 +222,7 @@ for Substrate, and its identity is the workspace's ServiceAccount
 from prokube.sandbox import SandboxClient
 
 with SandboxClient() as client:   # workspace = the pod's namespace
-    client.create("demo", template="python-v1")
+    client.create("demo")
     print(client.run("demo", "id -un").stdout)
 ```
 

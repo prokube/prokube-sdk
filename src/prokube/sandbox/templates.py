@@ -1,10 +1,12 @@
-"""Sandbox templates and sizes, as pkui builds them (prokube/pkui#4678, phase 4).
+"""Presets, custom templates and sizes, as pkui builds them (prokube/pkui#4678).
 
-A custom template is the ActorTemplate ``<workspace>/<name>-v<n>``; users choose
-its image, size and literal env, everything else is fixed below. A size
-variant ``<workspace>/<template>-<size>`` is a template copied with another
-size's resources and worker pool. The sizes come from the platform
-(``GET /svc/sandbox/v1alpha/sizes``) and are never hardcoded here.
+A preset is a shared template in ``sandbox-templates`` with a golden snapshot,
+so sandboxes from it start fast. A custom template is the ActorTemplate
+``<workspace>/<name>-v<n>``; users choose its image, size and literal env,
+everything else is fixed below. A size variant ``<workspace>/<template>-<size>``
+is a template copied with another size's resources and worker pool. Presets
+and sizes come from the platform (``GET /svc/sandbox/v1alpha/presets`` and
+``.../sizes``) and are never hardcoded here.
 """
 
 from __future__ import annotations
@@ -15,6 +17,9 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
+from google.protobuf import json_format
+
+from prokube import endpoints
 from prokube.sandbox._ateapi import ateapi_pb2 as ateapi
 
 ActorTemplate = ateapi.ActorTemplate
@@ -35,6 +40,9 @@ CA_ENV = (
     "PIP_CERT",
     "NODE_EXTRA_CA_CERTS",
 )
+# The Actor's name and uid, per clone; the image keys its SSH host key on the
+# uid (prokube/sandbox-images#20).
+IDENTITY_DIR = "/run/ate/actor"
 # The env guest of pk-sandbox-coding answers here once it serves; templates
 # whose guest container has this wakeup probe support exec, files and SSH.
 ENV_GUEST_PATH = "/readyz"
@@ -83,12 +91,7 @@ class Sizes:
 
     def get(self, name: str | None = None) -> Size:
         """Return the size called name, or the default one."""
-        name = name or self.default
-        for size in self.sizes:
-            if size.name == name:
-                return size
-        choices = ", ".join(str(size) for size in self.sizes)
-        raise TemplateError(f"Unknown size {name!r}. Sizes: {choices}")
+        return _named(self.sizes, name or self.default, "size")
 
     def of(self, template: ActorTemplate) -> Size | None:
         """The size whose cpu, memory and pool equal the template's; None is custom.
@@ -106,6 +109,62 @@ class Sizes:
         for size in self.sizes:
             if (_quantity(size.cpu), _quantity(size.memory), size.pool) == actual:
                 return size
+        return None
+
+
+@dataclass(frozen=True)
+class Preset:
+    """A shared template the platform offers, with its default network rules."""
+
+    name: str
+    template: str  # in sandbox-templates
+    title: str
+    description: str
+    size: str
+    env_guest: bool
+    network: ateapi.EgressPolicy | None
+
+    def __str__(self) -> str:
+        return f"{self.name} ({self.title})" if self.title else self.name
+
+
+@dataclass(frozen=True)
+class Presets:
+    """The platform's presets and the default one."""
+
+    default: str
+    presets: tuple[Preset, ...]
+
+    @classmethod
+    def from_json(cls, data: Mapping[str, Any]) -> Presets:
+        return cls(
+            default=data["default"],
+            presets=tuple(
+                Preset(
+                    name=p["name"],
+                    template=p["template"],
+                    title=p.get("title", ""),
+                    description=p.get("description", ""),
+                    size=p["size"],
+                    env_guest=p.get("envGuest", True),
+                    network=_egress_policy(p.get("network")),
+                )
+                for p in data["presets"]
+            ),
+        )
+
+    def get(self, name: str | None = None) -> Preset:
+        """Return the preset called name, or the default one."""
+        return _named(self.presets, name or self.default, "preset")
+
+    def of(self, ref: ateapi.ObjectRef) -> Preset | None:
+        """The preset whose template ref is; None for a custom template."""
+        for preset in self.presets:
+            if (ref.atespace, ref.name) == (
+                endpoints.TEMPLATE_ATESPACE,
+                preset.template,
+            ):
+                return preset
         return None
 
 
@@ -139,6 +198,7 @@ def build_template(
         volume_mounts=[
             ateapi.VolumeMount(name="workspace", mount_path="/workspace"),
             ateapi.VolumeMount(name="egress-trust", mount_path=TRUST_BUNDLE_DIR),
+            ateapi.VolumeMount(name="identity", mount_path=IDENTITY_DIR),
         ],
     )
     if env_guest:
@@ -166,6 +226,27 @@ def build_template(
                     ]
                 ),
             ),
+            ateapi.Volume(
+                name="identity",
+                system_info=ateapi.SystemInfoVolumeSource(
+                    data_sources=[
+                        ateapi.SystemInfoDataSource(
+                            actor_metadata=ateapi.ActorMetadataDataSource(
+                                items=[
+                                    ateapi.ActorMetadataItem(
+                                        field=ateapi.ACTOR_METADATA_FIELD_NAME,
+                                        path="name",
+                                    ),
+                                    ateapi.ActorMetadataItem(
+                                        field=ateapi.ACTOR_METADATA_FIELD_UID,
+                                        path="uid",
+                                    ),
+                                ]
+                            )
+                        )
+                    ]
+                ),
+            ),
         ],
         snapshot_config=ateapi.SnapshotConfig(
             storage_location=STORAGE_LOCATION,
@@ -182,10 +263,16 @@ def build_template(
 
 
 def with_size(template: ActorTemplate, size: Size) -> ActorTemplate:
-    """Return a copy of template with the size's resources and worker pool."""
+    """Return a copy of template with the size's resources and worker pool.
+
+    The copy has no golden snapshot, even when template (a preset) has one.
+    """
     sized = ateapi.ActorTemplate()
     sized.CopyFrom(template)
     sized.ClearField("status")
+    sized.snapshot_config.golden_snapshot_config.CopyFrom(
+        ateapi.GoldenSnapshotConfig(mode=ateapi.GOLDEN_SNAPSHOT_MODE_DISABLED)
+    )
     sized.resources.CopyFrom(
         ateapi.Resources(
             limits=[
@@ -217,26 +304,26 @@ def family(name: str) -> str:
 
 
 def check_name(
-    name: str, versioned: str, approved: Iterable[str], sizes: Sizes
+    name: str, versioned: str, shared: Iterable[str], presets: Presets, sizes: Sizes
 ) -> None:
     """Raise TemplateError unless ``versioned`` (``<name>-v<n>``) can be created.
 
-    The rules are pkui's: a DNS label, not the family of an approved template,
-    and short enough for every size variant ``<name>-v<n>-<size>``.
+    The rules are pkui's: a DNS label, neither a preset's name nor the family
+    of a shared template, and short enough for every size variant
+    ``<name>-v<n>-<size>``.
     """
     if not DNS_LABEL.fullmatch(name):
         raise TemplateError(
-            f"Template name {name!r} must be a lowercase DNS label (a-z, 0-9, '-')."
+            f"Name {name!r} must be a lowercase DNS label (a-z, 0-9, '-')."
         )
-    if name in {family(template) for template in approved}:
-        raise TemplateError(
-            f"{name!r} is the name of an approved template. Choose another name."
-        )
+    taken = {preset.name for preset in presets.presets}
+    if name in taken | {family(template) for template in shared}:
+        raise TemplateError(f"{name!r} is taken by a preset. Choose another name.")
     names = [versioned] + [variant_name(versioned, size) for size in sizes.sizes]
     if max(len(n) for n in names) > MAX_NAME_LENGTH:
         raise TemplateError(
-            f"Template name {name!r} is too long: {versioned!r} and its size "
-            f"variants must have at most {MAX_NAME_LENGTH} characters."
+            f"Name {name!r} is too long for a custom image: {versioned!r} and its "
+            f"size variants must have at most {MAX_NAME_LENGTH} characters."
         )
 
 
@@ -246,13 +333,14 @@ def variant_name(template: str, size: Size) -> str:
 
 
 def same_except_size(a: ActorTemplate, b: ActorTemplate) -> bool:
-    """Whether two templates differ only in name, size and status."""
+    """Whether two templates differ only in name, size, golden snapshot and status."""
 
     def strip(template: ActorTemplate) -> ActorTemplate:
         copy = ateapi.ActorTemplate()
         copy.CopyFrom(template)
         for field in ("metadata", "status", "resources", "worker_selector"):
             copy.ClearField(field)
+        copy.snapshot_config.ClearField("golden_snapshot_config")
         return copy
 
     return strip(a) == strip(b)
@@ -269,6 +357,19 @@ def has_env_guest(template: ActorTemplate) -> bool:
         and container.wakeup_probe.http_get.port == ENV_GUEST_PORT
         for container in template.containers
     )
+
+
+def _egress_policy(body: dict[str, Any] | None) -> ateapi.EgressPolicy | None:
+    """An EgressPolicy from its proto3 JSON body, as the presets endpoint has it."""
+    return None if body is None else json_format.ParseDict(body, ateapi.EgressPolicy())
+
+
+def _named(items: tuple[Any, ...], name: str, kind: str) -> Any:
+    for item in items:
+        if item.name == name:
+            return item
+    choices = ", ".join(str(item) for item in items)
+    raise TemplateError(f"Unknown {kind} {name!r}. {kind.capitalize()}s: {choices}")
 
 
 def _quantity(value: str | None) -> Decimal | None:
