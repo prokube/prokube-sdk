@@ -8,6 +8,10 @@ redirect. The tokens are stored in the OS keyring, or in a private file
 ``LoginSession(url).token`` returns a valid ID token and uses the refresh
 token shortly before it expires. Dex rotates the refresh token on every use,
 so the new one is stored each time.
+
+In a workspace pod, ``TokenFile`` reads the pod's own token instead (workload
+identity, prokube/prokube-neo#100). ``default_token_provider`` picks between
+the two.
 """
 
 from __future__ import annotations
@@ -33,11 +37,18 @@ import keyring
 from prokube import endpoints
 
 # Returns the bearer token for the next API call. Any callable works, so other
-# credentials (for example in-cluster workload identity) can be plugged in.
+# credentials can be plugged in.
 TokenProvider = Callable[[], str]
 
 KEYRING_SERVICE = "prokube"
 REFRESH_MARGIN_SECONDS = 60
+
+# The workload token of a workspace pod, mounted by the PodDefault
+# access-sandboxes (prokube/prokube-neo#100). Today a projected ServiceAccount
+# token; any JWT file that something else keeps fresh works, such as a SPIRE
+# JWT-SVID written by spiffe-helper.
+TOKEN_FILE_ENV = "PROKUBE_SANDBOX_TOKEN_FILE"
+DEFAULT_TOKEN_FILE = "/var/run/secrets/prokube.ai/sandbox/token"
 
 
 class LoginRequired(Exception):
@@ -71,6 +82,55 @@ class LoginSession:
                 self._tokens = _refresh(self.url, self._tokens)
                 _save_tokens(self.url, self._tokens)
             return self._tokens["id_token"]
+
+
+class TokenFile:
+    """A token in a file that another process renews, such as the kubelet.
+
+    The file is read again when the token read last is about to expire.
+    """
+
+    def __init__(self, path: str | Path) -> None:
+        self.path = Path(path)
+        self._token = ""
+        self._expires_at = 0.0
+        self._lock = threading.Lock()
+
+    def token(self) -> str:
+        with self._lock:
+            if self._expires_at - time.time() < REFRESH_MARGIN_SECONDS:
+                self._token = self.path.read_text().strip()
+                self._expires_at = _jwt_expiry(self._token)
+            return self._token
+
+
+def workload_token_file() -> Path | None:
+    """The pod's workload token file, if there is one.
+
+    ``$PROKUBE_SANDBOX_TOKEN_FILE``, else the path the PodDefault mounts.
+    """
+    path = Path(os.environ.get(TOKEN_FILE_ENV) or DEFAULT_TOKEN_FILE)
+    return path if path.is_file() else None
+
+
+def default_token_provider(url: str | None) -> TokenProvider:
+    """Where tokens come from when the caller passes none.
+
+    The stored login for ``url``, else the pod's workload token file.
+    """
+    token_file = workload_token_file()
+    if url:
+        try:
+            return LoginSession(url).token
+        except LoginRequired:
+            if token_file is None:
+                raise
+    if token_file is None:
+        raise LoginRequired(
+            "No login and no workload token. Run prokube.auth.login(url), or "
+            f"mount a token at {DEFAULT_TOKEN_FILE} (set {TOKEN_FILE_ENV})."
+        )
+    return TokenFile(token_file).token
 
 
 def login(url: str, *, open_browser: bool = True, timeout: float = 300) -> LoginSession:

@@ -136,13 +136,40 @@ template Atespace unless `template_atespace` names another one.
 
 ## Credentials
 
-Every call sends `authorization: Bearer <Dex ID token>`; Agent Gateway passes
-it through to Substrate, which authorizes the caller. By default the token
-comes from the stored login. Any callable that returns a token can replace it:
+Every call sends `authorization: Bearer <token>`; Agent Gateway passes it
+through to Substrate, which authorizes the caller. The token comes from, in
+this order:
+
+1. `token_provider`, any callable that returns a token:
+   `SandboxClient(url, "my-workspace", token_provider=lambda: my_token)`
+2. the stored login for `url` (`prokube.auth.login`, `pk login`)
+3. the pod's workload token: the file in `PROKUBE_SANDBOX_TOKEN_FILE`, else
+   `/var/run/secrets/prokube.ai/sandbox/token`. The SDK reads it again
+   shortly before the token in it expires, since Kubernetes replaces it.
+
+### In a workspace pod
+
+In a notebook, pipeline step or agent pod of a workspace, the SDK needs no
+configuration and no login when the pod has sandbox access (Kubeflow
+PodDefault `access-sandboxes`; in the notebook spawner, "Allow access to
+sandboxes" under Configurations). The pod then has a ServiceAccount token
+for Substrate, and its identity is the workspace's ServiceAccount
+`default-editor` (prokube/prokube-neo#100):
 
 ```python
-client = SandboxClient(url, "my-workspace", token_provider=lambda: my_token)
+from prokube.sandbox import SandboxClient
+
+with SandboxClient() as client:   # workspace = the pod's namespace
+    client.create("demo", template="python-v1")
+    print(client.run("demo", "id -un").stdout)
 ```
+
+Without a platform URL the client calls Agent Gateway's in-cluster Service;
+the workspace defaults to the pod's namespace. Pass `workspace` or set
+`PROKUBE_WORKSPACE` to name another one; the pod's identity has access to its
+own workspace only. Any JWT file that something keeps fresh works as the
+workload token, for example a SPIRE JWT-SVID that spiffe-helper writes: point
+`PROKUBE_SANDBOX_TOKEN_FILE` at it.
 
 ## Endpoints
 
@@ -151,6 +178,9 @@ All platform addresses are derived from the platform URL in
 guest API over native gRPC at `<domain>:443`, and SSH over
 `wss://<domain>/svc/sandbox/v1alpha/atespaces/<workspace>/envs/sbx-<name>/ports/8022/ssh`.
 The Agent Gateway routes behind them are defined in prokube/prokube-neo#97.
+In a workspace pod without a platform URL, the same gRPC routes are reached
+through `agentgateway-proxy.agentgateway-system.svc.cluster.local:80`
+(plaintext HTTP/2; the Istio sidecars encrypt the hop).
 
 ## Development
 

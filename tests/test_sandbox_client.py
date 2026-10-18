@@ -7,8 +7,10 @@ from ate_env import NotFoundError, ShellResult
 
 from prokube import auth, endpoints
 from prokube.sandbox import AsyncSandboxClient, SandboxClient, actor_name
+from prokube.sandbox import client as client_module
 from prokube.sandbox._ateapi import ateapi_pb2 as ateapi
 from prokube.sandbox.client import _BearerToken
+from tests.conftest import make_jwt
 
 URL = "https://platform.example.com"
 
@@ -203,6 +205,78 @@ async def test_default_credentials_are_the_stored_login():
     )
     async with AsyncSandboxClient(URL, "team-a") as client:
         assert client.workspace == "team-a"
+
+
+@pytest.fixture
+def workload_token(tmp_path, monkeypatch) -> str:
+    """A workspace pod: a workload token and namespace team-pod."""
+    token = make_jwt(time.time() + 3600)
+    (tmp_path / "token").write_text(token)
+    (tmp_path / "namespace").write_text("team-pod\n")
+    monkeypatch.setenv("PROKUBE_SANDBOX_TOKEN_FILE", str(tmp_path / "token"))
+    monkeypatch.setattr(client_module, "NAMESPACE_FILE", str(tmp_path / "namespace"))
+    return token
+
+
+@pytest.fixture
+async def gateway(monkeypatch):
+    """A plaintext gRPC server standing in for the in-cluster Agent Gateway."""
+    calls: list[tuple[ateapi.GetActorRequest, dict[str, str]]] = []
+
+    async def get_actor(request, context):
+        calls.append((request, dict(context.invocation_metadata())))
+        return actor(request.actor.name, request.actor.atespace)
+
+    server = grpc.aio.server()
+    server.add_generic_rpc_handlers(
+        [
+            grpc.method_handlers_generic_handler(
+                "ateapi.Control",
+                {
+                    "GetActor": grpc.unary_unary_rpc_method_handler(
+                        get_actor,
+                        request_deserializer=ateapi.GetActorRequest.FromString,
+                        response_serializer=ateapi.Actor.SerializeToString,
+                    )
+                },
+            )
+        ]
+    )
+    port = server.add_insecure_port("127.0.0.1:0")
+    await server.start()
+    monkeypatch.setattr(endpoints, "IN_CLUSTER_GATEWAY", f"127.0.0.1:{port}")
+    yield calls
+    await server.stop(None)
+
+
+async def test_workspace_pod_needs_no_configuration(workload_token, gateway):
+    async with AsyncSandboxClient() as client:
+        assert client.url is None
+        assert client.workspace == "team-pod"
+        await client.get("demo")
+
+    [(request, metadata)] = gateway
+    assert request.actor == ateapi.ObjectRef(atespace="team-pod", name="sbx-demo")
+    assert metadata["authorization"] == f"Bearer {workload_token}"
+
+
+async def test_workspace_pod_can_name_another_workspace(workload_token, gateway):
+    async with AsyncSandboxClient(workspace="team-b") as client:
+        await client.get("demo")
+
+    assert gateway[0][0].actor.atespace == "team-b"
+
+
+async def test_with_a_url_the_workload_token_comes_after_the_login(workload_token):
+    async with AsyncSandboxClient(URL) as client:
+        assert client.url == URL
+        assert client.workspace == "team-pod"
+        assert client._ate_channel is not None
+
+
+async def test_without_url_or_workload_token_configuration_is_required():
+    with pytest.raises(ValueError, match="PROKUBE_URL"):
+        AsyncSandboxClient(token_provider=lambda: "token")
 
 
 def call_plugin(plugin: _BearerToken) -> tuple:

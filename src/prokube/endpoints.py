@@ -1,6 +1,7 @@
 """Every platform address the SDK uses, derived from the platform URL.
 
-The platform URL (``https://<domain>``) is the only input. The Agent Gateway
+The platform URL (``https://<domain>``) is the only input; in a workspace pod
+without one, the SDK uses ``IN_CLUSTER_GATEWAY``. The Agent Gateway
 routes are defined in prokube/prokube-neo#97 (``paas/substrate/README.md``,
 "Endpoints for CLI and SDK"); when they change, this module is the only place
 to adjust.
@@ -29,6 +30,11 @@ SCOPES = "openid profile email offline_access"
 # workspace (prokube/prokube-neo#98).
 TEMPLATE_ATESPACE = "sandbox-templates"
 
+
+# Agent Gateway's in-cluster Service, used from workspace pods that have no
+# platform URL (workload identity, prokube/prokube-neo#100). Same routes as
+# the public endpoint; plaintext HTTP/2, which the Istio sidecars encrypt.
+IN_CLUSTER_GATEWAY = "agentgateway-proxy.agentgateway-system.svc.cluster.local:80"
 
 # Port of the runtime image's WebSocket bridge to sshd (websocat on :8022, path
 # /ssh, prokube/sandbox-images#16).

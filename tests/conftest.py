@@ -31,6 +31,8 @@ def memory_keyring(tmp_path, monkeypatch):
     monkeypatch.setenv("PROKUBE_CONFIG_DIR", str(tmp_path / "config"))
     monkeypatch.delenv("PROKUBE_URL", raising=False)
     monkeypatch.delenv("PROKUBE_WORKSPACE", raising=False)
+    # No workload token, even when the tests run in a workspace pod.
+    monkeypatch.setenv("PROKUBE_SANDBOX_TOKEN_FILE", str(tmp_path / "no-token"))
     previous = keyring.get_keyring()
     backend = MemoryKeyring()
     keyring.set_keyring(backend)

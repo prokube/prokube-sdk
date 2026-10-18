@@ -214,3 +214,49 @@ def test_endpoints_derive_from_the_platform_url():
     assert endpoints.env_target("https://platform.example.com:8443") == (
         "platform.example.com:8443"
     )
+
+
+def test_token_file_is_read_again_only_before_expiry(tmp_path):
+    path = tmp_path / "token"
+    lasting, expiring, renewed = (
+        make_jwt(time.time() + 3600),
+        make_jwt(time.time() + 30),
+        make_jwt(time.time() + 3600),
+    )
+    path.write_text(lasting + "\n")
+    token_file = auth.TokenFile(path)
+    assert token_file.token() == lasting
+    path.write_text(expiring)
+    assert token_file.token() == lasting  # still valid, no read
+
+    token_file = auth.TokenFile(path)
+    assert token_file.token() == expiring
+    path.write_text(renewed)  # the kubelet rotated it
+    assert token_file.token() == renewed
+
+
+def test_workload_token_file_path_is_configurable(tmp_path, monkeypatch):
+    path = tmp_path / "svid.jwt"
+    assert auth.workload_token_file() is None
+    path.write_text(make_jwt(time.time() + 3600))
+    monkeypatch.setenv("PROKUBE_SANDBOX_TOKEN_FILE", str(path))
+    assert auth.workload_token_file() == path
+
+
+def test_default_token_provider_prefers_the_login(tmp_path, monkeypatch):
+    workload = make_jwt(time.time() + 3600)
+    path = tmp_path / "token"
+    path.write_text(workload)
+
+    with pytest.raises(auth.LoginRequired):
+        auth.default_token_provider(URL)
+    with pytest.raises(auth.LoginRequired):
+        auth.default_token_provider(None)
+
+    monkeypatch.setenv("PROKUBE_SANDBOX_TOKEN_FILE", str(path))
+    assert auth.default_token_provider(URL)() == workload
+    assert auth.default_token_provider(None)() == workload
+
+    user = make_jwt(time.time() + 3600)
+    auth._save_tokens(URL, {"id_token": user, "expires_at": time.time() + 3600})
+    assert auth.default_token_provider(URL)() == user

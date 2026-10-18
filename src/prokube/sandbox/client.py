@@ -6,15 +6,21 @@ A sandbox is an Actor named ``sbx-<name>`` in the Atespace of a workspace
 upstream ``ate_env`` client. Every call carries the caller's token, which
 Agent Gateway passes through to Substrate. Results are the upstream types
 (``Actor`` protos, ``ate_env.ShellResult``) and errors the ``ate_env`` ones.
+
+In a workspace pod with a workload token (prokube/prokube-neo#100) and no
+platform URL, the client calls Agent Gateway's in-cluster Service as the pod
+and defaults to the pod's workspace.
 """
 
 from __future__ import annotations
 
 import asyncio
+import collections
 import os
 import threading
 from collections.abc import Awaitable, Coroutine, Mapping
 from datetime import timedelta
+from pathlib import Path
 from typing import Any, TypeVar
 
 import grpc
@@ -22,12 +28,15 @@ import grpc.aio
 from ate_env import Client as EnvClient
 from ate_env import Env, ShellResult, map_rpc_error
 
-from prokube import endpoints
-from prokube.auth import LoginSession, TokenProvider
+from prokube import auth, endpoints
+from prokube.auth import TokenProvider
 from prokube.sandbox._ateapi import ateapi_pb2 as ateapi
 from prokube.sandbox._ateapi.ateapi_pb2_grpc import ControlStub
 
 SANDBOX_PREFIX = "sbx-"
+
+# Namespace of the pod, which is its workspace.
+NAMESPACE_FILE = "/var/run/secrets/kubernetes.io/serviceaccount/namespace"
 
 Actor = ateapi.Actor
 T = TypeVar("T")
@@ -43,8 +52,11 @@ class AsyncSandboxClient:
 
     ``url`` (``https://<domain>``) defaults to ``$PROKUBE_URL`` and
     ``workspace`` to ``$PROKUBE_WORKSPACE``. ``token_provider`` defaults to the
-    stored login for ``url`` (see ``prokube.auth.login``). Create the client
-    inside the event loop that uses it.
+    stored login for ``url`` (see ``prokube.auth.login``), then to the pod's
+    workload token. In a workspace pod with a workload token, all three can
+    be left out: the workspace defaults to the pod's namespace and, without a
+    URL, the client uses Agent Gateway's in-cluster Service (``url`` is then
+    None). Create the client inside the event loop that uses it.
     """
 
     def __init__(
@@ -56,24 +68,39 @@ class AsyncSandboxClient:
     ) -> None:
         url = url or os.environ.get("PROKUBE_URL")
         workspace = workspace or os.environ.get("PROKUBE_WORKSPACE")
-        if not url or not workspace:
+        in_pod = auth.workload_token_file() is not None
+        if in_pod:
+            workspace = workspace or _pod_namespace()
+        if not (url or in_pod) or not workspace:
             raise ValueError(
-                "Pass url and workspace, or set PROKUBE_URL and PROKUBE_WORKSPACE."
+                "Pass url and workspace, set PROKUBE_URL and PROKUBE_WORKSPACE, "
+                "or run in a workspace pod with sandbox access."
             )
-        self.url = endpoints.normalize_url(url)
+        self.url = endpoints.normalize_url(url) if url else None
         self.workspace = workspace
         if token_provider is None:
-            token_provider = LoginSession(self.url).token
-        credentials = grpc.composite_channel_credentials(
-            grpc.ssl_channel_credentials(),
-            grpc.metadata_call_credentials(_BearerToken(token_provider)),
-        )
-        self._ate_channel = grpc.aio.secure_channel(
-            endpoints.ate_api_target(self.url), credentials
-        )
-        self._env_channel = grpc.aio.secure_channel(
-            endpoints.env_target(self.url), credentials
-        )
+            token_provider = auth.default_token_provider(self.url)
+        if self.url:
+            credentials = grpc.composite_channel_credentials(
+                grpc.ssl_channel_credentials(),
+                grpc.metadata_call_credentials(_BearerToken(token_provider)),
+            )
+            self._ate_channel = grpc.aio.secure_channel(
+                endpoints.ate_api_target(self.url), credentials
+            )
+            self._env_channel = grpc.aio.secure_channel(
+                endpoints.env_target(self.url), credentials
+            )
+        else:
+            # gRPC sends call credentials only over TLS, so the token goes in
+            # by interceptor.
+            interceptors = [_BearerTokenInterceptor(token_provider)]
+            self._ate_channel = grpc.aio.insecure_channel(
+                endpoints.IN_CLUSTER_GATEWAY, interceptors=interceptors
+            )
+            self._env_channel = grpc.aio.insecure_channel(
+                endpoints.IN_CLUSTER_GATEWAY, interceptors=interceptors
+            )
         self._control = ControlStub(self._ate_channel)
         self._env = EnvClient(channel=self._env_channel)
 
@@ -297,6 +324,67 @@ class _BearerToken(grpc.AuthMetadataPlugin):
             callback((("authorization", f"Bearer {self._token_provider()}"),), None)
         except Exception as error:  # e.g. LoginRequired; fails the call with it
             callback((), error)
+
+
+class _CallDetails(
+    collections.namedtuple(
+        "_CallDetails",
+        ["method", "timeout", "metadata", "credentials", "wait_for_ready"],
+    ),
+    grpc.aio.ClientCallDetails,
+):
+    pass
+
+
+class _BearerTokenInterceptor(
+    grpc.aio.UnaryUnaryClientInterceptor,
+    grpc.aio.UnaryStreamClientInterceptor,
+    grpc.aio.StreamUnaryClientInterceptor,
+    grpc.aio.StreamStreamClientInterceptor,
+):
+    """Adds ``authorization: Bearer <token>`` on plaintext channels.
+
+    Like the upstream ``ate_env`` client's, but asks the provider on every call.
+    """
+
+    def __init__(self, token_provider: TokenProvider) -> None:
+        self._token_provider = token_provider
+
+    def _with_token(self, details: grpc.aio.ClientCallDetails) -> _CallDetails:
+        metadata = list(details.metadata or [])
+        metadata.append(("authorization", f"Bearer {self._token_provider()}"))
+        return _CallDetails(
+            details.method,
+            details.timeout,
+            metadata,
+            details.credentials,
+            details.wait_for_ready,
+        )
+
+    async def intercept_unary_unary(self, continuation, client_call_details, request):
+        return await continuation(self._with_token(client_call_details), request)
+
+    async def intercept_unary_stream(self, continuation, client_call_details, request):
+        return await continuation(self._with_token(client_call_details), request)
+
+    async def intercept_stream_unary(
+        self, continuation, client_call_details, request_iterator
+    ):
+        return await continuation(
+            self._with_token(client_call_details), request_iterator
+        )
+
+    async def intercept_stream_stream(
+        self, continuation, client_call_details, request_iterator
+    ):
+        return await continuation(
+            self._with_token(client_call_details), request_iterator
+        )
+
+
+def _pod_namespace() -> str | None:
+    path = Path(NAMESPACE_FILE)
+    return path.read_text().strip() if path.is_file() else None
 
 
 async def _call(awaitable: Awaitable[T]) -> T:
