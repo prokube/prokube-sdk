@@ -211,20 +211,17 @@ egress gateway puts in the value of a key from a Secret of the workspace with
 the label `prokube.ai/sandbox-credential=true`:
 
 ```python
+from prokube.sandbox import inject, passthrough
+
+key = client.secret_uri("anthropic-api-key", "ANTHROPIC_API_KEY")
 client.set_network("demo", [
-    {"https": {
-        "hostnames": ["api.anthropic.com"],
-        "ports": {"numbers": [443]},
-        "effects": {"replaceHeaders": [{
-            "header": "x-api-key",
-            "credentialUri": client.secret_uri("anthropic-api-key", "ANTHROPIC_API_KEY"),
-        }]},
-    }},
-    {"tlsPassthrough": {"hostnames": ["github.com"], "ports": {"numbers": [443]}}},
+    inject("api.anthropic.com", "x-api-key", key),
+    passthrough("github.com", "registry.npmjs.org"),
 ])
 ```
 
-The presets' images trust the gateway's CA (`SSL_CERT_FILE`,
+`inject` and `passthrough` return the rules' JSON; `network` returns the same
+form. The presets' images trust the gateway's CA (`SSL_CERT_FILE`,
 `NODE_EXTRA_CA_CERTS` and others). Each host name and port can be in only one
 rule.
 

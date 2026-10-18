@@ -8,7 +8,14 @@ from ate_env import NotFoundError, ShellResult
 from ate_env._gen.ateenv.v1alpha import guest_pb2
 
 from prokube import auth, endpoints
-from prokube.sandbox import AsyncSandboxClient, PresetError, SandboxClient, actor_name
+from prokube.sandbox import (
+    AsyncSandboxClient,
+    PresetError,
+    SandboxClient,
+    actor_name,
+    inject,
+    passthrough,
+)
 from prokube.sandbox import client as client_module
 from prokube.sandbox._ateapi import ateapi_pb2 as ateapi
 from prokube.sandbox.client import _BearerToken
@@ -521,29 +528,37 @@ async def test_network_is_the_rules_as_json(client):
 
 async def test_set_network_replaces_the_rules(client):
     client._control.egress = STORED_EGRESS
+    key = client.secret_uri("anthropic", "key")
     rules = [
-        {
-            "https": {
-                "hostnames": ["api.anthropic.com"],
-                "ports": {"numbers": [443]},
-                "effects": {
-                    "replaceHeaders": [
-                        {
-                            "header": "x-api-key",
-                            "credentialUri": client.secret_uri("anthropic", "key"),
-                        }
-                    ]
-                },
-            }
-        }
+        inject("api.anthropic.com", "x-api-key", key),
+        inject("api.github.com", "Authorization", key, prefix="Bearer "),
+        passthrough("github.com", "registry.npmjs.org"),
     ]
 
+    # The builders' JSON survives the round trip through the proto unchanged.
     assert await client.set_network("demo", rules) == rules
     assert client._control.methods() == [
         "GetActorEgressPolicy",
         "UpdateActorEgressPolicy",
     ]
     assert client._control.requests[-1][1].actor == ref("team-a", "sbx-demo")
+
+
+def test_rule_builders():
+    assert passthrough("github.com", port=22) == {
+        "tlsPassthrough": {"hostnames": ["github.com"], "ports": {"numbers": [22]}}
+    }
+    assert inject("api.example.com", "x-api-key", "ate-secret://x") == {
+        "https": {
+            "hostnames": ["api.example.com"],
+            "ports": {"numbers": [443]},
+            "effects": {
+                "replaceHeaders": [
+                    {"header": "x-api-key", "credentialUri": "ate-secret://x"}
+                ]
+            },
+        }
+    }
 
 
 def test_secret_uri_names_a_secret_of_the_workspace():

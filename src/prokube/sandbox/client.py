@@ -200,10 +200,8 @@ class AsyncSandboxClient:
     ) -> list[dict[str, Any]]:
         """Replace the sandbox's egress rules; they apply right away.
 
-        A rule is the JSON of an ``ateapi.EgressRule``, e.g.
-        ``{"tlsPassthrough": {"hostnames": ["github.com"], "ports": {"numbers": [443]}}}``.
-        An ``https`` rule can inject a credential at egress with
-        ``effects.replaceHeaders`` and a ``credentialUri`` from secret_uri().
+        A rule is the JSON of an ``ateapi.EgressRule``; passthrough() and
+        inject() build the common ones.
         """
         policy = await self._egress_policy(name)
         del policy.rules[:]
