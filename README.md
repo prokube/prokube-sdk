@@ -157,11 +157,10 @@ leave room for `-v<n>-<size>` within 63 characters. Only the image, size and
 env can be chosen; storage location, snapshot settings, sandbox runtime,
 capabilities, volumes and worker pool are fixed
 ([`templates.py`](src/prokube/sandbox/templates.py)). The image is pinned by
-digest: a public image works by tag, which is resolved anonymously, or by
-digest. Private images work only from
-`europe-west3-docker.pkg.dev/prokube-internal/prokube-customer/pk-sandbox-coding*`,
-pinned by digest (prokube/prokube-neo#126); a workspace's own private registry
-is not supported yet. Env values are readable by every workspace member; pass
+digest. Public images work by tag (resolved anonymously) or digest. Private
+images work only from the platform's sandbox image registry, pinned by digest
+(`NAME@sha256:...`); if you need another registry, ask your platform admin to
+configure it. Env values are readable by every workspace member; pass
 secrets through credential injection. SDK, terminal and SSH work only with
 images based on `pk-sandbox-coding`; for any other image, pass `--no-env-guest`.
 `exec`, `cp` and `connect` then say that the sandbox has no env guest.

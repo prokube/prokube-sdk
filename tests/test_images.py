@@ -7,7 +7,7 @@ DIGEST = "sha256:" + "c" * 64
 
 
 async def test_an_image_with_a_digest_is_kept():
-    image = f"europe-west3-docker.pkg.dev/p/r/pk-sandbox-coding@{DIGEST}"
+    image = f"registry.example.com/team/pk-sandbox-coding@{DIGEST}"
 
     assert await resolve_image(image) == image
     assert await resolve_image(f"busybox:1.37.0@{DIGEST}") == f"busybox:1.37.0@{DIGEST}"
@@ -70,24 +70,24 @@ async def test_registry_host_port_repository_and_default_tag(httpx_mock):
 async def test_a_private_image_asks_for_a_digest(httpx_mock):
     httpx_mock.add_response(
         method="HEAD",
-        url="https://europe-west3-docker.pkg.dev/v2/p/r/img/manifests/1.0",
+        url="https://private.example.com/v2/team/img/manifests/1.0",
         status_code=401,
         headers={
-            "www-authenticate": 'Bearer realm="https://europe-west3-docker.pkg.dev'
-            '/v2/token",service="europe-west3-docker.pkg.dev",scope="repository:p/r/img:pull"'
+            "www-authenticate": 'Bearer realm="https://private.example.com'
+            '/v2/token",service="private.example.com",scope="repository:team/img:pull"'
         },
     )
     httpx_mock.add_response(
-        url="https://europe-west3-docker.pkg.dev/v2/token"
-        "?service=europe-west3-docker.pkg.dev&scope=repository%3Ap%2Fr%2Fimg%3Apull",
+        url="https://private.example.com/v2/token"
+        "?service=private.example.com&scope=repository%3Ateam%2Fimg%3Apull",
         status_code=403,
     )
 
     with pytest.raises(TemplateError) as error:
-        await resolve_image("europe-west3-docker.pkg.dev/p/r/img:1.0")
+        await resolve_image("private.example.com/team/img:1.0")
 
     assert str(error.value) == (
-        "Cannot resolve europe-west3-docker.pkg.dev/p/r/img:1.0 to a digest without "
+        "Cannot resolve private.example.com/team/img:1.0 to a digest without "
         "registry credentials. Pass the image as NAME@sha256:<digest>."
     )
 

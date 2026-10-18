@@ -397,8 +397,8 @@ def template() -> None:
 @click.option(
     "--image",
     required=True,
-    help="Container image: a public one by tag or as IMAGE@sha256:<digest>, a "
-    "private one by digest only (see above).",
+    help="Container image: a public one by tag or digest, a private one from the "
+    "platform's sandbox image registry by digest (NAME@sha256:...).",
 )
 @click.option(
     "--size",
@@ -432,12 +432,9 @@ def template_create(
 
     SDK, terminal and SSH work only with images based on `pk-sandbox-coding`.
 
-    Public images work by tag, which is resolved to its digest, or by digest.
-    Private images work only from this prefix and must be pinned by digest; a
-    workspace's own private registry is not supported yet:
-
-    \b
-      europe-west3-docker.pkg.dev/prokube-internal/prokube-customer/pk-sandbox-coding*
+    Public images work by tag or digest. Private images work only from the
+    platform's sandbox image registry, pinned by digest (NAME@sha256:...). If
+    you need another registry, ask your platform admin to configure it.
     """
     variables = _parse_env(env)
     created = _with_client(

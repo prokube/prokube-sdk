@@ -625,16 +625,17 @@ def test_template_create_needs_key_value_env(sandboxes, logged_in):
 
 
 def test_template_create_help_names_the_base_image_and_private_images():
-    result = pk("template", "create", "--help")
-    help_text = " ".join(result.output.split())
+    help_text = " ".join(pk("template", "create", "--help").output.split())
 
     assert (
         "SDK, terminal and SSH work only with images based on `pk-sandbox-coding`."
         in help_text
     )
-    assert "Private images work only from this prefix and must be pinned" in help_text
-    prefix = "europe-west3-docker.pkg.dev/prokube-internal/prokube-customer/"
-    assert f"  {prefix}pk-sandbox-coding*\n" in result.output
+    assert (
+        "Private images work only from the platform's sandbox image registry, "
+        "pinned by digest (NAME@sha256:...). If you need another registry, ask "
+        "your platform admin to configure it." in help_text
+    )
 
 
 def test_template_list_shows_each_size_or_custom(sandboxes, logged_in):
