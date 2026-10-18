@@ -201,6 +201,33 @@ SDK, terminal and SSH work only with images based on `pk-sandbox-coding`.
 For a sandbox whose image is not, `exec`, `cp` and `connect` say that it has
 no env guest.
 
+## Network and credentials
+
+A new sandbox gets its preset's network rules. `network` and `set_network`
+read and replace them as the JSON of Substrate `EgressRule`s; changes apply
+right away. An `https` rule can inject a credential at egress, so the sandbox
+never holds it: the sandbox sends the header with any placeholder, and the
+egress gateway puts in the value of a key from a Secret of the workspace with
+the label `prokube.ai/sandbox-credential=true`:
+
+```python
+client.set_network("demo", [
+    {"https": {
+        "hostnames": ["api.anthropic.com"],
+        "ports": {"numbers": [443]},
+        "effects": {"replaceHeaders": [{
+            "header": "x-api-key",
+            "credentialUri": client.secret_uri("anthropic-api-key", "ANTHROPIC_API_KEY"),
+        }]},
+    }},
+    {"tlsPassthrough": {"hostnames": ["github.com"], "ports": {"numbers": [443]}}},
+])
+```
+
+The presets' images trust the gateway's CA (`SSL_CERT_FILE`,
+`NODE_EXTRA_CA_CERTS` and others). Each host name and port can be in only one
+rule.
+
 ## How it maps to Substrate
 
 | SDK | Substrate |
@@ -211,6 +238,7 @@ no env guest.
 | preset | ActorTemplate `sandbox-templates/<template>` |
 | `create` | `CreateActor` on the preset's template, then `CreateActorEgressPolicy` |
 | `resize` | `SuspendActor`, `UpdateActor` (new `actor_template`), `ResumeActor` if it was running |
+| `network`, `set_network` | `GetActorEgressPolicy`, `UpdateActorEgressPolicy` |
 | `run`, `read_file`, `write_file`, `env()` | env guest API via `ate_env` |
 | return values | `Actor` protos and `ate_env.ShellResult` |
 | errors | `ate_env` errors (`NotFoundError`, `PermissionDeniedError`, `RpcError`, ...) |
