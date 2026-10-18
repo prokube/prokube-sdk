@@ -3,9 +3,10 @@
 The runtime image (prokube/sandbox-images#16) bridges a WebSocket on port 8022,
 path ``/ssh``, to its sshd. sshd accepts public keys for the user ``developer``
 from ``/workspace/ssh/authorized_keys`` and keeps its host key in
-``/workspace/ssh/``. The CLI reads and writes both through the authenticated env
-file API, so the host key it pins is the sandbox's real key, not one learned on
-first use.
+``/workspace/ssh/``. The CLI installs the user's key and reads the host key
+(``pk-sandbox-hostkey``) through the authenticated env guest API, so the host
+key it pins is the sandbox's real key, not one learned on first use. sshd allows
+forwarding to the sandbox's loopback, which ``pk sandbox forward`` uses.
 
 The ssh files live under ``<config dir>/ssh/``: one private ``known_hosts`` and
 one config file per sandbox in ``hosts/``. ``install_include`` puts one
@@ -18,6 +19,7 @@ from __future__ import annotations
 import os
 import re
 import shlex
+import socket
 import stat
 import tempfile
 import threading
@@ -135,6 +137,43 @@ def install_include() -> tuple[Path, bool]:
     else:
         _write_private(path, header)  # also creates ~/.ssh with mode 0700
     return path, True
+
+
+def forward_args(
+    config_file: Path, alias: str, local_port: int, port: int
+) -> list[str]:
+    """ssh arguments that forward localhost:local_port to port in the sandbox."""
+    return [
+        "ssh",
+        "-F",
+        str(config_file),
+        "-N",
+        "-o",
+        "ExitOnForwardFailure=yes",
+        "-L",
+        f"localhost:{local_port}:127.0.0.1:{port}",
+        alias,
+    ]
+
+
+def port_in_use(port: int) -> bool:
+    """Whether a local port on 127.0.0.1 is taken."""
+    with socket.socket() as probe:
+        try:
+            probe.bind(("127.0.0.1", port))
+        except OSError:
+            return True
+    return False
+
+
+def listening_ports(proc_net_tcp: str) -> set[int]:
+    """The ports in LISTEN state (``0A``) in /proc/net/tcp and tcp6 text."""
+    ports = set()
+    for line in proc_net_tcp.splitlines():
+        fields = line.split()
+        if len(fields) > 3 and fields[3] == "0A" and ":" in fields[1]:
+            ports.add(int(fields[1].rsplit(":", 1)[1], 16))
+    return ports
 
 
 def proxy(url: str, token: str, stdin: int = 0, stdout: int = 1) -> None:

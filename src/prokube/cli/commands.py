@@ -319,6 +319,55 @@ def cp(source: str, destination: str, url: str | None, workspace: str | None) ->
 
 @sandbox.command()
 @click.argument("name")
+@click.argument("remote_port", type=click.IntRange(1, 65535))
+@click.option(
+    "--local-port",
+    type=click.IntRange(1, 65535),
+    help="Port on localhost (default: REMOTE_PORT).",
+)
+@_identity_option
+@_target_options
+def forward(
+    name: str,
+    remote_port: int,
+    local_port: int | None,
+    identity: Path | None,
+    url: str | None,
+    workspace: str | None,
+) -> None:
+    """Forward localhost to REMOTE_PORT in sandbox NAME until Ctrl-C.
+
+    The tunnel runs over SSH, like connect, and listens on localhost only.
+    For example, after `opencode serve --port 4096` in the sandbox:
+
+    \b
+    pk sandbox forward demo 4096
+    opencode attach http://localhost:4096
+    """
+    local_port = local_port or remote_port
+    if ssh.port_in_use(local_port):
+        raise click.ClickException(
+            f"Local port {local_port} is in use. Pass another one with --local-port."
+        )
+    listening = _with_env_guest(
+        url, workspace, name, lambda client: _listens(client, name, remote_port)
+    )
+    if not listening:
+        raise click.ClickException(
+            f"Nothing listens on port {remote_port} in sandbox {name}. Start the "
+            "server there first."
+        )
+    alias, config_file = _prepare_ssh(name, identity, url, workspace)
+    click.echo(
+        f"Forwarding http://localhost:{local_port} to port {remote_port} in {name}. "
+        "Press Ctrl-C to stop."
+    )
+    sys.stdout.flush()  # exec does not flush Python's buffers
+    os.execvp("ssh", ssh.forward_args(config_file, alias, local_port, remote_port))
+
+
+@sandbox.command()
+@click.argument("name")
 @_target_options
 def suspend(name: str, url: str | None, workspace: str | None) -> None:
     """Suspend sandbox NAME; its next use resumes it."""
@@ -462,6 +511,16 @@ async def _host_key(client: AsyncSandboxClient, name: str) -> str:
             f"{result.stderr.strip()}"
         )
     return result.stdout
+
+
+async def _listens(client: AsyncSandboxClient, name: str, port: int) -> bool:
+    """Whether something listens on port in the sandbox.
+
+    True when the sandbox shows no listening ports at all: then it cannot tell.
+    """
+    result = await client.run(name, "cat /proc/net/tcp /proc/net/tcp6")
+    ports = ssh.listening_ports(result.stdout)
+    return not ports or port in ports
 
 
 async def _stream(

@@ -1,4 +1,5 @@
 import json
+import socket
 import time
 
 import pytest
@@ -90,6 +91,7 @@ class FakeSandboxes:
         self.presets_error: Exception | None = None
         # What pk-sandbox-hostkey prints; None is an older image without it.
         self.host_key: ShellResult | None = None
+        self.proc_net_tcp = ""  # the sandbox's /proc/net/tcp and tcp6
 
     def __call__(self, url: str, workspace: str) -> "FakeSandboxes":
         self.targets.append((url, workspace))
@@ -151,6 +153,8 @@ class FakeSandboxes:
         self.calls.append(("run", name, command))
         if self.env_error:
             raise self.env_error
+        if command == "cat /proc/net/tcp /proc/net/tcp6":
+            return ShellResult(stdout=self.proc_net_tcp, stderr="", exit_code=0)
         if self.host_key is None:
             return ShellResult(stdout="", stderr="sh: not found\n", exit_code=127)
         return self.host_key
@@ -641,3 +645,159 @@ def test_proxy_opens_the_ssh_websocket_with_the_login_token(logged_in, monkeypat
     assert result.exit_code == 0, result.output
     path = "/svc/sandbox/v1alpha/atespaces/team-a/envs/sbx-demo/ports/8022/ssh"
     assert opened == [(f"wss://platform.example.com{path}", logged_in)]
+
+
+# --- Port forwarding -------------------------------------------------------
+
+# Listening on port 80 (the env guest) and 4096 (0x1000), as /proc/net/tcp shows.
+PROC_NET_TCP = (
+    "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when\n"
+    "   0: 00000000:0050 00000000:0000 0A 00000000:00000000 00:00000000\n"
+    "   1: 0100007F:1000 00000000:0000 0A 00000000:00000000 00:00000000\n"
+)
+
+
+@pytest.fixture
+def forwardable(sandboxes, logged_in, monkeypatch):
+    """Sandbox demo with a server on 4096; records ssh instead of running it."""
+    sandboxes.files[("demo", ssh.HOST_KEY_PATH)] = HOST_KEY.encode()
+    sandboxes.files[("demo", ssh.AUTHORIZED_KEYS_PATH)] = b""
+    sandboxes.proc_net_tcp = PROC_NET_TCP
+    execs: list[list[str]] = []
+    monkeypatch.setattr(commands.os, "execvp", lambda file, args: execs.append(args))
+    return execs
+
+
+def free_port() -> int:
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
+
+
+def test_forward_runs_ssh_with_a_localhost_forward(forwardable, identity):
+    local = free_port()
+
+    result = pk(
+        "sandbox",
+        "forward",
+        "demo",
+        "4096",
+        "--local-port",
+        str(local),
+        "-i",
+        str(identity),
+    )
+
+    assert result.exit_code == 0, result.output
+    assert result.output == (
+        f"Forwarding http://localhost:{local} to port 4096 in demo. "
+        "Press Ctrl-C to stop.\n"
+    )
+    config_file = ssh.host_config_file("pk.team-a.demo")
+    assert forwardable == [
+        [
+            "ssh",
+            "-F",
+            str(config_file),
+            "-N",
+            "-o",
+            "ExitOnForwardFailure=yes",
+            "-L",
+            f"localhost:{local}:127.0.0.1:4096",
+            "pk.team-a.demo",
+        ]
+    ]
+    assert ssh.known_hosts_file().read_text() == (
+        "pk.team-a.demo ssh-ed25519 AAAAhostkey\n"
+    )
+
+
+def test_forward_uses_the_remote_port_locally_by_default(
+    forwardable, identity, monkeypatch
+):
+    monkeypatch.setattr(commands.ssh, "port_in_use", lambda port: False)
+
+    result = pk("sandbox", "forward", "demo", "4096", "-i", str(identity))
+
+    assert result.exit_code == 0, result.output
+    assert "localhost:4096:127.0.0.1:4096" in forwardable[0]
+
+
+def test_forward_refuses_a_busy_local_port(forwardable, sandboxes, identity):
+    with socket.socket() as busy:
+        busy.bind(("127.0.0.1", 0))
+        busy.listen()
+        port = busy.getsockname()[1]
+
+        result = pk(
+            "sandbox",
+            "forward",
+            "demo",
+            "4096",
+            "--local-port",
+            str(port),
+            "-i",
+            str(identity),
+        )
+
+    assert result.exit_code == 1
+    assert result.output == (
+        f"Error: Local port {port} is in use. Pass another one with --local-port.\n"
+    )
+    assert sandboxes.calls == [] and forwardable == []
+
+
+def test_forward_says_when_nothing_listens_in_the_sandbox(
+    forwardable, sandboxes, identity
+):
+    result = pk(
+        "sandbox",
+        "forward",
+        "demo",
+        "8080",
+        "--local-port",
+        str(free_port()),
+        "-i",
+        str(identity),
+    )
+
+    assert result.exit_code == 1
+    assert result.output == (
+        "Error: Nothing listens on port 8080 in sandbox demo. Start the server "
+        "there first.\n"
+    )
+    assert forwardable == []
+
+
+def test_forward_without_env_guest_explains_why(forwardable, sandboxes, identity):
+    sandboxes.env_guest = False
+    sandboxes.env_error = RpcError(HTTP2_ERROR)
+
+    result = pk(
+        "sandbox",
+        "forward",
+        "demo",
+        "4096",
+        "--local-port",
+        str(free_port()),
+        "-i",
+        str(identity),
+    )
+
+    assert result.output == NO_ENV_GUEST
+    assert forwardable == []
+
+
+@pytest.mark.parametrize("port", ["0", "65536", "http"])
+def test_forward_needs_a_valid_port(sandboxes, logged_in, port):
+    result = pk("sandbox", "forward", "demo", port)
+
+    assert result.exit_code == 2
+    assert sandboxes.calls == []
+
+
+def test_forward_help_shows_the_opencode_example():
+    help_text = pk("sandbox", "forward", "--help").output
+
+    assert "pk sandbox forward demo 4096\n" in help_text
+    assert "opencode attach http://localhost:4096\n" in help_text
