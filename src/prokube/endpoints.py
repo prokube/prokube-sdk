@@ -28,6 +28,8 @@ SCOPES = "openid profile email offline_access"
 # Atespace holding the approved sandbox templates, viewable by every
 # workspace (prokube/prokube-neo#98).
 TEMPLATE_ATESPACE = "sandbox-templates"
+# Template `pk sandbox create` uses when none is given (prokube/prokube-neo#98).
+DEFAULT_TEMPLATE = "coding-v1"
 
 
 # Port of the runtime image's WebSocket bridge to sshd (websocat on :8022, path

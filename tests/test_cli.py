@@ -255,11 +255,11 @@ def test_create_list_and_lifecycle(sandboxes, logged_in):
     ]
 
 
-def test_create_needs_a_template(sandboxes, logged_in):
+def test_create_defaults_to_the_coding_template(sandboxes, logged_in):
     result = pk("sandbox", "create", "demo")
 
-    assert result.exit_code == 2
-    assert "--template" in result.output
+    assert result.exit_code == 0, result.output
+    assert ("create", "demo", "coding-v1", "sandbox-templates") in sandboxes.calls
 
 
 def test_exec_streams_output_and_exits_with_the_command_code(sandboxes, logged_in):

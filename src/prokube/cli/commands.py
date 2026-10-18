@@ -131,7 +131,13 @@ def sandbox() -> None:
 
 @sandbox.command()
 @click.argument("name")
-@click.option("-t", "--template", required=True, help="ActorTemplate to start from.")
+@click.option(
+    "-t",
+    "--template",
+    default=endpoints.DEFAULT_TEMPLATE,
+    show_default=True,
+    help="ActorTemplate to start from.",
+)
 @click.option(
     "--template-atespace",
     default=endpoints.TEMPLATE_ATESPACE,
