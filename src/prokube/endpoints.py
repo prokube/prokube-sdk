@@ -75,6 +75,15 @@ def _grpc_target(url: str) -> str:
     return f"{parsed.hostname}:{parsed.port or 443}"
 
 
+def sizes_url(url: str | None) -> str:
+    """The platform's sandbox sizes (prokube/prokube-neo#127).
+
+    Without a platform URL, the same route on Agent Gateway's in-cluster Service.
+    """
+    base = normalize_url(url) if url else f"http://{IN_CLUSTER_GATEWAY}"
+    return f"{base}/svc/sandbox/v1alpha/sizes"
+
+
 def ssh_url(url: str, atespace: str, actor: str) -> str:
     """WebSocket URL of an Actor's SSH bridge, used by ``pk sandbox proxy``.
 
