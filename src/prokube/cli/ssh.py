@@ -8,13 +8,18 @@ file API, so the host key it pins is the sandbox's real key, not one learned on
 first use.
 
 The ssh files live under ``<config dir>/ssh/``: one private ``known_hosts`` and
-one config file per sandbox in ``hosts/``.
+one config file per sandbox in ``hosts/``. ``install_include`` puts one
+``Include`` of ``hosts/*.conf`` at the top of ``~/.ssh/config``, so ssh and IDEs
+find every sandbox.
 """
 
 from __future__ import annotations
 
 import os
+import re
 import shlex
+import stat
+import tempfile
 import threading
 from pathlib import Path
 
@@ -27,6 +32,9 @@ SSH_USER = "developer"
 HOST_KEY_PATH = "/workspace/ssh/ssh_host_ed25519_key.pub"
 AUTHORIZED_KEYS_PATH = "/workspace/ssh/authorized_keys"
 DEFAULT_IDENTITIES = ("id_ed25519", "id_ecdsa", "id_rsa")
+INCLUDE_MARKER = "# added by pk"
+# An ssh_config line: keyword, then whitespace or "=", then the arguments.
+_CONFIG_LINE = re.compile(r"\s*(\w+)(?:\s*=\s*|\s+)(.*)")
 
 
 def ssh_dir() -> Path:
@@ -39,6 +47,15 @@ def known_hosts_file() -> Path:
 
 def host_config_file(alias: str) -> Path:
     return ssh_dir() / "hosts" / f"{alias}.conf"
+
+
+def user_config_file() -> Path:
+    return Path.home() / ".ssh" / "config"
+
+
+def include_pattern() -> str:
+    """The glob that matches every host config file."""
+    return str(ssh_dir().absolute() / "hosts" / "*.conf")
 
 
 def host_alias(workspace: str, name: str) -> str:
@@ -98,6 +115,25 @@ def write_host_config(alias: str, proxy_command: list[str], identity: Path) -> P
     return path
 
 
+def install_include() -> tuple[Path, bool]:
+    """Include the host config files from ~/.ssh/config.
+
+    The Include goes at the top: further down, inside a Host or Match block,
+    OpenSSH would only apply it to that block. Returns the path of ~/.ssh/config
+    and whether it changed.
+    """
+    path = user_config_file()
+    text = path.read_text() if path.exists() else ""
+    if _includes(text, include_pattern()):
+        return path, False
+    header = f'{INCLUDE_MARKER}\nInclude "{include_pattern()}"\n'
+    if path.exists():
+        _rewrite(path, header + ("\n" + text if text.strip() else ""))
+    else:
+        _write_private(path, header)  # also creates ~/.ssh with mode 0700
+    return path, True
+
+
 def proxy(url: str, token: str, stdin: int = 0, stdout: int = 1) -> None:
     """Pump bytes between the file descriptors and the WebSocket at url.
 
@@ -132,6 +168,25 @@ def _other_hosts(alias: str) -> list[str]:
     return [line for line in lines if line.split(" ", 1)[0] != alias]
 
 
+def _includes(text: str, pattern: str) -> bool:
+    """Whether the ssh config text includes pattern before its first block."""
+    for line in text.splitlines():
+        match = _CONFIG_LINE.match(line)  # comments and blank lines do not match
+        if not match:
+            continue
+        keyword = match[1].lower()
+        if keyword in ("host", "match"):
+            return False
+        if keyword == "include":
+            try:
+                paths = shlex.split(match[2], comments=True)
+            except ValueError:
+                continue
+            if pattern in (os.path.expanduser(path) for path in paths):
+                return True
+    return False
+
+
 def _escape(value: str) -> str:
     # ssh expands %-tokens in these options.
     return value.replace("%", "%%")
@@ -141,6 +196,21 @@ def _write_all(fd: int, data: bytes) -> None:
     view = memoryview(data)
     while view:
         view = view[os.write(fd, view) :]
+
+
+def _rewrite(path: Path, text: str) -> None:
+    """Replace the content of path atomically, keeping its mode and symlinks."""
+    target = path.resolve()
+    mode = stat.S_IMODE(target.stat().st_mode)
+    fd, temporary = tempfile.mkstemp(dir=target.parent, prefix=f".{target.name}.")
+    try:
+        with os.fdopen(fd, "w") as file:
+            file.write(text)
+        os.chmod(temporary, mode)
+        os.replace(temporary, target)
+    except OSError:
+        os.unlink(temporary)
+        raise
 
 
 def _write_private(path: Path, text: str) -> None:

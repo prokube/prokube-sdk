@@ -255,11 +255,11 @@ def test_create_list_and_lifecycle(sandboxes, logged_in):
     ]
 
 
-def test_create_needs_a_template(sandboxes, logged_in):
+def test_create_defaults_to_the_coding_template(sandboxes, logged_in):
     result = pk("sandbox", "create", "demo")
 
-    assert result.exit_code == 2
-    assert "--template" in result.output
+    assert result.exit_code == 0, result.output
+    assert ("create", "demo", "coding-v1", "sandbox-templates") in sandboxes.calls
 
 
 def test_exec_streams_output_and_exits_with_the_command_code(sandboxes, logged_in):
@@ -337,6 +337,81 @@ def test_ssh_config_prints_the_entry(sandboxes, logged_in, identity):
 
     assert result.exit_code == 0, result.output
     assert result.output == ssh.host_config_file("pk.team-a.demo").read_text()
+    assert not ssh.user_config_file().exists()
+
+
+def test_ssh_config_install_without_a_sandbox_only_adds_the_include(sandboxes):
+    result = pk("sandbox", "ssh-config", "--install")
+
+    assert result.exit_code == 0, result.output
+    path = ssh.user_config_file()
+    assert result.output == f'Added Include "{ssh.include_pattern()}" to {path}\n'
+    assert path.read_text().startswith("# added by pk\n")
+    assert sandboxes.targets == []  # needs no login
+
+    result = pk("sandbox", "ssh-config", "--install")
+    assert result.output == f"{path} already includes the pk ssh hosts\n"
+
+
+def test_ssh_config_needs_a_sandbox_or_install():
+    result = pk("sandbox", "ssh-config")
+
+    assert result.exit_code == 2
+    assert "Pass NAME, or --install." in result.output
+
+
+def test_ssh_config_install_writes_the_entry_and_names_the_host(
+    sandboxes, logged_in, identity
+):
+    sandboxes.files[("demo", ssh.HOST_KEY_PATH)] = HOST_KEY.encode()
+    sandboxes.files[("demo", ssh.AUTHORIZED_KEYS_PATH)] = b""
+
+    result = pk("sandbox", "ssh-config", "demo", "--install", "-i", str(identity))
+
+    assert result.exit_code == 0, result.output
+    assert ssh.host_config_file("pk.team-a.demo").exists()
+    assert ssh.include_pattern() in ssh.user_config_file().read_text()
+    assert "SSH host: pk.team-a.demo (ssh pk.team-a.demo," in result.output
+
+
+def test_create_install_ssh_writes_the_entry_and_the_include(
+    sandboxes, logged_in, identity
+):
+    sandboxes.files[("demo", ssh.HOST_KEY_PATH)] = HOST_KEY.encode()
+    sandboxes.files[("demo", ssh.AUTHORIZED_KEYS_PATH)] = b""
+
+    result = pk("sandbox", "create", "demo", "--install-ssh", "-i", str(identity))
+
+    assert result.exit_code == 0, result.output
+    assert "Host pk.team-a.demo\n" in ssh.host_config_file("pk.team-a.demo").read_text()
+    assert ssh.include_pattern() in ssh.user_config_file().read_text()
+    assert result.output.splitlines()[0] == "Created demo (SUSPENDED)"
+    assert "SSH host: pk.team-a.demo" in result.output
+
+
+def test_create_without_install_ssh_leaves_ssh_alone(sandboxes, logged_in):
+    assert pk("sandbox", "create", "demo").exit_code == 0
+
+    assert not ssh.host_config_file("pk.team-a.demo").exists()
+    assert not ssh.user_config_file().exists()
+
+
+def test_connect_install_ssh_adds_the_include_before_running_ssh(
+    sandboxes, logged_in, identity, monkeypatch
+):
+    sandboxes.files[("demo", ssh.HOST_KEY_PATH)] = HOST_KEY.encode()
+    sandboxes.files[("demo", ssh.AUTHORIZED_KEYS_PATH)] = b""
+    execs = []
+    monkeypatch.setattr(commands.os, "execvp", lambda file, args: execs.append(args))
+
+    result = pk("sandbox", "connect", "demo", "--install-ssh", "-i", str(identity))
+
+    assert result.exit_code == 0, result.output
+    config_file = ssh.host_config_file("pk.team-a.demo")
+    assert config_file.exists()
+    assert ssh.include_pattern() in ssh.user_config_file().read_text()
+    assert "SSH host: pk.team-a.demo" in result.output
+    assert execs == [["ssh", "-F", str(config_file), "pk.team-a.demo"]]
 
 
 def test_connect_needs_an_ssh_key(sandboxes, logged_in, tmp_path, monkeypatch):
