@@ -1,9 +1,11 @@
 import time
+from typing import Any
 
 import grpc
 import grpc.aio
 import pytest
 from ate_env import NotFoundError, ShellResult
+from ate_env._gen.ateenv.v1alpha import guest_pb2
 
 from prokube import auth, endpoints
 from prokube.sandbox import AsyncSandboxClient, SandboxClient, actor_name
@@ -220,12 +222,27 @@ def workload_token(tmp_path, monkeypatch) -> str:
 
 @pytest.fixture
 async def gateway(monkeypatch):
-    """A plaintext gRPC server standing in for the in-cluster Agent Gateway."""
-    calls: list[tuple[ateapi.GetActorRequest, dict[str, str]]] = []
+    """A plaintext gRPC server standing in for the in-cluster Agent Gateway.
+
+    Records the request and metadata of each call; streaming calls record
+    their first request.
+    """
+    calls: list[tuple[Any, dict[str, str]]] = []
 
     async def get_actor(request, context):
         calls.append((request, dict(context.invocation_metadata())))
         return actor(request.actor.name, request.actor.atespace)
+
+    async def read_file(request, context):  # unary-stream
+        calls.append((request, dict(context.invocation_metadata())))
+        yield guest_pb2.ReadFileResponse(chunk=b"hi")
+
+    async def write_file(request_iterator, context):  # stream-unary
+        requests = [request async for request in request_iterator]
+        calls.append((requests[0], dict(context.invocation_metadata())))
+        return guest_pb2.WriteFileResponse(
+            bytes_written=sum(len(request.chunk) for request in requests)
+        )
 
     server = grpc.aio.server()
     server.add_generic_rpc_handlers(
@@ -239,7 +256,22 @@ async def gateway(monkeypatch):
                         response_serializer=ateapi.Actor.SerializeToString,
                     )
                 },
-            )
+            ),
+            grpc.method_handlers_generic_handler(
+                "ateenv.v1alpha.FileSystemService",
+                {
+                    "ReadFile": grpc.unary_stream_rpc_method_handler(
+                        read_file,
+                        request_deserializer=guest_pb2.ReadFileRequest.FromString,
+                        response_serializer=guest_pb2.ReadFileResponse.SerializeToString,
+                    ),
+                    "WriteFile": grpc.stream_unary_rpc_method_handler(
+                        write_file,
+                        request_deserializer=guest_pb2.WriteFileRequest.FromString,
+                        response_serializer=guest_pb2.WriteFileResponse.SerializeToString,
+                    ),
+                },
+            ),
         ]
     )
     port = server.add_insecure_port("127.0.0.1:0")
@@ -258,6 +290,20 @@ async def test_workspace_pod_needs_no_configuration(workload_token, gateway):
     [(request, metadata)] = gateway
     assert request.actor == ateapi.ObjectRef(atespace="team-pod", name="sbx-demo")
     assert metadata["authorization"] == f"Bearer {workload_token}"
+
+
+async def test_workspace_pod_sends_the_token_on_streaming_calls(
+    workload_token, gateway
+):
+    async with AsyncSandboxClient() as client:
+        assert await client.write_file("demo", "/workspace/a.txt", b"hi") == 2
+        assert await client.read_file("demo", "/workspace/a.txt") == b"hi"
+
+    [(write, write_metadata), (read, read_metadata)] = gateway
+    assert (write.path, read.path) == ("/workspace/a.txt", "/workspace/a.txt")
+    for metadata in (write_metadata, read_metadata):
+        assert metadata["authorization"] == f"Bearer {workload_token}"
+        assert metadata["x-env-id"] == "sbx-demo"
 
 
 async def test_workspace_pod_can_name_another_workspace(workload_token, gateway):

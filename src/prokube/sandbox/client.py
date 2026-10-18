@@ -93,8 +93,14 @@ class AsyncSandboxClient:
             )
         else:
             # gRPC sends call credentials only over TLS, so the token goes in
-            # by interceptor.
-            interceptors = [_BearerTokenInterceptor(token_provider)]
+            # by interceptor, one per call type: grpc.aio registers an
+            # interceptor for only the first type it implements.
+            interceptors: list[grpc.aio.ClientInterceptor] = [
+                _UnaryUnaryBearerToken(token_provider),
+                _UnaryStreamBearerToken(token_provider),
+                _StreamUnaryBearerToken(token_provider),
+                _StreamStreamBearerToken(token_provider),
+            ]
             self._ate_channel = grpc.aio.insecure_channel(
                 endpoints.IN_CLUSTER_GATEWAY, interceptors=interceptors
             )
@@ -185,12 +191,16 @@ class AsyncSandboxClient:
         )
 
     async def read_file(self, name: str, path: str) -> bytes:
+        """Read a file; the env file API only allows paths under /workspace."""
         return await self.env(name).read_file_bytes(path)
 
     async def write_file(
         self, name: str, path: str, data: bytes | str, *, mode: int = 0o644
     ) -> int:
-        """Write a file, replacing it; returns the number of bytes written."""
+        """Write a file, replacing it; returns the number of bytes written.
+
+        The env file API only allows paths under /workspace.
+        """
         if isinstance(data, str):
             data = data.encode()
         return await self.env(name).write_file(path, data, mode=mode)
@@ -336,12 +346,7 @@ class _CallDetails(
     pass
 
 
-class _BearerTokenInterceptor(
-    grpc.aio.UnaryUnaryClientInterceptor,
-    grpc.aio.UnaryStreamClientInterceptor,
-    grpc.aio.StreamUnaryClientInterceptor,
-    grpc.aio.StreamStreamClientInterceptor,
-):
+class _BearerTokenInterceptor:
     """Adds ``authorization: Bearer <token>`` on plaintext channels.
 
     Like the upstream ``ate_env`` client's, but asks the provider on every call.
@@ -361,12 +366,24 @@ class _BearerTokenInterceptor(
             details.wait_for_ready,
         )
 
+
+class _UnaryUnaryBearerToken(
+    _BearerTokenInterceptor, grpc.aio.UnaryUnaryClientInterceptor
+):
     async def intercept_unary_unary(self, continuation, client_call_details, request):
         return await continuation(self._with_token(client_call_details), request)
 
+
+class _UnaryStreamBearerToken(
+    _BearerTokenInterceptor, grpc.aio.UnaryStreamClientInterceptor
+):
     async def intercept_unary_stream(self, continuation, client_call_details, request):
         return await continuation(self._with_token(client_call_details), request)
 
+
+class _StreamUnaryBearerToken(
+    _BearerTokenInterceptor, grpc.aio.StreamUnaryClientInterceptor
+):
     async def intercept_stream_unary(
         self, continuation, client_call_details, request_iterator
     ):
@@ -374,6 +391,10 @@ class _BearerTokenInterceptor(
             self._with_token(client_call_details), request_iterator
         )
 
+
+class _StreamStreamBearerToken(
+    _BearerTokenInterceptor, grpc.aio.StreamStreamClientInterceptor
+):
     async def intercept_stream_stream(
         self, continuation, client_call_details, request_iterator
     ):

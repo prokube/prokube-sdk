@@ -60,7 +60,8 @@ with SandboxClient("https://my-platform.example.com", "my-workspace") as client:
 ```
 
 `url` and `workspace` default to `PROKUBE_URL` and `PROKUBE_WORKSPACE`.
-`SandboxClient` works in scripts and in notebooks.
+`SandboxClient` works in scripts and in notebooks. `read_file` and `write_file`
+only accept paths under `/workspace`; use `run` for files elsewhere.
 
 ### Async
 
