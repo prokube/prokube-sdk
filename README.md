@@ -63,7 +63,8 @@ with SandboxClient("https://my-platform.example.com", "my-workspace") as client:
     client.resize("big", preset="pk-default-small")
 ```
 
-`url` and `workspace` default to `PROKUBE_URL` and `PROKUBE_WORKSPACE`.
+`url` and `workspace` default to `PROKUBE_URL` and `PROKUBE_WORKSPACE`, then
+to what `pk login` saved (see [Command line](#command-line)).
 `SandboxClient` works in scripts and in notebooks. `read_file` and `write_file`
 only accept paths under `/workspace`; use `run` for files elsewhere.
 
