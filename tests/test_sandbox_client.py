@@ -8,30 +8,18 @@ from ate_env import NotFoundError, ShellResult
 from ate_env._gen.ateenv.v1alpha import guest_pb2
 
 from prokube import auth, endpoints
-from prokube.sandbox import (
-    AsyncSandboxClient,
-    SandboxClient,
-    TemplateError,
-    actor_name,
-    templates,
-)
+from prokube.sandbox import AsyncSandboxClient, PresetError, SandboxClient, actor_name
 from prokube.sandbox import client as client_module
 from prokube.sandbox._ateapi import ateapi_pb2 as ateapi
 from prokube.sandbox.client import _BearerToken
 from tests.conftest import make_jwt
-from tests.test_templates import (
-    IMAGE,
-    OPENCODE_POLICY,
-    PRESETS,
-    PRESETS_JSON,
-    SIZES,
-    SIZES_JSON,
-)
+from tests.test_presets import OPENCODE_POLICY, PRESETS, PRESETS_JSON
 
 URL = "https://platform.example.com"
-SIZES_URL = f"{URL}/svc/sandbox/v1alpha/sizes"
 PRESETS_URL = f"{URL}/svc/sandbox/v1alpha/presets"
-SHARED = endpoints.TEMPLATE_ATESPACE
+SHARED = "sandbox-templates"
+CODING = "registry.example.com/pk-sandbox-coding@sha256:" + "a" * 64
+PYTHON = "registry.example.com/pk-sandbox-python@sha256:" + "b" * 64
 SUSPENDED = ateapi.ACTOR_STATE_SUSPENDED
 RUNNING = ateapi.ACTOR_STATE_RUNNING
 
@@ -40,37 +28,57 @@ def actor(name: str, atespace: str = "team-a") -> ateapi.Actor:
     return ateapi.Actor(metadata=ateapi.ResourceMetadata(atespace=atespace, name=name))
 
 
-def rpc_error(code: grpc.StatusCode, details: str) -> grpc.aio.AioRpcError:
-    return grpc.aio.AioRpcError(
-        code, grpc.aio.Metadata(), grpc.aio.Metadata(), details=details
+def template(
+    name: str,
+    image: str = CODING,
+    fidelity: ateapi.SnapshotFidelity = ateapi.SNAPSHOT_FIDELITY_VOLUMES,
+    env_guest: bool = True,
+) -> ateapi.ActorTemplate:
+    """A shared template with what resize and the env guest check read."""
+    guest = ateapi.Container(name="guest", image=image)
+    if env_guest:
+        guest.wakeup_probe.http_get.CopyFrom(
+            ateapi.HttpGetAction(path="/readyz", port=80)
+        )
+    return ateapi.ActorTemplate(
+        metadata=ateapi.ResourceMetadata(atespace=SHARED, name=name),
+        containers=[guest],
+        snapshot_config=ateapi.SnapshotConfig(preferred_fidelity=fidelity),
     )
-
-
-def not_found(what: str) -> grpc.aio.AioRpcError:
-    return rpc_error(grpc.StatusCode.NOT_FOUND, f"{what} not found")
 
 
 class FakeControl:
     """Stands in for ateapi.Control; records every request.
 
-    Actors and templates put in ``actors`` and ``templates`` behave like
-    stored ones: suspend, resume and update change them.
+    Actors in ``actors`` behave like stored ones: create adds them, suspend,
+    resume and update change them. ``templates`` are the presets' templates.
     """
 
     def __init__(self) -> None:
         self.requests: list[tuple[str, object]] = []
         self.pages = [ateapi.ListActorsResponse()]
         self.actors: dict[str, ateapi.Actor] = {}
-        self.templates: dict[tuple[str, str], ateapi.ActorTemplate] = {}
+        self.templates = {
+            "coding-small-v1": template("coding-small-v1"),
+            "coding-large-v1": template("coding-large-v1"),
+            "python-small-v1": template("python-small-v1", PYTHON),
+            "sdk-small-v1": template(
+                "sdk-small-v1", fidelity=ateapi.SNAPSHOT_FIDELITY_MEMORY
+            ),
+        }
 
     def methods(self) -> list[str]:
         return [method for method, _ in self.requests]
 
     async def CreateActor(self, request):
         self.requests.append(("CreateActor", request))
-        self.actors[request.actor.metadata.name] = ateapi.Actor()
-        self.actors[request.actor.metadata.name].CopyFrom(request.actor)
+        stored = self.actors[request.actor.metadata.name] = ateapi.Actor()
+        stored.CopyFrom(request.actor)
         return request.actor
+
+    async def CreateActorEgressPolicy(self, request):
+        self.requests.append(("CreateActorEgressPolicy", request))
+        return request.egress_policy
 
     async def ListActors(self, request):
         self.requests.append(("ListActors", request))
@@ -78,9 +86,11 @@ class FakeControl:
 
     async def GetActor(self, request):
         self.requests.append(("GetActor", request))
-        if request.actor.name in self.actors:
-            return self.actors[request.actor.name]
-        return actor(request.actor.name)
+        return self.actors.get(request.actor.name) or actor(request.actor.name)
+
+    async def GetActorTemplate(self, request):
+        self.requests.append(("GetActorTemplate", request))
+        return self.templates[request.actor_template.name]
 
     async def DeleteActor(self, request):
         self.requests.append(("DeleteActor", request))
@@ -103,34 +113,6 @@ class FakeControl:
         stored.actor_template.CopyFrom(request.actor.actor_template)
         stored.metadata.version += 1
         return stored
-
-    async def CreateActorTemplate(self, request):
-        self.requests.append(("CreateActorTemplate", request))
-        metadata = request.actor_template.metadata
-        self.templates[(metadata.atespace, metadata.name)] = request.actor_template
-        return request.actor_template
-
-    async def GetActorTemplate(self, request):
-        self.requests.append(("GetActorTemplate", request))
-        key = (request.actor_template.atespace, request.actor_template.name)
-        if key not in self.templates:
-            raise not_found("actor template")
-        return self.templates[key]
-
-    async def CreateActorEgressPolicy(self, request):
-        self.requests.append(("CreateActorEgressPolicy", request))
-        return request.egress_policy
-
-    async def ListActorTemplates(self, request):
-        """Pages of two templates; the page token is the offset."""
-        self.requests.append(("ListActorTemplates", request))
-        found = [t for (a, _), t in self.templates.items() if a == request.atespace]
-        start = int(request.options.page_token or 0)
-        more = start + 2 < len(found)
-        return ateapi.ListActorTemplatesResponse(
-            actor_templates=found[start : start + 2],
-            next_page_token=str(start + 2) if more else "",
-        )
 
     def _set_state(self, request, state) -> ateapi.Actor:
         if request.actor.name not in self.actors:
@@ -224,7 +206,12 @@ async def test_lifecycle_calls_address_the_sandbox_actor(client):
 
 async def test_ate_api_errors_become_env_client_errors(client):
     async def missing(request):
-        raise not_found("actor")
+        raise grpc.aio.AioRpcError(
+            grpc.StatusCode.NOT_FOUND,
+            grpc.aio.Metadata(),
+            grpc.aio.Metadata(),
+            details="actor not found",
+        )
 
     client._control.GetActor = missing
 
@@ -447,18 +434,7 @@ def test_sync_client_reports_construction_errors():
         SandboxClient(URL, "team-a")
 
 
-# --- Presets, custom images, sizes and resize ------------------------------
-
-OTHER_IMAGE = IMAGE.replace("a" * 64, "b" * 64)
-
-
-def shared_template(name: str, image: str = IMAGE, size: str = "small"):
-    """A preset's template in sandbox-templates, with a golden snapshot."""
-    template = templates.build_template(SHARED, name, image=image, size=SIZES.get(size))
-    template.snapshot_config.golden_snapshot_config.mode = (
-        ateapi.GOLDEN_SNAPSHOT_MODE_ENABLED
-    )
-    return template
+# --- Presets: create and resize ---------------------------------------------
 
 
 def ref(atespace: str, name: str) -> ateapi.ObjectRef:
@@ -466,23 +442,15 @@ def ref(atespace: str, name: str) -> ateapi.ObjectRef:
 
 
 @pytest.fixture
-def platform(client, httpx_mock):
-    """The platform's sizes and presets, and the presets' templates."""
-    for url, body in ((SIZES_URL, SIZES_JSON), (PRESETS_URL, PRESETS_JSON)):
-        httpx_mock.add_response(url=url, json=body, is_reusable=True, is_optional=True)
-    stored = client._control.templates
-    stored[(SHARED, "coding-small-v1")] = shared_template("coding-small-v1")
-    stored[(SHARED, "coding-medium-v1")] = shared_template(
-        "coding-medium-v1", size="medium"
-    )
-    stored[(SHARED, "python-small-v1")] = shared_template(
-        "python-small-v1", image=OTHER_IMAGE
+def presets_api(httpx_mock):
+    httpx_mock.add_response(
+        url=PRESETS_URL, json=PRESETS_JSON, is_reusable=True, is_optional=True
     )
     return httpx_mock
 
 
 @pytest.fixture
-def sandbox(client, platform):
+def sandbox(client, presets_api):
     """The client with a running sandbox demo from the coding preset."""
     client._control.actors["sbx-demo"] = ateapi.Actor(
         metadata=ateapi.ResourceMetadata(
@@ -494,7 +462,7 @@ def sandbox(client, platform):
     return client
 
 
-async def test_create_from_the_default_preset_sets_its_network(client, platform):
+async def test_create_from_the_default_preset_sets_its_network(client, presets_api):
     created = await client.create("demo")
 
     assert client._control.methods() == ["CreateActor", "CreateActorEgressPolicy"]
@@ -510,16 +478,23 @@ async def test_create_from_the_default_preset_sets_its_network(client, platform)
     )
 
 
-async def test_create_from_a_named_preset(client, platform):
+async def test_create_from_a_named_preset(client, presets_api):
     created = await client.create("demo", preset="python")
 
     assert created.actor_template == ref(SHARED, "python-small-v1")
     assert not client._control.requests[-1][1].egress_policy.rules
 
 
-async def test_create_accepts_network_rules_the_policy_sync_set_first(client, platform):
+async def test_create_accepts_network_rules_the_policy_sync_set_first(
+    client, presets_api
+):
     async def already_exists(request):
-        raise rpc_error(grpc.StatusCode.ALREADY_EXISTS, "egress policy exists")
+        raise grpc.aio.AioRpcError(
+            grpc.StatusCode.ALREADY_EXISTS,
+            grpc.aio.Metadata(),
+            grpc.aio.Metadata(),
+            details="egress policy exists",
+        )
 
     client._control.CreateActorEgressPolicy = already_exists
 
@@ -528,212 +503,89 @@ async def test_create_accepts_network_rules_the_policy_sync_set_first(client, pl
     assert created.actor_template == ref(SHARED, "coding-small-v1")
 
 
-async def test_create_with_a_custom_image_makes_the_next_template_version(
-    client, platform
-):
-    client._control.templates[("team-a", "web-v1")] = shared_template("web-v1")
-
-    created = await client.create(
-        "web", image=IMAGE, size="medium", env={"MODE": "dev"}
-    )
-
-    assert created.actor_template == ref("team-a", "web-v2")
-    assert client._control.templates[("team-a", "web-v2")] == (
-        templates.build_template(
-            "team-a",
-            "web-v2",
-            image=IMAGE,
-            size=SIZES.get("medium"),
-            env={"MODE": "dev"},
-        )
-    )
-    assert client._control.methods()[-2:] == ["CreateActorTemplate", "CreateActor"]
-
-
-async def test_create_with_a_custom_image_resolves_it_and_uses_the_default_size(
-    client, platform, monkeypatch
-):
-    async def resolve(image):
-        return f"{image}@sha256:{'d' * 64}"
-
-    monkeypatch.setattr(client_module, "resolve_image", resolve)
-
-    await client.create("web", image="nginx:1", env_guest=False)
-
-    created = client._control.templates[("team-a", "web-v1")]
-    assert created.containers[0].image == f"nginx:1@sha256:{'d' * 64}"
-    assert SIZES.of(created) == SIZES.get("small")
-    assert not templates.has_env_guest(created)
-
-
-@pytest.mark.parametrize("name", ["coding", "coding-small"])
-async def test_create_refuses_a_preset_name_for_a_custom_image(client, platform, name):
-    with pytest.raises(TemplateError, match="is taken by a preset"):
-        await client.create(name, image=IMAGE)
-
-    assert {"CreateActorTemplate", "CreateActor"}.isdisjoint(client._control.methods())
-
-
-async def test_create_refuses_a_custom_name_without_room_for_variants(client, platform):
-    with pytest.raises(TemplateError, match="must have at most 63 characters"):
-        await client.create("a" * 59, image=IMAGE)
-
-
-@pytest.mark.parametrize(
-    ("options", "message"),
-    [
-        ({"size": "medium"}, "need a custom image"),
-        ({"env": {"A": "1"}}, "need a custom image"),
-        ({"env_guest": False}, "need a custom image"),
-        ({"preset": "coding", "image": IMAGE}, "not both"),
-    ],
-)
-async def test_create_refuses_options_that_do_not_fit(client, options, message):
-    with pytest.raises(TemplateError, match=message):
-        await client.create("demo", **options)
+async def test_create_from_an_unknown_preset_creates_nothing(client, presets_api):
+    with pytest.raises(PresetError, match="Unknown preset 'rust'"):
+        await client.create("demo", preset="rust")
 
     assert client._control.requests == []
 
 
-async def test_resize_to_a_size_suspends_switches_and_resumes(sandbox):
+async def test_resize_suspends_switches_the_preset_and_resumes(sandbox):
     control = sandbox._control
 
-    resized = await sandbox.resize("demo", size="medium")
+    resized = await sandbox.resize("demo", preset="coding-large")
 
     assert control.methods() == [
         "GetActor",
-        "GetActorTemplate",  # the sandbox's template
-        "GetActorTemplate",  # its medium variant: missing
-        "CreateActorTemplate",
+        "GetActorTemplate",
+        "GetActorTemplate",
         "SuspendActor",
         "UpdateActor",
         "ResumeActor",
     ]
-    update = control.requests[5][1]
+    update = control.requests[4][1]
     assert update.actor.metadata.uid == "u-1"
     assert update.actor.metadata.version == 4  # after the suspend
-    assert update.actor.actor_template == ref("team-a", "coding-small-v1-medium")
+    assert update.actor.actor_template == ref(SHARED, "coding-large-v1")
     assert resized.status.state == RUNNING
-    variant = control.templates[("team-a", "coding-small-v1-medium")]
-    assert SIZES.of(variant) == SIZES.get("medium")
-    assert variant.snapshot_config.golden_snapshot_config.mode == (
-        ateapi.GOLDEN_SNAPSHOT_MODE_DISABLED
-    )
+    assert resized.actor_template == ref(SHARED, "coding-large-v1")
 
 
 async def test_resize_keeps_a_suspended_sandbox_suspended(sandbox):
     control = sandbox._control
     control.actors["sbx-demo"].status.state = SUSPENDED
 
-    resized = await sandbox.resize("demo", size="medium")
+    resized = await sandbox.resize("demo", preset="coding-large")
 
     assert resized.status.state == SUSPENDED
     assert control.methods()[-2:] == ["SuspendActor", "UpdateActor"]
 
 
-async def test_resize_back_to_the_templates_own_size_uses_the_original(sandbox):
-    control = sandbox._control
-    await sandbox.resize("demo", size="medium")
-    # A custom template with the same name must not be mistaken for the original.
-    control.templates[("team-a", "coding-small-v1")] = shared_template(
-        "coding-small-v1", image=OTHER_IMAGE
-    )
+async def test_resize_to_the_current_preset_changes_nothing(sandbox):
+    resized = await sandbox.resize("demo", preset="coding")
 
-    resized = await sandbox.resize("demo", size="small")
-
-    assert resized.actor_template == ref(SHARED, "coding-small-v1")
-    assert control.methods().count("CreateActorTemplate") == 1
+    assert resized.status.state == RUNNING
+    assert sandbox._control.methods() == ["GetActor"]
 
 
-async def test_resize_to_another_variant_starts_from_the_original(sandbox):
-    await sandbox.resize("demo", size="medium")
-
-    resized = await sandbox.resize("demo", size="gpu")
-
-    assert resized.actor_template == ref("team-a", "coding-small-v1-gpu")
-    variant = sandbox._control.templates[("team-a", "coding-small-v1-gpu")]
-    assert dict(variant.worker_selector.match_labels) == {
-        "prokube.ai/sandbox-pool": "gpu"
-    }
-
-
-async def test_resize_refuses_a_variant_name_taken_by_another_template(sandbox):
-    other = templates.with_size(
-        shared_template("x", image=OTHER_IMAGE), SIZES.get("medium")
-    )
-    sandbox._control.templates[("team-a", "coding-small-v1-medium")] = other
-
-    with pytest.raises(TemplateError) as error:
-        await sandbox.resize("demo", size="medium")
+@pytest.mark.parametrize(
+    ("preset", "what"),
+    [("python", "image"), ("sdk", "snapshot fidelity")],
+)
+async def test_resize_refuses_another_image_or_snapshot_fidelity(sandbox, preset, what):
+    with pytest.raises(PresetError) as error:
+        await sandbox.resize("demo", preset=preset)
 
     assert str(error.value) == (
-        "team-a/coding-small-v1-medium exists but is not "
-        "sandbox-templates/coding-small-v1 at size medium."
+        f"Preset {preset!r} has another {what} than sandbox 'demo'. "
+        "Create a new sandbox from it instead."
     )
-
-
-async def test_resize_to_the_current_size_changes_nothing(sandbox):
-    resized = await sandbox.resize("demo", size="small")
-
-    assert resized.status.state == RUNNING
-    assert sandbox._control.methods() == ["GetActor", "GetActorTemplate"]
-
-
-async def test_resize_to_an_unknown_size_touches_nothing(sandbox):
-    with pytest.raises(TemplateError, match="Unknown size 'huge'"):
-        await sandbox.resize("demo", size="huge")
-
     assert "SuspendActor" not in sandbox._control.methods()
-
-
-async def test_resize_to_a_preset_with_the_same_image(sandbox):
-    control = sandbox._control
-
-    resized = await sandbox.resize("demo", preset="coding-large")
-
-    assert resized.actor_template == ref(SHARED, "coding-medium-v1")
-    assert resized.status.state == RUNNING
-    assert {"CreateActorTemplate", "CreateActorEgressPolicy"}.isdisjoint(
-        control.methods()
-    )
-
-
-async def test_resize_refuses_a_preset_with_another_image(sandbox):
-    with pytest.raises(TemplateError, match="'python' has another image"):
-        await sandbox.resize("demo", preset="python")
-
-    assert "SuspendActor" not in sandbox._control.methods()
-
-
-async def test_resize_needs_a_preset_or_a_size(sandbox):
-    for options in ({}, {"preset": "coding", "size": "small"}):
-        with pytest.raises(TemplateError, match="either a preset or a size"):
-            await sandbox.resize("demo", **options)
 
 
 async def test_has_env_guest_reads_the_sandboxs_template(sandbox):
     assert await sandbox.has_env_guest("demo")
 
-    plain = templates.build_template(
-        "team-a", "web-v1", image=IMAGE, size=SIZES.get(), env_guest=False
+    sandbox._control.templates["coding-small-v1"] = template(
+        "coding-small-v1", env_guest=False
     )
-    sandbox._control.templates[("team-a", "web-v1")] = plain
-    sandbox._control.actors["sbx-demo"].actor_template.CopyFrom(ref("team-a", "web-v1"))
     assert not await sandbox.has_env_guest("demo")
 
 
-async def test_sizes_are_read_with_the_callers_token(client, httpx_mock):
+async def test_presets_are_read_with_the_callers_token(client, httpx_mock):
     httpx_mock.add_response(
-        url=SIZES_URL, match_headers={"authorization": "Bearer token"}, json=SIZES_JSON
+        url=PRESETS_URL,
+        match_headers={"authorization": "Bearer token"},
+        json=PRESETS_JSON,
     )
 
-    assert await client.sizes() == SIZES
+    assert await client.presets() == PRESETS
 
 
 async def test_unreadable_presets_are_a_clear_error(client, httpx_mock):
     httpx_mock.add_response(url=PRESETS_URL, status_code=404, text="route not found")
 
-    with pytest.raises(TemplateError) as error:
+    with pytest.raises(PresetError) as error:
         await client.presets()
 
     assert str(error.value) == (
@@ -741,30 +593,19 @@ async def test_unreadable_presets_are_a_clear_error(client, httpx_mock):
     )
 
 
-def test_platform_config_in_a_workspace_pod_is_the_in_cluster_gateway():
-    assert endpoints.sandbox_config_url(None, "presets") == (
+def test_presets_url_in_a_workspace_pod_is_the_in_cluster_gateway():
+    assert endpoints.presets_url(None) == (
         "http://agentgateway-proxy.agentgateway-system.svc.cluster.local:80"
         "/svc/sandbox/v1alpha/presets"
     )
 
 
-def test_sync_client_wraps_the_preset_and_resize_calls(httpx_mock):
-    for url, body in ((SIZES_URL, SIZES_JSON), (PRESETS_URL, PRESETS_JSON)):
-        httpx_mock.add_response(url=url, json=body, is_reusable=True)
+def test_sync_client_wraps_the_preset_calls(presets_api):
     with sync_client() as client:
-        control = client._client._control
-        assert isinstance(control, FakeControl)
-        for name, size in (
-            ("coding-small-v1", "small"),
-            ("coding-medium-v1", "medium"),
-        ):
-            control.templates[(SHARED, name)] = shared_template(name, size=size)
-
         created = client.create("demo")
         resized = client.resize("demo", preset="coding-large")
 
         assert client.presets() == PRESETS
-        assert client.sizes() == SIZES
         assert created.actor_template == ref(SHARED, "coding-small-v1")
-        assert resized.actor_template == ref(SHARED, "coding-medium-v1")
-        assert client.template("demo").metadata.name == "coding-medium-v1"
+        assert resized.actor_template == ref(SHARED, "coding-large-v1")
+        assert client.has_env_guest("demo")

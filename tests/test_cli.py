@@ -7,10 +7,10 @@ from click.testing import CliRunner
 
 from prokube import auth
 from prokube.cli import commands, ssh
-from prokube.sandbox import TemplateError, templates
+from prokube.sandbox import PresetError
 from prokube.sandbox._ateapi import ateapi_pb2 as ateapi
 from tests.conftest import make_jwt
-from tests.test_templates import IMAGE, PRESETS, SIZES
+from tests.test_presets import PRESETS
 
 URL = "https://platform.example.com"
 HTTP2_ERROR = (
@@ -80,7 +80,6 @@ class FakeSandboxes:
         self.files: dict[tuple[str, str], bytes] = {}
         self.env_guest = True
         self.env_error: Exception | None = None
-        self.resized: dict[str, str] = {}
         self.presets_error: Exception | None = None
 
     def __call__(self, url: str, workspace: str) -> "FakeSandboxes":
@@ -93,47 +92,36 @@ class FakeSandboxes:
     async def __aexit__(self, *exc_info: object) -> None:
         pass
 
-    async def create(self, name, *, preset, image, size, env, env_guest):
-        self.calls.append(("create", name, preset, image, size, env, env_guest))
-        if image:
-            return actor("sbx-" + name, template=("team-a", f"{name}-v1"))
-        return actor("sbx-" + name)
+    async def create(self, name, *, preset):
+        self.calls.append(("create", name, preset))
+        return actor("sbx-" + name, template=("sandbox-templates", "python-small-v1"))
 
-    async def resize(self, name, *, preset, size):
-        self.calls.append(("resize", name, preset, size))
-        if size not in (None, "small", "medium"):
-            raise TemplateError(f"Unknown size {size!r}. Sizes: small, medium")
-        if preset:
-            return actor("sbx-" + name, "ACTOR_STATE_RUNNING")
-        self.resized[name] = str(size)
+    async def resize(self, name, *, preset):
+        self.calls.append(("resize", name, preset))
+        if preset == "python":
+            raise PresetError(
+                "Preset 'python' has another image than sandbox 'demo'. Create a "
+                "new sandbox from it instead."
+            )
         return actor(
-            "sbx-" + name, "ACTOR_STATE_RUNNING", ("team-a", f"coding-small-v1-{size}")
+            "sbx-" + name,
+            "ACTOR_STATE_RUNNING",
+            ("sandbox-templates", "coding-large-v1"),
         )
-
-    async def has_env_guest(self, name):
-        self.calls.append(("has_env_guest", name))
-        return self.env_guest
 
     async def presets(self):
         if self.presets_error:
             raise self.presets_error
         return PRESETS
 
-    async def sizes(self):
-        return SIZES
-
-    async def template(self, name):
-        """A custom template, resized or small; "gone" has none."""
-        if name == "gone":
-            raise NotFoundError("actor template not found")
-        size = SIZES.get(self.resized.get(name))
-        return templates.build_template("team-a", f"{name}-v1", image=IMAGE, size=size)
+    async def has_env_guest(self, name):
+        self.calls.append(("has_env_guest", name))
+        return self.env_guest
 
     async def list(self):
         return [
             actor("sbx-one", "ACTOR_STATE_RUNNING"),
-            actor("sbx-web", template=("team-a", "web-v1")),
-            actor("sbx-gone", template=("team-a", "gone-v1")),
+            actor("sbx-two", template=("team-a", "mine-v1")),
         ]
 
     async def suspend(self, name):
@@ -292,30 +280,36 @@ def test_sdk_errors_are_one_line_messages(sandboxes, logged_in, monkeypatch):
 
 
 def test_create_list_and_lifecycle(sandboxes, logged_in):
-    result = pk("sandbox", "create", "demo")
-    assert result.output == "Created demo (SUSPENDED, preset coding, size small)\n"
+    result = pk("sandbox", "create", "demo", "--preset", "python")
+    assert result.output == "Created demo (SUSPENDED, preset python, size small)\n"
 
     result = pk("sandbox", "list")
     assert result.output.splitlines() == [
-        "NAME  STATE      PRESET  SIZE   IMAGE",
-        "one   RUNNING    coding  small",
-        f"web   SUSPENDED  custom  small  {IMAGE}",
-        "gone  SUSPENDED  custom  -      -",
+        "NAME  STATE      PRESET          SIZE",
+        "one   RUNNING    coding          small",
+        "two   SUSPENDED  team-a/mine-v1  -",
     ]
 
     assert pk("sandbox", "suspend", "demo").output == "demo: SUSPENDED\n"
     assert pk("sandbox", "resume", "demo").output == "demo: RUNNING\n"
     assert pk("sandbox", "delete", "demo").output == "Deleted demo\n"
     assert sandboxes.calls == [
-        ("create", "demo", None, None, None, {}, True),
+        ("create", "demo", "python"),
         ("suspend", "demo"),
         ("resume", "demo"),
         ("delete", "demo"),
     ]
 
 
+def test_create_defaults_to_the_platforms_preset(sandboxes, logged_in):
+    result = pk("sandbox", "create", "demo")
+
+    assert result.exit_code == 0, result.output
+    assert sandboxes.calls == [("create", "demo", None)]
+
+
 def test_list_without_presets_shows_templates_and_one_warning(sandboxes, logged_in):
-    sandboxes.presets_error = TemplateError(
+    sandboxes.presets_error = PresetError(
         "Cannot read the sandbox presets from https://x/presets: HTTP 404"
     )
 
@@ -323,113 +317,34 @@ def test_list_without_presets_shows_templates_and_one_warning(sandboxes, logged_
 
     assert result.exit_code == 0, result.output
     assert result.stdout.splitlines() == [
-        "NAME  STATE      PRESET                             SIZE   IMAGE",
-        f"one   RUNNING    sandbox-templates/coding-small-v1  small  {IMAGE}",
-        f"web   SUSPENDED  team-a/web-v1                      small  {IMAGE}",
-        "gone  SUSPENDED  team-a/gone-v1                     -      -",
+        "NAME  STATE      PRESET                             SIZE",
+        "one   RUNNING    sandbox-templates/coding-small-v1  -",
+        "two   SUSPENDED  team-a/mine-v1                     -",
     ]
     assert result.stderr == (
         "Warning: Cannot read the sandbox presets from https://x/presets: HTTP 404; "
-        "showing templates instead of presets.\n"
+        "showing templates instead.\n"
     )
 
 
-def test_create_from_a_preset(sandboxes, logged_in):
-    result = pk("sandbox", "create", "demo", "--preset", "python")
+def test_resize_switches_the_preset_and_says_what_is_kept(sandboxes, logged_in):
+    result = pk("sandbox", "resize", "demo", "--preset", "coding-large")
 
     assert result.exit_code == 0, result.output
-    assert sandboxes.calls == [("create", "demo", "python", None, None, {}, True)]
-
-
-def test_create_from_a_custom_image_warns_about_env_and_the_env_guest(
-    sandboxes, logged_in
-):
-    result = pk(
-        "sandbox",
-        "create",
-        "web",
-        "--image",
-        "nginx:1.27",
-        "--size",
-        "medium",
-        "--env",
-        "MODE=dev",
-        "--env",
-        "URL=http://x?a=b",
-        "--no-env-guest",
-    )
-
-    assert result.exit_code == 0, result.output
-    env = {"MODE": "dev", "URL": "http://x?a=b"}
-    assert sandboxes.calls == [
-        ("create", "web", None, "nginx:1.27", "medium", env, False)
-    ]
-    assert result.output.splitlines() == [
-        f"Created web (SUSPENDED, preset custom, size small, image {IMAGE})",
-        "Its env is readable by every member of the workspace; pass secrets "
-        "through credential injection.",
-        "No env guest: SDK, terminal and SSH work only with images based on "
-        "`pk-sandbox-coding`.",
-    ]
-
-
-def test_create_needs_key_value_env(sandboxes, logged_in):
-    result = pk("sandbox", "create", "x", "--image", IMAGE, "--env", "NOVALUE")
-
-    assert result.exit_code == 2
-    assert "'NOVALUE' is not KEY=VALUE" in result.output
-    assert sandboxes.calls == []
-
-
-def test_create_help_says_custom_images_start_slower_and_names_the_base_image():
-    help_text = " ".join(pk("sandbox", "create", "--help").output.split())
-
-    assert "A custom image starts slower and has no network rules." in help_text
-    assert (
-        "SDK, terminal and SSH work only with images based on `pk-sandbox-coding`."
-        in help_text
-    )
-    assert (
-        "Private images work only from the platform's sandbox image registry, "
-        "pinned by digest (NAME@sha256:...). If you need another registry, ask "
-        "your platform admin to configure it." in help_text
-    )
-    assert "template" not in help_text.lower()
-
-
-def test_resize_to_a_size_says_what_is_kept(sandboxes, logged_in):
-    result = pk("sandbox", "resize", "demo", "--size", "medium")
-
-    assert result.exit_code == 0, result.output
-    assert sandboxes.calls == [("resize", "demo", None, "medium")]
+    assert sandboxes.calls == [("resize", "demo", "coding-large")]
     assert result.output.splitlines() == [
         "Resizing demo: /workspace is kept, running processes restart.",
-        f"demo: RUNNING, preset custom, size medium, image {IMAGE}",
+        "demo: RUNNING, preset coding-large, size large",
     ]
 
 
-def test_resize_to_a_preset(sandboxes, logged_in):
-    result = pk("sandbox", "resize", "demo", "--preset", "coding")
-
-    assert result.exit_code == 0, result.output
-    assert sandboxes.calls == [("resize", "demo", "coding", None)]
-    assert result.output.splitlines()[-1] == "demo: RUNNING, preset coding, size small"
-
-
-def test_resize_needs_a_preset_or_a_size(sandboxes, logged_in):
-    for args in ((), ("--preset", "coding", "--size", "small")):
-        result = pk("sandbox", "resize", "demo", *args)
-        assert result.exit_code == 2
-        assert "Pass either --preset or --size." in result.output
-    assert sandboxes.calls == []
-
-
-def test_size_errors_are_one_line_messages(sandboxes, logged_in):
-    result = pk("sandbox", "resize", "demo", "--size", "huge")
+def test_preset_errors_are_one_line_messages(sandboxes, logged_in):
+    result = pk("sandbox", "resize", "demo", "--preset", "python")
 
     assert result.exit_code == 1
     assert result.output.splitlines()[-1] == (
-        "Error: Unknown size 'huge'. Sizes: small, medium"
+        "Error: Preset 'python' has another image than sandbox 'demo'. Create a "
+        "new sandbox from it instead."
     )
 
 
@@ -438,34 +353,12 @@ def test_preset_list_marks_the_default(sandboxes, logged_in):
 
     assert result.exit_code == 0, result.output
     assert result.output.splitlines() == [
-        "NAME          SIZE    DESCRIPTION",
-        "coding *      small   Coding: opencode, SSH and a terminal",
-        "coding-large  medium  Coding, large",
-        "python        small   Python",
+        "NAME          SIZE   DESCRIPTION",
+        "coding *      small  Coding: opencode, SSH and a terminal",
+        "coding-large  large  Coding, large",
+        "python        small  Python",
+        "sdk           small  SDK: restores memory, for fast agent runs",
     ]
-
-
-def test_exec_streams_output_and_exits_with_the_command_code(sandboxes, logged_in):
-    result = pk("sandbox", "exec", "demo", "--", "ls", "-l", "/workspace")
-
-    assert result.exit_code == 3
-    assert result.stdout == "out\n"
-    assert result.stderr == "err\n"
-    assert sandboxes.calls == [("start_process", "demo", ["ls", "-l", "/workspace"])]
-
-
-def test_cp_uploads_and_downloads(sandboxes, logged_in, tmp_path):
-    local = tmp_path / "train.py"
-    local.write_text("print(1)\n")
-    local.chmod(0o755)
-
-    assert pk("sandbox", "cp", str(local), "demo:/workspace/").exit_code == 0
-    assert sandboxes.files[("demo", "/workspace/train.py")] == b"print(1)\n"
-    assert sandboxes.calls == [("write_file", "demo", "/workspace/train.py", 0o755)]
-
-    sandboxes.files[("demo", "/workspace/out.txt")] = b"result"
-    assert pk("sandbox", "cp", "demo:/workspace/out.txt", str(tmp_path)).exit_code == 0
-    assert (tmp_path / "out.txt").read_bytes() == b"result"
 
 
 def test_exec_without_env_guest_explains_why(sandboxes, logged_in):
@@ -500,6 +393,29 @@ def test_cp_and_connect_without_env_guest_explain_why(
     assert pk("sandbox", "connect", "demo", "-i", str(identity)).output == (
         NO_ENV_GUEST
     )
+
+
+def test_exec_streams_output_and_exits_with_the_command_code(sandboxes, logged_in):
+    result = pk("sandbox", "exec", "demo", "--", "ls", "-l", "/workspace")
+
+    assert result.exit_code == 3
+    assert result.stdout == "out\n"
+    assert result.stderr == "err\n"
+    assert sandboxes.calls == [("start_process", "demo", ["ls", "-l", "/workspace"])]
+
+
+def test_cp_uploads_and_downloads(sandboxes, logged_in, tmp_path):
+    local = tmp_path / "train.py"
+    local.write_text("print(1)\n")
+    local.chmod(0o755)
+
+    assert pk("sandbox", "cp", str(local), "demo:/workspace/").exit_code == 0
+    assert sandboxes.files[("demo", "/workspace/train.py")] == b"print(1)\n"
+    assert sandboxes.calls == [("write_file", "demo", "/workspace/train.py", 0o755)]
+
+    sandboxes.files[("demo", "/workspace/out.txt")] = b"result"
+    assert pk("sandbox", "cp", "demo:/workspace/out.txt", str(tmp_path)).exit_code == 0
+    assert (tmp_path / "out.txt").read_bytes() == b"result"
 
 
 def test_cp_needs_exactly_one_sandbox_side(sandboxes, logged_in):
@@ -603,7 +519,7 @@ def test_create_install_ssh_writes_the_entry_and_the_include(
     assert "Host pk.team-a.demo\n" in ssh.host_config_file("pk.team-a.demo").read_text()
     assert ssh.include_pattern() in ssh.user_config_file().read_text()
     assert result.output.splitlines()[0] == (
-        "Created demo (SUSPENDED, preset coding, size small)"
+        "Created demo (SUSPENDED, preset python, size small)"
     )
     assert "SSH host: pk.team-a.demo" in result.output
 

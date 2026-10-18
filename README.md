@@ -58,10 +58,9 @@ with SandboxClient("https://my-platform.example.com", "my-workspace") as client:
     client.resume("demo")
     client.delete("demo")
 
-    print(client.presets(), client.sizes())      # the platform's presets and sizes
-    client.create("py", preset="python")
-    client.create("mytool", image="ghcr.io/me/mytool:1.0", size="medium")
-    client.resize("py", size="large")
+    print(client.presets())                      # the platform's presets
+    client.create("big", preset="coding-large")
+    client.resize("big", preset="coding")
 ```
 
 `url` and `workspace` default to `PROKUBE_URL` and `PROKUBE_WORKSPACE`.
@@ -137,49 +136,31 @@ keys go through the authenticated file API, so the host key is pinned before
 the first connection. SSH travels over a WebSocket; `pk sandbox proxy` is the
 `ProxyCommand` and sends your login token.
 
-### Presets, custom images and sizes
+### Presets
 
 ```bash
 pk preset list                                     # the platform's presets, default marked *
 pk sandbox create demo                             # from the default preset
-pk sandbox create py --preset python
-pk sandbox create mytool --image ghcr.io/me/mytool:1.0 --size medium --env MODE=dev
-pk sandbox resize demo --preset coding-large       # same image, another size
-pk sandbox resize mytool --size small
-pk sandbox list                                    # NAME, STATE, PRESET, SIZE, IMAGE
+pk sandbox create big --preset coding-large
+pk sandbox resize demo --preset coding-large
+pk sandbox list                                    # NAME, STATE, PRESET, SIZE
 ```
 
-Presets and sizes are the platform's
-(`GET https://<domain>/svc/sandbox/v1alpha/presets` and `.../sizes`,
-prokube/prokube-neo#132 and #127); an unknown name lists them. A preset is a
-shared template with a golden snapshot, so its sandboxes start fast; a new
-sandbox gets the preset's network rules as its Substrate `EgressPolicy`. When
-the presets cannot be read, `pk sandbox list` shows each sandbox's template
-instead and prints a warning.
+The presets are the platform's (`GET https://<domain>/svc/sandbox/v1alpha/presets`,
+prokube/prokube-neo#132); an unknown name lists them. A preset is a shared
+template with a golden snapshot, so its sandboxes start fast. A new sandbox
+gets the preset's network rules as its Substrate `EgressPolicy`.
 
-A custom image gets its own template `<workspace>/NAME-v<n>`, one version
-higher than the highest existing one; templates never change. It starts
-slower than a preset and has no network rules. NAME must be a DNS label, must
-not be taken by a preset and must leave room for `-v<n>-<size>` within 63
-characters. Only the image, size and env can be chosen; storage location,
-snapshot settings, sandbox runtime, capabilities, volumes (including
-`/run/ate/actor` with the sandbox's name and uid) and worker pool are fixed
-([`templates.py`](src/prokube/sandbox/templates.py)). Public images work by
-tag (resolved anonymously) or digest. Private images work only from the
-platform's sandbox image registry, pinned by digest (`NAME@sha256:...`); if
-you need another registry, ask your platform admin to configure it. Env
-values are readable by every workspace member; pass secrets through
-credential injection. SDK, terminal and SSH work only with images based on
-`pk-sandbox-coding`; for any other image, pass `--no-env-guest`. `exec`, `cp`
-and `connect` then say that the sandbox has no env guest.
+`pk sandbox resize` switches a sandbox to another preset with the same image
+and snapshot fidelity, for example a larger one. A running sandbox is
+suspended first and resumed afterwards: `/workspace` is kept, running
+processes restart. A suspended sandbox stays suspended. Network rules and
+credentials stay. When the presets cannot be read, `pk sandbox list` shows
+each sandbox's template instead and prints a warning.
 
-`pk sandbox resize --preset` switches to another preset with the same image.
-`--size` switches to the size variant `<workspace>/<template>-<size>` of the
-sandbox's template, created on first use without a golden snapshot (or back to
-the template itself at its own size). A running sandbox is suspended first
-and resumed afterwards: `/workspace` is kept, running processes restart. A
-suspended sandbox stays suspended. Network rules and credentials stay. A size
-that matches none of the platform's sizes shows as `custom`.
+SDK, terminal and SSH work only with images based on `pk-sandbox-coding`.
+For a sandbox whose image is not, `exec`, `cp` and `connect` say that it has
+no env guest.
 
 ## How it maps to Substrate
 
@@ -188,10 +169,10 @@ that matches none of the platform's sizes shows as `custom`.
 | workspace | Atespace with the same name |
 | sandbox `demo` | Actor `sbx-demo` in that Atespace |
 | `create`, `list`, `get`, `delete`, `suspend`, `resume` | `ateapi.Control` (`CreateActor`, `ListActors`, ...) |
-| `run`, `read_file`, `write_file`, `env()` | env guest API via `ate_env` |
-| `create` from a preset | `CreateActor` on `sandbox-templates/<template>`, then `CreateActorEgressPolicy` |
-| `create` from a custom image, size variants | `CreateActorTemplate` in the workspace's Atespace |
+| preset | ActorTemplate `sandbox-templates/<template>` |
+| `create` | `CreateActor` on the preset's template, then `CreateActorEgressPolicy` |
 | `resize` | `SuspendActor`, `UpdateActor` (new `actor_template`), `ResumeActor` if it was running |
+| `run`, `read_file`, `write_file`, `env()` | env guest API via `ate_env` |
 | return values | `Actor` protos and `ate_env.ShellResult` |
 | errors | `ate_env` errors (`NotFoundError`, `PermissionDeniedError`, `RpcError`, ...) |
 
