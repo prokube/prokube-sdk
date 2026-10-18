@@ -27,7 +27,8 @@ class MemoryKeyring(KeyringBackend):
 
 @pytest.fixture(autouse=True)
 def memory_keyring(tmp_path, monkeypatch):
-    """Keep every test away from the real keyring and ~/.config."""
+    """Keep every test away from the real keyring, ~/.config and ~/.ssh."""
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.setenv("PROKUBE_CONFIG_DIR", str(tmp_path / "config"))
     monkeypatch.delenv("PROKUBE_URL", raising=False)
     monkeypatch.delenv("PROKUBE_WORKSPACE", raising=False)

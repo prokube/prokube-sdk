@@ -61,6 +61,15 @@ def _identity_option(command: Callable[..., Any]) -> Callable[..., Any]:
     )(command)
 
 
+def _install_ssh_option(command: Callable[..., Any]) -> Callable[..., Any]:
+    return click.option(
+        "--install-ssh",
+        is_flag=True,
+        help="Also make the sandbox reachable as an ssh host from ~/.ssh/config "
+        "(ssh, VS Code Remote-SSH, JetBrains Gateway).",
+    )(command)
+
+
 @click.group(cls=_Group)
 @click.version_option(package_name="prokube-sdk", prog_name="pk")
 def cli() -> None:
@@ -145,6 +154,7 @@ def sandbox() -> None:
     help="Atespace that holds the template.",
 )
 @click.option("--connect", is_flag=True, help="Open an SSH session afterwards.")
+@_install_ssh_option
 @_identity_option
 @_target_options
 def create(
@@ -152,6 +162,7 @@ def create(
     template: str,
     template_atespace: str,
     connect: bool,
+    install_ssh: bool,
     identity: Path | None,
     url: str | None,
     workspace: str | None,
@@ -166,7 +177,10 @@ def create(
     )
     click.echo(f"Created {_name(actor)} ({_state(actor)})")
     if connect:
-        _connect(name, identity, url, workspace)
+        _connect(name, identity, url, workspace, install_ssh)
+    elif install_ssh:
+        alias, _ = _prepare_ssh(name, identity, url, workspace)
+        _install_ssh(alias)
 
 
 @sandbox.command("list")
@@ -185,33 +199,54 @@ def list_(url: str | None, workspace: str | None) -> None:
 
 @sandbox.command()
 @click.argument("name")
+@_install_ssh_option
 @_identity_option
 @_target_options
 def connect(
-    name: str, identity: Path | None, url: str | None, workspace: str | None
+    name: str,
+    install_ssh: bool,
+    identity: Path | None,
+    url: str | None,
+    workspace: str | None,
 ) -> None:
     """Open an SSH session to sandbox NAME.
 
     Installs your public key in the sandbox, pins its host key and runs ssh.
     """
-    _connect(name, identity, url, workspace)
+    _connect(name, identity, url, workspace, install_ssh)
 
 
 @sandbox.command("ssh-config")
-@click.argument("name")
+@click.argument("name", required=False)
+@click.option(
+    "--install",
+    is_flag=True,
+    help="Include all pk ssh hosts from ~/.ssh/config instead of printing the "
+    "entry. NAME is optional then.",
+)
 @_identity_option
 @_target_options
 def ssh_config(
-    name: str, identity: Path | None, url: str | None, workspace: str | None
+    name: str | None,
+    install: bool,
+    identity: Path | None,
+    url: str | None,
+    workspace: str | None,
 ) -> None:
     """Print an OpenSSH config entry for sandbox NAME.
 
-    Installs your public key and pins the host key like connect. To use the
-    entries from ssh and IDEs, add this line at the top of ~/.ssh/config:
-    Include ~/.config/prokube/ssh/hosts/*.conf
+    Installs your public key and pins the host key like connect. With --install,
+    adds an Include of the entries of all sandboxes at the top of
+    ~/.ssh/config once, so ssh and IDEs that read it find them.
     """
-    _, config_file = _prepare_ssh(name, identity, url, workspace)
-    click.echo(config_file.read_text(), nl=False)
+    if not install:
+        if name is None:
+            raise click.UsageError("Pass NAME, or --install.")
+        _, config_file = _prepare_ssh(name, identity, url, workspace)
+        click.echo(config_file.read_text(), nl=False)
+        return
+    alias = _prepare_ssh(name, identity, url, workspace)[0] if name else None
+    _install_ssh(alias)
 
 
 @sandbox.command()
@@ -314,10 +349,31 @@ def delete(name: str, url: str | None, workspace: str | None) -> None:
 
 
 def _connect(
-    name: str, identity: Path | None, url: str | None, workspace: str | None
+    name: str,
+    identity: Path | None,
+    url: str | None,
+    workspace: str | None,
+    install_ssh: bool = False,
 ) -> None:
     alias, config_file = _prepare_ssh(name, identity, url, workspace)
+    if install_ssh:
+        _install_ssh(alias)
+        sys.stdout.flush()  # exec does not flush Python's buffers
     os.execvp("ssh", ["ssh", "-F", str(config_file), alias])
+
+
+def _install_ssh(alias: str | None) -> None:
+    """Include the host entries from ~/.ssh/config and name the sandbox's host."""
+    path, changed = ssh.install_include()
+    if changed:
+        click.echo(f'Added Include "{ssh.include_pattern()}" to {path}')
+    else:
+        click.echo(f"{path} already includes the pk ssh hosts")
+    if alias:
+        click.echo(
+            f"SSH host: {alias} (ssh {alias}, or pick it in VS Code Remote-SSH "
+            "or JetBrains Gateway)"
+        )
 
 
 def _prepare_ssh(

@@ -102,22 +102,34 @@ and `PROKUBE_WORKSPACE`) override them per command.
 
 ### SSH
 
+Set up SSH once:
+
+```bash
+pk login https://my-platform.example.com --workspace my-workspace
+pk sandbox create demo --install-ssh
+```
+
+Then `ssh pk.my-workspace.demo` works, and VS Code Remote-SSH and JetBrains
+Gateway list `pk.my-workspace.demo` as a host, since they read `~/.ssh/config`.
+
+`--install-ssh` (on `create` and `connect`, or `pk sandbox ssh-config demo
+--install` for an existing sandbox) writes the sandbox's host entry to
+`~/.config/prokube/ssh/hosts/pk.<workspace>.<name>.conf` and, once, adds this
+line at the top of `~/.ssh/config` (created with mode 0600 if missing):
+
+```
+Include "/home/me/.config/prokube/ssh/hosts/*.conf"
+```
+
+`pk sandbox ssh-config --install` adds only that line. Without `--install`,
+`pk sandbox ssh-config demo` prints the host entry instead.
+
 `pk sandbox connect demo` installs your public key (`~/.ssh/id_ed25519.pub`,
 or the key given with `--identity`) in the sandbox, pins the sandbox's host key
 in `~/.config/prokube/ssh/known_hosts` and runs `ssh` as user `developer`. Both
 keys go through the authenticated file API, so the host key is pinned before
 the first connection. SSH travels over a WebSocket; `pk sandbox proxy` is the
 `ProxyCommand` and sends your login token.
-
-To use `ssh`, `scp`, `rsync` or an IDE such as VS Code Remote-SSH directly, run
-`pk sandbox ssh-config demo` once and add this line at the top of
-`~/.ssh/config`:
-
-```
-Include ~/.config/prokube/ssh/hosts/*.conf
-```
-
-Then `ssh pk.my-workspace.demo` works.
 
 ## How it maps to Substrate
 
