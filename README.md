@@ -57,6 +57,11 @@ with SandboxClient("https://my-platform.example.com", "my-workspace") as client:
     client.suspend("demo")
     client.resume("demo")
     client.delete("demo")
+
+    print(client.sizes())                        # the platform's sizes
+    client.create_template("mytool", image="ghcr.io/me/mytool:1.0", size="medium")
+    client.create("big", template="python-v1", size="large")
+    client.resize("big", "small")
 ```
 
 `url` and `workspace` default to `PROKUBE_URL` and `PROKUBE_WORKSPACE`.
@@ -132,6 +137,35 @@ keys go through the authenticated file API, so the host key is pinned before
 the first connection. SSH travels over a WebSocket; `pk sandbox proxy` is the
 `ProxyCommand` and sends your login token.
 
+### Templates and sizes
+
+```bash
+pk template list                                   # approved and own templates, with size
+pk template create mytool --image ghcr.io/me/mytool:1.0 --size medium --env MODE=dev
+pk sandbox create demo --template my-workspace/mytool-v1
+pk sandbox create big --template coding-v2 --size large
+pk sandbox resize demo --size small
+```
+
+The sizes are the platform's (`GET https://<domain>/svc/sandbox/v1alpha/sizes`,
+prokube/prokube-neo#127); an unknown size lists them.
+
+`pk template create NAME` creates `<workspace>/NAME-v<n>`, one version higher
+than the highest existing one; templates never change. Only the image, size and
+env can be chosen; storage location, snapshot settings, sandbox runtime,
+capabilities, volumes and worker pool are fixed
+([`templates.py`](src/prokube/sandbox/templates.py)). The image is pinned by
+digest: pass `IMAGE@sha256:<digest>`, or a tag of a public image, which is
+resolved anonymously. Env values are readable by every workspace member; pass
+secrets through credential injection. SDK, terminal and SSH work only with
+images based on `pk-sandbox-coding`; for any other image, pass `--no-env-guest`.
+`exec`, `cp` and `connect` then say that the sandbox has no env guest.
+
+A template at another size is its size variant `<workspace>/<template>-<size>`,
+created on first use. `pk sandbox resize` suspends the sandbox, switches it to
+the variant (or back to the template itself at its own size) and resumes it:
+`/workspace` is kept, running processes restart.
+
 ## How it maps to Substrate
 
 | SDK | Substrate |
@@ -140,6 +174,8 @@ the first connection. SSH travels over a WebSocket; `pk sandbox proxy` is the
 | sandbox `demo` | Actor `sbx-demo` in that Atespace |
 | `create`, `list`, `get`, `delete`, `suspend`, `resume` | `ateapi.Control` (`CreateActor`, `ListActors`, ...) |
 | `run`, `read_file`, `write_file`, `env()` | env guest API via `ate_env` |
+| `list_templates`, `create_template`, size variants | `ListActorTemplates`, `CreateActorTemplate` |
+| `resize` | `SuspendActor`, `UpdateActor` (new `actor_template`), `ResumeActor` |
 | return values | `Actor` protos and `ate_env.ShellResult` |
 | errors | `ate_env` errors (`NotFoundError`, `PermissionDeniedError`, `RpcError`, ...) |
 

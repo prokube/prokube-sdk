@@ -2,21 +2,35 @@ import json
 import time
 
 import pytest
-from ate_env import NotFoundError, ProcessInfo, ProcessOutput, ProcessState
+from ate_env import NotFoundError, ProcessInfo, ProcessOutput, ProcessState, RpcError
 from click.testing import CliRunner
 
 from prokube import auth
 from prokube.cli import commands, ssh
+from prokube.sandbox import TemplateError, templates
 from prokube.sandbox._ateapi import ateapi_pb2 as ateapi
 from tests.conftest import make_jwt
+from tests.test_templates import IMAGE, SIZES
 
 URL = "https://platform.example.com"
+HTTP2_ERROR = (
+    "upstream call failed: SendRequest: http2 error: connection error detected: "
+    "frame with invalid size"
+)
+NO_ENV_GUEST = (
+    "Error: demo: this sandbox's image has no env guest (not based on "
+    "pk-sandbox-coding), so exec, cp and SSH do not work in it.\n"
+)
 
 
-def actor(name: str, state: str = "ACTOR_STATE_SUSPENDED") -> ateapi.Actor:
+def actor(
+    name: str,
+    state: str = "ACTOR_STATE_SUSPENDED",
+    template: tuple[str, str] = ("sandbox-templates", "coding"),
+) -> ateapi.Actor:
     return ateapi.Actor(
         metadata=ateapi.ResourceMetadata(atespace="team-a", name=name),
-        actor_template=ateapi.ObjectRef(name="coding"),
+        actor_template=ateapi.ObjectRef(atespace=template[0], name=template[1]),
         status=ateapi.ActorStatus(state=state),
     )
 
@@ -37,6 +51,8 @@ class FakeEnv:
 
     async def start_process(self, command):
         self.sandboxes.calls.append(("start_process", self.name, list(command)))
+        if self.sandboxes.env_error:
+            raise self.sandboxes.env_error
         exit_info = ProcessInfo(
             process_id="p1",
             command=tuple(command),
@@ -62,6 +78,8 @@ class FakeSandboxes:
         self.targets: list[tuple[str, str]] = []
         self.calls: list[tuple] = []
         self.files: dict[tuple[str, str], bytes] = {}
+        self.env_guest = True
+        self.env_error: Exception | None = None
 
     def __call__(self, url: str, workspace: str) -> "FakeSandboxes":
         self.targets.append((url, workspace))
@@ -73,9 +91,43 @@ class FakeSandboxes:
     async def __aexit__(self, *exc_info: object) -> None:
         pass
 
-    async def create(self, name, *, template, template_atespace):
-        self.calls.append(("create", name, template, template_atespace))
-        return actor("sbx-" + name)
+    async def create(self, name, *, template, template_atespace, size):
+        self.calls.append(("create", name, template, template_atespace, size))
+        if size:
+            return actor("sbx-" + name, template=("team-a", f"{template}-{size}"))
+        return actor("sbx-" + name, template=(template_atespace, template))
+
+    async def resize(self, name, size):
+        self.calls.append(("resize", name, size))
+        if size not in ("small", "medium"):
+            raise TemplateError(f"Unknown size {size!r}. Sizes: small, medium")
+        return actor(
+            "sbx-" + name, "ACTOR_STATE_RUNNING", ("team-a", f"coding-v2-{size}")
+        )
+
+    async def has_env_guest(self, name):
+        self.calls.append(("has_env_guest", name))
+        return self.env_guest
+
+    async def sizes(self):
+        return SIZES
+
+    async def list_templates(self):
+        approved = templates.build_template(
+            "sandbox-templates", "coding-v2", image=IMAGE, size=SIZES.get()
+        )
+        custom = templates.build_template(
+            "team-a", "mine-v1", image=IMAGE, size=SIZES.get("medium")
+        )
+        odd = templates.with_size(approved, templates.Size("x", "3", "6Gi", "default"))
+        odd.metadata.CopyFrom(ateapi.ResourceMetadata(atespace="team-a", name="odd"))
+        return [approved, custom, odd]
+
+    async def create_template(self, name, *, image, size, env, env_guest):
+        self.calls.append(("create_template", name, image, size, env, env_guest))
+        return templates.build_template(
+            "team-a", f"{name}-v1", image=IMAGE, size=SIZES.get(size), env=env
+        )
 
     async def list(self):
         return [actor("sbx-one", "ACTOR_STATE_RUNNING"), actor("sbx-two")]
@@ -93,6 +145,8 @@ class FakeSandboxes:
         return actor("sbx-" + name, "ACTOR_STATE_DELETING")
 
     async def read_file(self, name, path):
+        if self.env_error:
+            raise self.env_error
         if (name, path) not in self.files:
             raise NotFoundError(f"{path}: no such file")
         return self.files[(name, path)]
@@ -235,7 +289,9 @@ def test_sdk_errors_are_one_line_messages(sandboxes, logged_in, monkeypatch):
 
 def test_create_list_and_lifecycle(sandboxes, logged_in):
     result = pk("sandbox", "create", "demo", "--template", "coding")
-    assert result.output == "Created demo (SUSPENDED)\n"
+    assert result.output == (
+        "Created demo (SUSPENDED, template sandbox-templates/coding)\n"
+    )
 
     result = pk("sandbox", "list")
     assert result.output.splitlines() == [
@@ -248,7 +304,7 @@ def test_create_list_and_lifecycle(sandboxes, logged_in):
     assert pk("sandbox", "resume", "demo").output == "demo: RUNNING\n"
     assert pk("sandbox", "delete", "demo").output == "Deleted demo\n"
     assert sandboxes.calls == [
-        ("create", "demo", "coding", "sandbox-templates"),
+        ("create", "demo", "coding", "sandbox-templates", None),
         ("suspend", "demo"),
         ("resume", "demo"),
         ("delete", "demo"),
@@ -259,7 +315,45 @@ def test_create_defaults_to_the_coding_template(sandboxes, logged_in):
     result = pk("sandbox", "create", "demo")
 
     assert result.exit_code == 0, result.output
-    assert ("create", "demo", "coding-v1", "sandbox-templates") in sandboxes.calls
+    assert (
+        "create",
+        "demo",
+        "coding-v1",
+        "sandbox-templates",
+        None,
+    ) in sandboxes.calls
+
+
+def test_create_with_a_size_and_a_workspace_template(sandboxes, logged_in):
+    result = pk(
+        "sandbox", "create", "demo", "--template", "team-a/mine-v1", "--size", "medium"
+    )
+
+    assert result.exit_code == 0, result.output
+    assert sandboxes.calls == [("create", "demo", "mine-v1", "team-a", "medium")]
+    assert result.output == (
+        "Created demo (SUSPENDED, template team-a/mine-v1-medium)\n"
+    )
+
+
+def test_resize_says_what_is_kept(sandboxes, logged_in):
+    result = pk("sandbox", "resize", "demo", "--size", "medium")
+
+    assert result.exit_code == 0, result.output
+    assert sandboxes.calls == [("resize", "demo", "medium")]
+    assert result.output.splitlines() == [
+        "Resizing demo to medium: /workspace is kept, running processes restart.",
+        "demo: RUNNING, template team-a/coding-v2-medium",
+    ]
+
+
+def test_size_errors_are_one_line_messages(sandboxes, logged_in):
+    result = pk("sandbox", "resize", "demo", "--size", "huge")
+
+    assert result.exit_code == 1
+    assert result.output.splitlines()[-1] == (
+        "Error: Unknown size 'huge'. Sizes: small, medium"
+    )
 
 
 def test_exec_streams_output_and_exits_with_the_command_code(sandboxes, logged_in):
@@ -283,6 +377,40 @@ def test_cp_uploads_and_downloads(sandboxes, logged_in, tmp_path):
     sandboxes.files[("demo", "/workspace/out.txt")] = b"result"
     assert pk("sandbox", "cp", "demo:/workspace/out.txt", str(tmp_path)).exit_code == 0
     assert (tmp_path / "out.txt").read_bytes() == b"result"
+
+
+def test_exec_without_env_guest_explains_why(sandboxes, logged_in):
+    sandboxes.env_guest = False
+    sandboxes.env_error = RpcError(HTTP2_ERROR)
+
+    result = pk("sandbox", "exec", "demo", "--", "true")
+
+    assert result.exit_code == 1
+    assert result.output == NO_ENV_GUEST
+    assert ("has_env_guest", "demo") in sandboxes.calls
+
+
+def test_exec_errors_with_env_guest_stay_as_they_are(sandboxes, logged_in):
+    sandboxes.env_error = RpcError("deadline exceeded")
+
+    result = pk("sandbox", "exec", "demo", "--", "true")
+
+    assert result.exit_code == 1
+    assert result.output == "Error: deadline exceeded\n"
+
+
+def test_cp_and_connect_without_env_guest_explain_why(
+    sandboxes, logged_in, tmp_path, identity
+):
+    sandboxes.env_guest = False
+    sandboxes.env_error = RpcError(HTTP2_ERROR)
+
+    assert pk("sandbox", "cp", "demo:/workspace/a", str(tmp_path)).output == (
+        NO_ENV_GUEST
+    )
+    assert pk("sandbox", "connect", "demo", "-i", str(identity)).output == (
+        NO_ENV_GUEST
+    )
 
 
 def test_cp_needs_exactly_one_sandbox_side(sandboxes, logged_in):
@@ -385,7 +513,9 @@ def test_create_install_ssh_writes_the_entry_and_the_include(
     assert result.exit_code == 0, result.output
     assert "Host pk.team-a.demo\n" in ssh.host_config_file("pk.team-a.demo").read_text()
     assert ssh.include_pattern() in ssh.user_config_file().read_text()
-    assert result.output.splitlines()[0] == "Created demo (SUSPENDED)"
+    assert result.output.splitlines()[0] == (
+        "Created demo (SUSPENDED, template sandbox-templates/coding-v1)"
+    )
     assert "SSH host: pk.team-a.demo" in result.output
 
 
@@ -443,3 +573,73 @@ def test_proxy_opens_the_ssh_websocket_with_the_login_token(logged_in, monkeypat
     assert result.exit_code == 0, result.output
     path = "/svc/sandbox/v1alpha/atespaces/team-a/envs/sbx-demo/ports/8022/ssh"
     assert opened == [(f"wss://platform.example.com{path}", logged_in)]
+
+
+# --- Templates -------------------------------------------------------------
+
+
+def test_template_create_prints_the_new_version_and_how_to_use_it(sandboxes, logged_in):
+    result = pk("template", "create", "mine", "--image", IMAGE, "--size", "medium")
+
+    assert result.exit_code == 0, result.output
+    assert sandboxes.calls == [("create_template", "mine", IMAGE, "medium", {}, True)]
+    assert result.output.splitlines() == [
+        f"Created template team-a/mine-v1 ({IMAGE})",
+        "Use it: pk sandbox create NAME --template team-a/mine-v1",
+    ]
+
+
+def test_template_create_warns_about_env_and_a_missing_env_guest(sandboxes, logged_in):
+    result = pk(
+        "template",
+        "create",
+        "web",
+        "--image",
+        "nginx:1.27",
+        "--env",
+        "MODE=dev",
+        "--env",
+        "URL=http://x?a=b",
+        "--no-env-guest",
+    )
+
+    assert result.exit_code == 0, result.output
+    env = {"MODE": "dev", "URL": "http://x?a=b"}
+    assert sandboxes.calls == [
+        ("create_template", "web", "nginx:1.27", None, env, False)
+    ]
+    lines = result.output.splitlines()
+    assert "readable by every member of the workspace" in lines[1]
+    assert lines[2] == (
+        "No env guest: SDK, terminal and SSH work only with images based on "
+        "`pk-sandbox-coding`."
+    )
+
+
+def test_template_create_needs_key_value_env(sandboxes, logged_in):
+    result = pk("template", "create", "x", "--image", IMAGE, "--env", "NOVALUE")
+
+    assert result.exit_code == 2
+    assert "'NOVALUE' is not KEY=VALUE" in result.output
+    assert sandboxes.calls == []
+
+
+def test_template_create_help_names_the_base_image():
+    help_text = " ".join(pk("template", "create", "--help").output.split())
+
+    assert (
+        "SDK, terminal and SSH work only with images based on `pk-sandbox-coding`."
+        in help_text
+    )
+
+
+def test_template_list_shows_each_size_or_custom(sandboxes, logged_in):
+    result = pk("template", "list")
+
+    assert result.exit_code == 0, result.output
+    assert result.output.splitlines() == [
+        "NAME                         SIZE",
+        "sandbox-templates/coding-v2  small",
+        "team-a/mine-v1               medium",
+        "team-a/odd                   custom",
+    ]
