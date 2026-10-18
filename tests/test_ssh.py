@@ -1,5 +1,6 @@
 import os
 import shutil
+import socket
 import stat
 import subprocess
 import threading
@@ -218,3 +219,42 @@ def test_openssh_reads_the_host_entry_through_the_include(tmp_path):
 
     assert "user developer" in result.stdout.splitlines()
     assert "hostkeyalias pk.team-a.demo" in result.stdout.splitlines()
+
+
+def test_listening_ports_reads_proc_net_tcp_and_tcp6():
+    text = (
+        "  sl  local_address rem_address   st tx_queue\n"
+        "   0: 0100007F:1000 00000000:0000 0A 00000000:00000000\n"
+        "   1: 0100007F:1F90 0100007F:D431 01 00000000:00000000\n"  # connected
+        "  sl  local_address                         remote_address  st\n"
+        "   0: 00000000000000000000000000000000:0050 "
+        "00000000000000000000000000000000:0000 0A\n"
+    )
+
+    assert ssh.listening_ports(text) == {4096, 80}
+    assert ssh.listening_ports("") == set()
+
+
+def test_port_in_use_sees_a_bound_port():
+    with socket.socket() as taken:
+        taken.bind(("127.0.0.1", 0))
+        port = taken.getsockname()[1]
+        assert ssh.port_in_use(port)
+    assert not ssh.port_in_use(port)
+
+
+def test_openssh_accepts_the_forward_arguments(tmp_path):
+    config_file = ssh.write_host_config(
+        "pk.team-a.demo", ["pk", "proxy"], tmp_path / "id"
+    )
+    args = ssh.forward_args(config_file, "pk.team-a.demo", 14096, 4096)
+
+    result = subprocess.run(
+        [args[0], "-G", *args[1:]], capture_output=True, text=True, check=True
+    )
+
+    # OpenSSH 10 prints [localhost]:14096, older versions without brackets.
+    lines = result.stdout.replace("[", "").replace("]", "").splitlines()
+    assert "localforward localhost:14096 127.0.0.1:4096" in lines
+    assert "exitonforwardfailure yes" in lines
+    assert "gatewayports no" in lines

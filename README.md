@@ -141,6 +141,37 @@ reads `/workspace/ssh/ssh_host_ed25519_key.pub`. SSH travels over a
 WebSocket; `pk sandbox proxy` is the `ProxyCommand` and sends your login
 token.
 
+### Reach a server in a sandbox
+
+For a server in the sandbox, such as `opencode serve`, Jupyter or a dev
+server, forward a local port to it:
+
+```bash
+pk sandbox connect demo                            # there: opencode serve --port 4096
+pk sandbox forward demo 4096                       # another terminal; Ctrl-C stops it
+opencode attach http://localhost:4096              # a third terminal
+```
+
+`pk sandbox forward NAME REMOTE_PORT [--local-port PORT]` runs
+`ssh -N -L localhost:PORT:127.0.0.1:REMOTE_PORT` over the same SSH path as
+`connect`, with the same key setup and host-key pinning. The local port
+listens on localhost only, and the local client needs no token. It stops with
+a clear message when the local port is taken, when nothing listens on
+`REMOTE_PORT` in the sandbox, or when the sandbox has no env guest.
+
+A client that can send a header, such as Codex, can also call the server
+directly through the platform, without a tunnel:
+
+```
+https://<domain>/svc/sandbox/v1alpha/atespaces/<workspace>/envs/sbx-<name>/ports/<port>/<path>
+Authorization: Bearer <token>
+```
+
+The token is your Dex ID token (in Python:
+`prokube.auth.LoginSession("https://<domain>").token()`), which expires and
+must be refreshed, or a workspace pod's ServiceAccount token. The server
+sees the request at `/<path>`. Only editors of the workspace get through.
+
 ### Presets
 
 ```bash
