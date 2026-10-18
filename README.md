@@ -132,9 +132,14 @@ Include "/home/me/.config/prokube/ssh/hosts/*.conf"
 `pk sandbox connect demo` installs your public key (`~/.ssh/id_ed25519.pub`,
 or the key given with `--identity`) in the sandbox, pins the sandbox's host key
 in `~/.config/prokube/ssh/known_hosts` and runs `ssh` as user `developer`. Both
-keys go through the authenticated file API, so the host key is pinned before
-the first connection. SSH travels over a WebSocket; `pk sandbox proxy` is the
-`ProxyCommand` and sends your login token.
+keys go through the authenticated env guest API, so the host key is pinned
+before the first connection. The host key is what
+`/usr/local/bin/pk-sandbox-hostkey` prints in the sandbox; it gives each
+sandbox its own key, also one cloned from a preset's golden snapshot
+(prokube/sandbox-images#21). On older images without that command, the CLI
+reads `/workspace/ssh/ssh_host_ed25519_key.pub`. SSH travels over a
+WebSocket; `pk sandbox proxy` is the `ProxyCommand` and sends your login
+token.
 
 ### Presets
 

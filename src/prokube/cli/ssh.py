@@ -30,6 +30,9 @@ from prokube import auth
 
 SSH_USER = "developer"
 HOST_KEY_PATH = "/workspace/ssh/ssh_host_ed25519_key.pub"
+# Prints the sandbox's own host public key, generating it first in a clone of a
+# golden snapshot (prokube/sandbox-images#21). Older images only have the file.
+HOST_KEY_COMMAND = "/usr/local/bin/pk-sandbox-hostkey"
 AUTHORIZED_KEYS_PATH = "/workspace/ssh/authorized_keys"
 DEFAULT_IDENTITIES = ("id_ed25519", "id_ecdsa", "id_rsa")
 INCLUDE_MARKER = "# added by pk"

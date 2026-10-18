@@ -433,7 +433,7 @@ def _prepare_ssh(
     public_key = identity.with_name(identity.name + ".pub").read_text()
 
     async def install_key(client: AsyncSandboxClient) -> str:
-        host_key = (await client.read_file(name, ssh.HOST_KEY_PATH)).decode()
+        host_key = await _host_key(client, name)
         current = (await client.read_file(name, ssh.AUTHORIZED_KEYS_PATH)).decode()
         updated = ssh.add_authorized_key(current, public_key)
         if updated != current:
@@ -446,6 +446,22 @@ def _prepare_ssh(
     proxy_command = [sys.executable, "-m", "prokube.cli", "sandbox", "proxy", name]
     proxy_command += ["--url", url, "--workspace", workspace]
     return alias, ssh.write_host_config(alias, proxy_command, identity)
+
+
+async def _host_key(client: AsyncSandboxClient, name: str) -> str:
+    """The sandbox's SSH host public key, as pk-sandbox-hostkey prints it.
+
+    Falls back to the key file on images without that command.
+    """
+    result = await client.run(name, ssh.HOST_KEY_COMMAND)
+    if result.exit_code == 127:  # sh: command not found
+        return (await client.read_file(name, ssh.HOST_KEY_PATH)).decode()
+    if result.exit_code != 0 or len(result.stdout.split()) < 2:
+        raise click.ClickException(
+            f"{name}: {ssh.HOST_KEY_COMMAND} failed (exit {result.exit_code}): "
+            f"{result.stderr.strip()}"
+        )
+    return result.stdout
 
 
 async def _stream(

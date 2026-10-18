@@ -2,7 +2,14 @@ import json
 import time
 
 import pytest
-from ate_env import NotFoundError, ProcessInfo, ProcessOutput, ProcessState, RpcError
+from ate_env import (
+    NotFoundError,
+    ProcessInfo,
+    ProcessOutput,
+    ProcessState,
+    RpcError,
+    ShellResult,
+)
 from click.testing import CliRunner
 
 from prokube import auth
@@ -81,6 +88,8 @@ class FakeSandboxes:
         self.env_guest = True
         self.env_error: Exception | None = None
         self.presets_error: Exception | None = None
+        # What pk-sandbox-hostkey prints; None is an older image without it.
+        self.host_key: ShellResult | None = None
 
     def __call__(self, url: str, workspace: str) -> "FakeSandboxes":
         self.targets.append((url, workspace))
@@ -135,6 +144,14 @@ class FakeSandboxes:
     async def delete(self, name):
         self.calls.append(("delete", name))
         return actor("sbx-" + name, "ACTOR_STATE_DELETING")
+
+    async def run(self, name, command):
+        self.calls.append(("run", name, command))
+        if self.env_error:
+            raise self.env_error
+        if self.host_key is None:
+            return ShellResult(stdout="", stderr="sh: not found\n", exit_code=127)
+        return self.host_key
 
     async def read_file(self, name, path):
         if self.env_error:
@@ -450,6 +467,8 @@ def test_connect_installs_the_key_pins_the_host_key_and_runs_ssh(
     pk("sandbox", "connect", "demo", "-i", str(identity))
 
     assert result.exit_code == 0, result.output
+    # An older image: no pk-sandbox-hostkey, so the key file is pinned.
+    assert ("run", "demo", ssh.HOST_KEY_COMMAND) in sandboxes.calls
     authorized = sandboxes.files[("demo", ssh.AUTHORIZED_KEYS_PATH)]
     assert authorized == b"ssh-rsa AAAAother\nssh-ed25519 AAAAuserkey me@laptop\n"
     known_hosts = ssh.known_hosts_file().read_text()
@@ -460,6 +479,41 @@ def test_connect_installs_the_key_pins_the_host_key_and_runs_ssh(
     assert "Host pk.team-a.demo\n" in config
     assert f"-m prokube.cli sandbox proxy demo --url {URL} --workspace team-a" in config
     assert f'IdentityFile "{identity}"' in config
+
+
+def test_connect_pins_the_key_pk_sandbox_hostkey_prints(
+    sandboxes, logged_in, identity, monkeypatch
+):
+    # A clone of a golden snapshot still has the golden's key in the file.
+    sandboxes.files[("demo", ssh.HOST_KEY_PATH)] = HOST_KEY.encode()
+    sandboxes.files[("demo", ssh.AUTHORIZED_KEYS_PATH)] = b""
+    sandboxes.host_key = ShellResult(
+        stdout="ssh-ed25519 AAAAownkey root@sbx-demo\n", stderr="", exit_code=0
+    )
+    monkeypatch.setattr(commands.os, "execvp", lambda file, args: None)
+
+    result = pk("sandbox", "connect", "demo", "-i", str(identity))
+
+    assert result.exit_code == 0, result.output
+    known_hosts = ssh.known_hosts_file().read_text()
+    assert known_hosts == "pk.team-a.demo ssh-ed25519 AAAAownkey\n"
+    assert ("run", "demo", "/usr/local/bin/pk-sandbox-hostkey") in sandboxes.calls
+
+
+def test_a_failing_pk_sandbox_hostkey_pins_nothing(sandboxes, logged_in, identity):
+    sandboxes.files[("demo", ssh.AUTHORIZED_KEYS_PATH)] = b""
+    sandboxes.host_key = ShellResult(
+        stdout="", stderr="cannot write key\n", exit_code=1
+    )
+
+    result = pk("sandbox", "ssh-config", "demo", "-i", str(identity))
+
+    assert result.exit_code == 1
+    assert result.output == (
+        "Error: demo: /usr/local/bin/pk-sandbox-hostkey failed (exit 1): "
+        "cannot write key\n"
+    )
+    assert not ssh.known_hosts_file().exists()
 
 
 def test_ssh_config_prints_the_entry(sandboxes, logged_in, identity):
