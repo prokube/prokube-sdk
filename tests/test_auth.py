@@ -94,6 +94,7 @@ def test_login_runs_pkce_flow_and_stores_tokens(monkeypatch, dex, free_redirect)
     seen = fake_browser(
         monkeypatch, lambda p: {"code": "the-code", "state": p["state"]}
     )
+    auth._save_tokens(URL, {"refresh_token": "revoked"}, "file")
 
     session = auth.login(URL + "/")
 
@@ -107,6 +108,7 @@ def test_login_runs_pkce_flow_and_stores_tokens(monkeypatch, dex, free_redirect)
     assert form["redirect_uri"] == [free_redirect]
     assert auth._pkce_challenge(form["code_verifier"][0]) == seen["code_challenge"]
     assert stored()["refresh_token"] == "refresh-1"
+    assert not auth._token_file(URL).exists()
     assert session.token() == id_token
 
 
@@ -166,6 +168,24 @@ def test_token_refreshes_and_stores_the_rotated_refresh_token(dex):
         "client_id": ["prokube-cli"],
     }
     assert stored()["refresh_token"] == "refresh-2"
+
+
+def test_refresh_writes_back_to_the_file_it_read(dex):
+    auth._save_tokens(
+        URL,
+        {"id_token": "old", "refresh_token": "refresh-1", "expires_at": time.time()},
+        "file",
+    )
+    dex.add_response(
+        url=TOKEN_ENDPOINT,
+        method="POST",
+        json={"id_token": make_jwt(time.time() + 3600), "refresh_token": "refresh-2"},
+    )
+
+    auth.LoginSession(URL).token()
+
+    assert stored() is None
+    assert json.loads(auth._token_file(URL).read_text())["refresh_token"] == "refresh-2"
 
 
 def test_rejected_refresh_requires_a_new_login(dex):
