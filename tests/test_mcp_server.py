@@ -28,6 +28,7 @@ def sandboxes() -> AsyncMock:
     client.write_file.return_value = 5
     client.suspend.return_value = actor("sbx-a")
     client.resume.return_value = actor("sbx-a", "ACTOR_STATE_RUNNING")
+    client.revert.return_value = actor("sbx-a")
     client.delete.return_value = actor("sbx-a", "ACTOR_STATE_DELETING")
     return client
 
@@ -109,6 +110,13 @@ async def call_tool(sandboxes: AsyncMock, tool: str, **arguments):
             {"name": "a", "state": "RUNNING"},
         ),
         (
+            "revert",
+            {"name": "a"},
+            "revert",
+            call("a"),
+            {"name": "a", "state": "SUSPENDED"},
+        ),
+        (
             "delete",
             {"name": "a"},
             "delete",
@@ -139,6 +147,7 @@ async def test_tools_are_the_client_methods(sandboxes):
         "write_file",
         "suspend",
         "resume",
+        "revert",
         "delete",
     ]
 

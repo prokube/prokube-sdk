@@ -315,6 +315,15 @@ class AsyncSandboxClient:
         request = ateapi.ResumeActorRequest(actor=self._ref(name))
         return (await _call(self._control.ResumeActor(request))).actor
 
+    async def revert(self, name: str) -> Actor:
+        """Return a crashed or running sandbox to its last snapshot, suspended.
+
+        Everything since that snapshot is lost. A crashed sandbox cannot be
+        resumed until it is reverted.
+        """
+        request = ateapi.RevertActorRequest(actor=self._ref(name))
+        return (await _call(self._control.RevertActor(request))).actor
+
     def env(self, name: str) -> Env:
         """Return the upstream env handle for processes and files.
 
@@ -471,6 +480,9 @@ class SandboxClient:
 
     def resume(self, name: str) -> Actor:
         return self._run(self._client.resume(name))
+
+    def revert(self, name: str) -> Actor:
+        return self._run(self._client.revert(name))
 
     def run(
         self,

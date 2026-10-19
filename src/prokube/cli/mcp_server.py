@@ -97,6 +97,14 @@ def create_server(connect: Callable[[], AsyncSandboxClient]) -> MCPServer:
         """Start a suspended sandbox from its latest snapshot."""
         return _sandbox(await sandboxes().resume(name))
 
+    @tool("revert")
+    async def revert(name: str) -> Sandbox:
+        """Return a crashed sandbox to its last snapshot, suspended.
+
+        Everything since that snapshot is lost.
+        """
+        return _sandbox(await sandboxes().revert(name))
+
     @tool("delete")
     async def delete(name: str) -> Sandbox:
         """Delete a sandbox and its /workspace."""

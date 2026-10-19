@@ -127,6 +127,10 @@ class FakeControl:
         self.requests.append(("ResumeActor", request))
         return ateapi.ResumeActorResponse(actor=self._set_state(request, RUNNING))
 
+    async def RevertActor(self, request):
+        self.requests.append(("RevertActor", request))
+        return ateapi.RevertActorResponse(actor=self._set_state(request, SUSPENDED))
+
     async def UpdateActor(self, request):
         self.requests.append(("UpdateActor", request))
         stored = self.actors[request.actor.metadata.name]
@@ -869,3 +873,13 @@ def test_sync_client_wraps_the_global_reads():
         assert client.list_actors(all_workspaces=True) == [actor("session-1")]
         assert client.workers() == []
         assert client.worker_actors("w-1") == []
+
+
+async def test_revert_returns_a_crashed_sandbox_to_its_snapshot(sandbox):
+    control = sandbox._control
+
+    reverted = await sandbox.revert("demo")
+
+    assert control.methods() == ["RevertActor"]
+    assert control.requests[0][1].actor.name == "sbx-demo"
+    assert reverted.status.state == SUSPENDED
