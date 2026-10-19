@@ -8,7 +8,14 @@ from ate_env import NotFoundError, ShellResult
 from ate_env._gen.ateenv.v1alpha import guest_pb2
 
 from prokube import auth, endpoints
-from prokube.sandbox import AsyncSandboxClient, PresetError, SandboxClient, actor_name
+from prokube.sandbox import (
+    AsyncSandboxClient,
+    PresetError,
+    SandboxClient,
+    actor_name,
+    inject,
+    passthrough,
+)
 from prokube.sandbox import client as client_module
 from prokube.sandbox._ateapi import ateapi_pb2 as ateapi
 from prokube.sandbox.client import _BearerToken
@@ -58,6 +65,7 @@ class FakeControl:
         self.requests: list[tuple[str, object]] = []
         self.pages = [ateapi.ListActorsResponse()]
         self.actors: dict[str, ateapi.Actor] = {}
+        self.egress = ateapi.EgressPolicy()
         memory = ateapi.SNAPSHOT_FIDELITY_MEMORY
         self.templates: dict[str, ateapi.ActorTemplate] = {}
         for size in ("small", "medium", "large"):
@@ -76,6 +84,16 @@ class FakeControl:
 
     async def CreateActorEgressPolicy(self, request):
         self.requests.append(("CreateActorEgressPolicy", request))
+        return request.egress_policy
+
+    async def GetActorEgressPolicy(self, request):
+        self.requests.append(("GetActorEgressPolicy", request))
+        return self.egress
+
+    async def UpdateActorEgressPolicy(self, request):
+        self.requests.append(("UpdateActorEgressPolicy", request))
+        # Substrate needs the UID and version of the stored policy.
+        assert request.egress_policy.metadata == self.egress.metadata
         return request.egress_policy
 
     async def ListActors(self, request):
@@ -485,6 +503,82 @@ async def test_create_from_the_default_preset_sets_its_network(client, presets_a
         metadata=ateapi.ResourceMetadata(atespace="team-a", name="default"),
         rules=OPENCODE_POLICY.rules,
     )
+
+
+STORED_EGRESS = ateapi.EgressPolicy(
+    metadata=ateapi.ResourceMetadata(
+        atespace="team-a", name="default", uid="p-1", version=7
+    ),
+    rules=[
+        ateapi.EgressRule(
+            tls_passthrough=ateapi.TlsPassthroughRule(
+                hostnames=["pypi.org"], ports=ateapi.Ports(numbers=[443])
+            )
+        )
+    ],
+)
+
+
+async def test_network_is_the_rules_as_json(client):
+    client._control.egress = STORED_EGRESS
+
+    rules = await client.network("demo")
+
+    assert rules == [
+        {"tlsPassthrough": {"hostnames": ["pypi.org"], "ports": {"numbers": [443]}}}
+    ]
+    assert client._control.requests == [
+        (
+            "GetActorEgressPolicy",
+            ateapi.GetActorEgressPolicyRequest(
+                actor=ref("team-a", "sbx-demo"), name="default"
+            ),
+        )
+    ]
+
+
+async def test_set_network_replaces_the_rules(client):
+    client._control.egress = STORED_EGRESS
+    key = client.secret_uri("anthropic", "key")
+    rules = [
+        inject("api.anthropic.com", "x-api-key", key),
+        inject("api.github.com", "Authorization", key, prefix="Bearer "),
+        passthrough("github.com", "registry.npmjs.org"),
+    ]
+
+    # The builders' JSON survives the round trip through the proto unchanged.
+    assert await client.set_network("demo", rules) == rules
+    assert client._control.methods() == [
+        "GetActorEgressPolicy",
+        "UpdateActorEgressPolicy",
+    ]
+    assert client._control.requests[-1][1].actor == ref("team-a", "sbx-demo")
+
+
+def test_rule_builders():
+    assert passthrough("github.com", port=22) == {
+        "tlsPassthrough": {"hostnames": ["github.com"], "ports": {"numbers": [22]}}
+    }
+    assert inject("api.example.com", "x-api-key", "ate-secret://x") == {
+        "https": {
+            "hostnames": ["api.example.com"],
+            "ports": {"numbers": [443]},
+            "effects": {
+                "replaceHeaders": [
+                    {"header": "x-api-key", "credentialUri": "ate-secret://x"}
+                ]
+            },
+        }
+    }
+
+
+def test_secret_uri_names_a_secret_of_the_workspace():
+    client = SandboxClient(URL, "team-a", token_provider=lambda: "token")
+
+    assert client.secret_uri("anthropic", "key") == (
+        "ate-secret://k8s.io/default/team-a/anthropic/key"
+    )
+    client.close()
 
 
 async def test_create_from_a_named_preset(client, presets_api):

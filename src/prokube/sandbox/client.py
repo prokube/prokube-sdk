@@ -18,7 +18,7 @@ import asyncio
 import collections
 import os
 import threading
-from collections.abc import Awaitable, Coroutine, Mapping
+from collections.abc import Awaitable, Coroutine, Mapping, Sequence
 from datetime import timedelta
 from pathlib import Path
 from typing import Any, TypeVar
@@ -28,6 +28,7 @@ import grpc.aio
 import httpx
 from ate_env import Client as EnvClient
 from ate_env import Env, RpcError, ShellResult, map_rpc_error
+from google.protobuf import json_format
 
 from prokube import auth, endpoints
 from prokube.auth import TokenProvider
@@ -38,6 +39,9 @@ from prokube.sandbox.presets import PresetError, Presets
 SANDBOX_PREFIX = "sbx-"
 # Every Actor's EgressPolicy is a singleton with this name, as in pkui.
 EGRESS_POLICY_NAME = "default"
+# Credential URI of a key in a Secret of a workspace; the platform's credential
+# provider resolves it for that workspace's sandboxes (prokube/prokube-neo#116).
+SECRET_URI = "ate-secret://k8s.io/default/{workspace}/{secret}/{key}"
 # The env guest of pk-sandbox-coding answers here once it serves; templates
 # whose guest container has this wakeup probe support exec, files and SSH.
 ENV_GUEST_PATH = "/readyz"
@@ -191,6 +195,35 @@ class AsyncSandboxClient:
         actor = await _call(self._control.UpdateActor(request))
         return await self.resume(name) if was_running else actor
 
+    async def network(self, name: str) -> list[dict[str, Any]]:
+        """The sandbox's egress rules, as JSON like the presets' network rules."""
+        return _rules(await self._egress_policy(name))
+
+    async def set_network(
+        self, name: str, rules: Sequence[Mapping[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Replace the sandbox's egress rules; they apply right away.
+
+        A rule is the JSON of an ``ateapi.EgressRule``; passthrough() and
+        inject() build the common ones.
+        """
+        policy = await self._egress_policy(name)
+        del policy.rules[:]
+        policy.rules.extend(
+            json_format.ParseDict(dict(rule), ateapi.EgressRule()) for rule in rules
+        )
+        request = ateapi.UpdateActorEgressPolicyRequest(
+            actor=self._ref(name), egress_policy=policy
+        )
+        return _rules(await _call(self._control.UpdateActorEgressPolicy(request)))
+
+    def secret_uri(self, secret: str, key: str) -> str:
+        """The credentialUri of a key in a Secret of the workspace.
+
+        The Secret needs the label ``prokube.ai/sandbox-credential=true``.
+        """
+        return SECRET_URI.format(workspace=self.workspace, secret=secret, key=key)
+
     async def presets(self) -> Presets:
         """The presets the platform offers and its default preset."""
         url = endpoints.presets_url(self.url)
@@ -305,6 +338,12 @@ class AsyncSandboxClient:
     def _ref(self, name: str) -> ateapi.ObjectRef:
         return ateapi.ObjectRef(atespace=self.workspace, name=actor_name(name))
 
+    async def _egress_policy(self, name: str) -> ateapi.EgressPolicy:
+        request = ateapi.GetActorEgressPolicyRequest(
+            actor=self._ref(name), name=EGRESS_POLICY_NAME
+        )
+        return await _call(self._control.GetActorEgressPolicy(request))
+
     async def _template(self, ref: ateapi.ObjectRef) -> ateapi.ActorTemplate:
         request = ateapi.GetActorTemplateRequest(actor_template=ref)
         return await _call(self._control.GetActorTemplate(request))
@@ -345,6 +384,19 @@ class SandboxClient:
     def resize(self, name: str, *, preset: str) -> Actor:
         """Switch a sandbox to another preset (see AsyncSandboxClient)."""
         return self._run(self._client.resize(name, preset=preset))
+
+    def network(self, name: str) -> list[dict[str, Any]]:
+        """The sandbox's egress rules (see AsyncSandboxClient)."""
+        return self._run(self._client.network(name))
+
+    def set_network(
+        self, name: str, rules: Sequence[Mapping[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Replace the sandbox's egress rules (see AsyncSandboxClient)."""
+        return self._run(self._client.set_network(name, rules))
+
+    def secret_uri(self, secret: str, key: str) -> str:
+        return self._client.secret_uri(secret, key)
 
     def presets(self) -> Presets:
         return self._run(self._client.presets())
@@ -492,6 +544,10 @@ class _StreamStreamBearerToken(
         return await continuation(
             self._with_token(client_call_details), request_iterator
         )
+
+
+def _rules(policy: ateapi.EgressPolicy) -> list[dict[str, Any]]:
+    return [json_format.MessageToDict(rule) for rule in policy.rules]
 
 
 def _pod_namespace() -> str | None:
