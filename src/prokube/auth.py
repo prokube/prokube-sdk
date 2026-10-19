@@ -28,7 +28,7 @@ import webbrowser
 from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 from urllib.parse import parse_qs, urlencode, urlparse
 
 import httpx
@@ -62,14 +62,16 @@ class LoginError(Exception):
 class LoginSession:
     """The stored login for one platform URL."""
 
+    _store: Store
+
     def __init__(self, url: str) -> None:
         self.url = endpoints.normalize_url(url)
-        tokens = _load_tokens(self.url)
-        if tokens is None:
+        loaded = _load_tokens(self.url)
+        if loaded is None:
             raise LoginRequired(
                 f"Not logged in to {self.url}. Run prokube.auth.login({self.url!r})."
             )
-        self._tokens: dict[str, Any] = tokens
+        self._tokens, self._store = loaded
         self._lock = threading.Lock()
 
     def token(self) -> str:
@@ -77,10 +79,12 @@ class LoginSession:
         with self._lock:
             if _expiring(self._tokens):
                 # Another process may have refreshed (and rotated) it already.
-                self._tokens = _load_tokens(self.url) or self._tokens
+                loaded = _load_tokens(self.url)
+                if loaded is not None:
+                    self._tokens, self._store = loaded
             if _expiring(self._tokens):
                 self._tokens = _refresh(self.url, self._tokens)
-                _save_tokens(self.url, self._tokens)
+                _save_tokens(self.url, self._tokens, self._store)
             return self._tokens["id_token"]
 
 
@@ -175,6 +179,8 @@ def login(url: str, *, open_browser: bool = True, timeout: float = 300) -> Login
         timeout=30,
     )
     response.raise_for_status()
+    # Dex revokes the previous refresh token, so no old copy may stay behind.
+    logout(url)
     _save_tokens(url, _tokens_from_response(response.json()))
     return LoginSession(url)
 
@@ -327,26 +333,33 @@ def _wait_for_callback(server: _CallbackServer, timeout: float) -> dict[str, str
 
 # --- Token storage ---------------------------------------------------------
 # Any keyring failure (no backend, locked, value too long) falls back to the file.
+# Refreshed tokens go back to where they were read: Dex rotates the refresh token,
+# so a process without a keyring would otherwise keep reading a spent one.
+
+Store = Literal["keyring", "file"]
 
 
-def _load_tokens(url: str) -> dict[str, Any] | None:
+def _load_tokens(url: str) -> tuple[dict[str, Any], Store] | None:
     try:
         stored = keyring.get_password(KEYRING_SERVICE, url)
     except Exception:
         stored = None
-    if stored is None:
-        path = _token_file(url)
-        stored = path.read_text() if path.exists() else None
-    return json.loads(stored) if stored else None
+    if stored:
+        return json.loads(stored), "keyring"
+    path = _token_file(url)
+    if path.exists():
+        return json.loads(path.read_text()), "file"
+    return None
 
 
-def _save_tokens(url: str, tokens: dict[str, Any]) -> None:
+def _save_tokens(url: str, tokens: dict[str, Any], store: Store = "keyring") -> None:
     data = json.dumps(tokens)
-    try:
-        keyring.set_password(KEYRING_SERVICE, url, data)
-        return
-    except Exception:
-        pass
+    if store == "keyring":
+        try:
+            keyring.set_password(KEYRING_SERVICE, url, data)
+            return
+        except Exception:
+            pass
     path = _token_file(url)
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
