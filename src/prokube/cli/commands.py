@@ -18,7 +18,7 @@ from ate_env import EnvError
 from websockets.exceptions import WebSocketException
 
 from prokube import auth, endpoints
-from prokube.cli import ssh
+from prokube.cli import banner, ssh
 from prokube.sandbox import AsyncSandboxClient, PresetError, Presets, actor_name
 from prokube.sandbox._ateapi import ateapi_pb2 as ateapi
 from prokube.sandbox.client import SANDBOX_PREFIX
@@ -34,6 +34,21 @@ class _Group(click.Group):
             return super().invoke(ctx)
         except (EnvError, auth.LoginError, httpx.HTTPError, PresetError) as error:
             raise click.ClickException(str(error)) from error
+
+    def format_help(self, ctx: click.Context, formatter: click.HelpFormatter) -> None:
+        if ctx.parent is None and banner.wanted():
+            formatter.write(banner.render() + "\n\n")
+        super().format_help(ctx, formatter)
+
+
+def _show_version(ctx: click.Context, _param: click.Parameter, value: bool) -> None:
+    if not value or ctx.resilient_parsing:
+        return
+    if banner.wanted():
+        click.echo(banner.render())
+    else:
+        click.echo(f"pk, version {banner.pk_version()}")
+    ctx.exit()
 
 
 def _target_options(command: Callable[..., Any]) -> Callable[..., Any]:
@@ -71,7 +86,14 @@ def _install_ssh_option(command: Callable[..., Any]) -> Callable[..., Any]:
 
 
 @click.group(cls=_Group)
-@click.version_option(package_name="prokube-sdk", prog_name="pk")
+@click.option(
+    "--version",
+    is_flag=True,
+    expose_value=False,
+    is_eager=True,
+    callback=_show_version,
+    help="Show the version and exit.",
+)
 def cli() -> None:
     """Command line for the prokube platform."""
 

@@ -14,7 +14,7 @@ from ate_env import (
 from click.testing import CliRunner
 
 from prokube import auth
-from prokube.cli import commands, ssh
+from prokube.cli import banner, commands, ssh
 from prokube.sandbox import PresetError
 from prokube.sandbox._ateapi import ateapi_pb2 as ateapi
 from tests.conftest import make_jwt
@@ -801,3 +801,37 @@ def test_forward_help_shows_the_opencode_example():
 
     assert "pk sandbox forward demo 4096\n" in help_text
     assert "opencode attach http://localhost:4096\n" in help_text
+
+
+def test_version_is_plain_outside_a_terminal():
+    result = CliRunner().invoke(commands.cli, ["--version"])
+    assert result.exit_code == 0
+    assert result.output == f"pk, version {banner.pk_version()}\n"
+
+
+def test_help_starts_with_the_wordmark_in_a_terminal(monkeypatch):
+    monkeypatch.setattr(banner, "wanted", lambda: True)
+    monkeypatch.setenv("NO_COLOR", "1")
+    result = CliRunner().invoke(commands.cli, ["--help"])
+    assert result.output.startswith(banner.WORDMARK.splitlines()[0])
+    assert f"v{banner.pk_version()}" in result.output
+    assert "Command line for the prokube platform." in result.output
+
+
+def test_subcommand_help_has_no_wordmark(monkeypatch):
+    monkeypatch.setattr(banner, "wanted", lambda: True)
+    result = CliRunner().invoke(commands.cli, ["sandbox", "--help"])
+    assert banner.WORDMARK.splitlines()[2] not in result.output
+
+
+def test_wordmark_ends_with_the_version(monkeypatch):
+    monkeypatch.setenv("NO_COLOR", "1")
+    lines = banner.render().splitlines()
+    assert lines[-1].endswith(f"v{banner.pk_version()}")
+    assert len(lines[-1]) == max(len(line) for line in lines)
+
+
+def test_no_wordmark_with_pk_no_banner(monkeypatch):
+    monkeypatch.setattr("sys.stdout.isatty", lambda: True)
+    monkeypatch.setenv("PK_NO_BANNER", "1")
+    assert not banner.wanted()
