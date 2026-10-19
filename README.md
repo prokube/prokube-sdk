@@ -106,6 +106,10 @@ pk logout
 `~/.config/prokube/config.json`. `--url` and `--workspace` (or `PROKUBE_URL`
 and `PROKUBE_WORKSPACE`) override them per command.
 
+In a terminal, `pk --help` and `pk --version` show the prokube wordmark;
+`PK_NO_BANNER=1` turns it off, `NO_COLOR` keeps it uncolored. Pipes and scripts
+get plain output.
+
 ### SSH
 
 Set up SSH once:
