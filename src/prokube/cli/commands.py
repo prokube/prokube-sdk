@@ -416,6 +416,35 @@ def resize(name: str, preset: str, url: str | None, workspace: str | None) -> No
     click.echo(f"{_name(actor)}: {_summary(actor, presets)}")
 
 
+@sandbox.command()
+@click.option(
+    "--port",
+    type=click.IntRange(1, 65535),
+    help="Serve streamable HTTP on this port instead of stdio.",
+)
+@click.option("--host", default="127.0.0.1", show_default=True, help="With --port.")
+@_target_options
+def mcp(port: int | None, host: str, url: str | None, workspace: str | None) -> None:
+    """Serve the sandbox tools to MCP clients, over stdio by default.
+
+    \b
+    claude mcp add sandbox -- pk sandbox mcp
+
+    In a workspace pod with sandbox access it needs no login and acts as the
+    workspace.
+    """
+    from prokube.cli.mcp_server import create_server  # the MCP SDK loads slowly
+
+    url, workspace = _resolve(url, workspace)
+    if auth.workload_token_file() is None:
+        url, workspace = _require(url, workspace)
+    server = create_server(lambda: AsyncSandboxClient(url, workspace))
+    if port:
+        server.run("streamable-http", host=host, port=port, stateless_http=True)
+    else:
+        server.run()
+
+
 # --- Presets ---------------------------------------------------------------
 
 
