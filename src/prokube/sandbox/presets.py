@@ -35,6 +35,9 @@ class Preset:
     title: str
     description: str
     size: str
+    # What a suspend keeps: "VOLUMES" (/workspace) or "MEMORY" (also memory and
+    # processes); "" if the platform does not say. Resize stays within one.
+    fidelity: str
     env_guest: bool
     network: ateapi.EgressPolicy
 
@@ -67,6 +70,7 @@ class Presets:
                     title=p.get("title", ""),
                     description=p.get("description", ""),
                     size=p["size"],
+                    fidelity=p.get("fidelity", ""),
                     env_guest=p.get("envGuest", True),
                     network=json_format.ParseDict(
                         p.get("network", shared), ateapi.EgressPolicy()
