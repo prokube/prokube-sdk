@@ -98,6 +98,7 @@ pk sandbox cp train.py demo:/workspace/
 pk sandbox cp demo:/workspace/model.pt .
 pk sandbox suspend demo
 pk sandbox resume demo
+pk sandbox revert demo                              # after a crash: back to the last snapshot
 pk sandbox delete demo
 pk logout
 ```
@@ -209,7 +210,7 @@ no env guest.
 ### MCP server
 
 `pk sandbox mcp` gives any MCP client the tools `list`, `create`, `run`,
-`read_file`, `write_file`, `suspend`, `resume` and `delete`. Each is one
+`read_file`, `write_file`, `suspend`, `resume`, `revert` and `delete`. Each is one
 `AsyncSandboxClient` call. Locally it speaks stdio and uses your `pk login`:
 
 ```bash

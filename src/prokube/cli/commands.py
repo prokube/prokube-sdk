@@ -408,6 +408,24 @@ def resume(name: str, url: str | None, workspace: str | None) -> None:
 
 @sandbox.command()
 @click.argument("name")
+@click.option("--yes", is_flag=True, help="Do not ask for confirmation.")
+@_target_options
+def revert(name: str, yes: bool, url: str | None, workspace: str | None) -> None:
+    """Return sandbox NAME to its last snapshot, suspended.
+
+    Use it for a crashed sandbox, for example after a node restart.
+    Everything since the last snapshot is lost.
+    """
+    if not yes:
+        click.confirm(
+            f"Discard all changes to {name} since its last snapshot?", abort=True
+        )
+    actor = _with_client(url, workspace, lambda client: client.revert(name))
+    click.echo(f"{_name(actor)}: {_state(actor)}")
+
+
+@sandbox.command()
+@click.argument("name")
 @_target_options
 def delete(name: str, url: str | None, workspace: str | None) -> None:
     """Delete sandbox NAME and its workspace volume."""

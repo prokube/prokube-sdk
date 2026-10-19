@@ -145,6 +145,10 @@ class FakeSandboxes:
         self.calls.append(("resume", name))
         return actor("sbx-" + name, "ACTOR_STATE_RUNNING")
 
+    async def revert(self, name):
+        self.calls.append(("revert", name))
+        return actor("sbx-" + name)
+
     async def delete(self, name):
         self.calls.append(("delete", name))
         return actor("sbx-" + name, "ACTOR_STATE_DELETING")
@@ -324,6 +328,21 @@ def test_create_list_and_lifecycle(sandboxes, logged_in):
         ("resume", "demo"),
         ("delete", "demo"),
     ]
+
+
+def test_revert_asks_before_discarding_changes(sandboxes, logged_in):
+    declined = CliRunner().invoke(
+        commands.cli, ["sandbox", "revert", "demo"], input="n\n"
+    )
+    assert declined.exit_code == 1
+    assert sandboxes.calls == []
+
+    confirmed = CliRunner().invoke(
+        commands.cli, ["sandbox", "revert", "demo"], input="y\n"
+    )
+    assert confirmed.output.endswith("demo: SUSPENDED\n")
+    assert pk("sandbox", "revert", "demo", "--yes").output == "demo: SUSPENDED\n"
+    assert sandboxes.calls == [("revert", "demo"), ("revert", "demo")]
 
 
 def test_create_defaults_to_the_platforms_preset(sandboxes, logged_in):
