@@ -63,7 +63,8 @@ class AsyncSandboxClient:
     """Create and use the sandboxes of one workspace.
 
     ``url`` (``https://<domain>``) defaults to ``$PROKUBE_URL`` and
-    ``workspace`` to ``$PROKUBE_WORKSPACE``. ``token_provider`` defaults to the
+    ``workspace`` to ``$PROKUBE_WORKSPACE``, both then to what ``pk login``
+    saved. ``token_provider`` defaults to the
     stored login for ``url`` (see ``prokube.auth.login``), then to the pod's
     workload token. In a workspace pod with a workload token, all three can
     be left out: the workspace defaults to the pod's namespace and, without a
@@ -78,8 +79,11 @@ class AsyncSandboxClient:
         *,
         token_provider: TokenProvider | None = None,
     ) -> None:
-        url = url or os.environ.get("PROKUBE_URL")
-        workspace = workspace or os.environ.get("PROKUBE_WORKSPACE")
+        saved = auth.load_config()
+        url = url or os.environ.get("PROKUBE_URL") or saved.get("url")
+        workspace = (
+            workspace or os.environ.get("PROKUBE_WORKSPACE") or saved.get("workspace")
+        )
         in_pod = auth.workload_token_file() is not None
         if in_pod:
             workspace = workspace or _pod_namespace()

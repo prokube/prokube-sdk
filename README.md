@@ -63,7 +63,8 @@ with SandboxClient("https://my-platform.example.com", "my-workspace") as client:
     client.resize("big", preset="pk-default-small")
 ```
 
-`url` and `workspace` default to `PROKUBE_URL` and `PROKUBE_WORKSPACE`.
+`url` and `workspace` default to `PROKUBE_URL` and `PROKUBE_WORKSPACE`, then
+to what `pk login` saved (see [Command line](#command-line)).
 `SandboxClient` works in scripts and in notebooks. `read_file` and `write_file`
 only accept paths under `/workspace`; use `run` for files elsewhere.
 
@@ -200,6 +201,57 @@ each sandbox's template instead and prints a warning.
 SDK, terminal and SSH work only with images based on `pk-sandbox-coding`.
 For a sandbox whose image is not, `exec`, `cp` and `connect` say that it has
 no env guest.
+
+### MCP server
+
+`pk sandbox mcp` gives any MCP client the tools `list`, `create`, `run`,
+`read_file`, `write_file`, `suspend`, `resume` and `delete`. Each is one
+`AsyncSandboxClient` call. Locally it speaks stdio and uses your `pk login`:
+
+```bash
+claude mcp add sandbox -- pk sandbox mcp
+```
+
+opencode, in `opencode.json`:
+
+```json
+{
+  "mcp": {
+    "sandbox": { "type": "local", "command": ["pk", "sandbox", "mcp"] }
+  }
+}
+```
+
+In a workspace, run the image
+`europe-west3-docker.pkg.dev/prokube-internal/prokube-customer/prokube-cli`
+as a ToolHive `MCPServer` with sandbox access. It then appears on the MCP
+servers page and behind Agent Gateway like any other MCP server in the
+workspace:
+
+```yaml
+apiVersion: toolhive.stacklok.dev/v1beta1
+kind: MCPServer
+metadata:
+  name: sandbox
+spec:
+  image: europe-west3-docker.pkg.dev/prokube-internal/prokube-customer/prokube-cli:<tag>
+  args: [sandbox, mcp, --port, "8080", --host, 0.0.0.0]
+  transport: streamable-http
+  mcpPort: 8080
+  proxyPort: 8080
+  serviceAccount: default-editor
+  podTemplateSpec:
+    metadata:
+      labels:
+        access-sandboxes: "true"   # the workload token, see Credentials
+    spec:
+      imagePullSecrets:
+      - name: regcred-prokube
+```
+
+There every caller acts as the workspace (`default-editor`), and only on its
+sandboxes. Who may call the server is decided by Agent Gateway, as for every
+MCP server in the workspace.
 
 ## Network and credentials
 

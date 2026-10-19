@@ -185,7 +185,7 @@ def sandboxes(monkeypatch):
 @pytest.fixture
 def logged_in():
     """A saved platform and workspace with a valid stored login."""
-    commands._save_config(URL, "team-a")
+    auth.save_config(URL, "team-a")
     token = make_jwt(time.time() + 3600)
     auth._save_tokens(
         URL, {"id_token": token, "refresh_token": "r", "expires_at": time.time() + 3600}
@@ -210,19 +210,19 @@ def test_login_saves_the_platform_and_workspace(monkeypatch):
 
     assert result.exit_code == 0, result.output
     assert logins == [(URL, {"open_browser": False})]
-    saved = json.loads(commands._config_file().read_text())
+    saved = json.loads((auth.config_dir() / "config.json").read_text())
     assert saved == {"url": URL, "workspace": "team-a"}
 
 
 def test_login_keeps_the_workspace_only_for_the_same_platform(monkeypatch):
     monkeypatch.setattr(commands.auth, "login", lambda url, **kw: None)
-    commands._save_config(URL, "team-a")
+    auth.save_config(URL, "team-a")
 
     pk("login", URL)
-    assert commands._load_config() == {"url": URL, "workspace": "team-a"}
+    assert auth.load_config() == {"url": URL, "workspace": "team-a"}
 
     pk("login", "https://other.example.com")
-    assert commands._load_config() == {"url": "https://other.example.com"}
+    assert auth.load_config() == {"url": "https://other.example.com"}
 
 
 def test_login_needs_an_https_url():
@@ -245,7 +245,7 @@ def test_auth_status_shows_platform_workspace_and_user(logged_in):
 def test_auth_status_without_login():
     assert "pk login <url>" in pk("auth", "status").output
 
-    commands._save_config(URL, None)
+    auth.save_config(URL, None)
     result = pk("auth", "status")
     assert result.exit_code == 1
     assert f"Not logged in to {URL}. Run: pk login {URL}" in result.output
@@ -265,7 +265,7 @@ def test_logout_forgets_the_tokens(logged_in):
 def test_sandbox_commands_need_a_platform_and_workspace(sandboxes):
     assert "No platform URL" in pk("sandbox", "list").output
 
-    commands._save_config(URL, None)
+    auth.save_config(URL, None)
     result = pk("sandbox", "list")
     assert result.exit_code == 2
     assert "No workspace" in result.output

@@ -262,6 +262,17 @@ async def test_url_and_workspace_come_from_the_environment(monkeypatch):
         assert client.workspace == "team-b"
 
 
+async def test_url_and_workspace_come_from_pk_login(monkeypatch):
+    auth.save_config(URL, "team-a")
+
+    async with AsyncSandboxClient(token_provider=lambda: "token") as client:
+        assert (client.url, client.workspace) == (URL, "team-a")
+
+    monkeypatch.setenv("PROKUBE_WORKSPACE", "team-b")
+    async with AsyncSandboxClient(token_provider=lambda: "token") as client:
+        assert (client.url, client.workspace) == (URL, "team-b")
+
+
 async def test_url_and_workspace_are_required():
     with pytest.raises(ValueError, match="PROKUBE_WORKSPACE"):
         AsyncSandboxClient(URL)
