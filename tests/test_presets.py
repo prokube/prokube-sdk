@@ -101,3 +101,9 @@ def test_a_preset_is_found_by_its_shared_template():
 
     assert PRESETS.of(shared) == PRESETS.get("pk-default-large")
     assert PRESETS.of(own) is None
+
+
+def test_ateapi_is_public() -> None:
+    from prokube.sandbox import ateapi as public
+
+    assert public is ateapi
