@@ -90,10 +90,10 @@ def login(url: str, workspace: str | None, no_browser: bool) -> None:
     """
     url = _normalize(url)
     auth.login(url, open_browser=not no_browser)
-    saved = _load_config()
+    saved = auth.load_config()
     if workspace is None and saved.get("url") == url:
         workspace = saved.get("workspace")
-    _save_config(url, workspace)
+    auth.save_config(url, workspace)
     click.echo(
         f"Logged in to {url}" + (f" (workspace {workspace})" if workspace else "")
     )
@@ -103,7 +103,7 @@ def login(url: str, workspace: str | None, no_browser: bool) -> None:
 @click.option("--url", envvar="PROKUBE_URL", help="Platform URL (default: current).")
 def logout(url: str | None) -> None:
     """Forget the login for the current platform."""
-    url = url or _load_config().get("url")
+    url = url or auth.load_config().get("url")
     if not url:
         raise click.ClickException("Not logged in.")
     auth.logout(url)
@@ -627,7 +627,7 @@ def _token(url: str) -> str:
 
 def _resolve(url: str | None, workspace: str | None) -> tuple[str | None, str | None]:
     """Fill in url and workspace from the saved config."""
-    saved = _load_config()
+    saved = auth.load_config()
     url = url or saved.get("url")
     return (_normalize(url) if url else None), workspace or saved.get("workspace")
 
@@ -692,22 +692,3 @@ def _claims(token: str) -> dict[str, Any]:
     """Decode a JWT payload without verifying it; only used for display."""
     payload = token.split(".")[1]
     return json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
-
-
-# --- Saved platform and workspace ------------------------------------------
-
-
-def _config_file() -> Path:
-    return auth.config_dir() / "config.json"
-
-
-def _load_config() -> dict[str, str]:
-    path = _config_file()
-    return json.loads(path.read_text()) if path.exists() else {}
-
-
-def _save_config(url: str, workspace: str | None) -> None:
-    path = _config_file()
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    config = {"url": url} | ({"workspace": workspace} if workspace else {})
-    path.write_text(json.dumps(config, indent=2) + "\n")

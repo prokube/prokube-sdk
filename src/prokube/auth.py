@@ -185,6 +185,23 @@ def config_dir() -> Path:
     return Path(os.environ.get("PROKUBE_CONFIG_DIR", default))
 
 
+def load_config() -> dict[str, str]:
+    """The platform URL and workspace that pk login saved, if any."""
+    path = _config_file()
+    return json.loads(path.read_text()) if path.exists() else {}
+
+
+def save_config(url: str, workspace: str | None) -> None:
+    path = _config_file()
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    config = {"url": url} | ({"workspace": workspace} if workspace else {})
+    path.write_text(json.dumps(config, indent=2) + "\n")
+
+
+def _config_file() -> Path:
+    return config_dir() / "config.json"
+
+
 def logout(url: str) -> None:
     """Forget the stored tokens for the platform url."""
     url = endpoints.normalize_url(url)
