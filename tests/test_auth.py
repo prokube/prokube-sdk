@@ -210,8 +210,8 @@ def test_platform_url_must_be_https():
 
 def test_endpoints_derive_from_the_platform_url():
     assert endpoints.dex_issuer(URL + "/") == ISSUER
-    assert endpoints.ate_api_target(URL) == "platform.example.com:443"
-    assert endpoints.env_target("https://platform.example.com:8443") == (
+    assert endpoints.grpc_target(URL) == "platform.example.com:443"
+    assert endpoints.grpc_target("https://platform.example.com:8443") == (
         "platform.example.com:8443"
     )
 

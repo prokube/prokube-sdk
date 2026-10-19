@@ -255,12 +255,13 @@ MCP server in the workspace.
 
 ## Network and credentials
 
-A new sandbox gets its preset's network rules. `network` and `set_network`
-read and replace them as the JSON of Substrate `EgressRule`s; changes apply
-right away. An `https` rule can inject a credential at egress, so the sandbox
-never holds it: the sandbox sends the header with any placeholder, and the
-egress gateway puts in the value of a key from a Secret of the workspace with
-the label `prokube.ai/sandbox-credential=true`:
+A new sandbox gets its preset's network rules, or the ones passed as
+`create(name, network=[...])`. `network` and `set_network` read and replace
+them as the JSON of Substrate `EgressRule`s; changes apply right away. An
+`https` rule can inject a credential at egress, so the sandbox never holds
+it: the sandbox sends the header with any placeholder, and the egress
+gateway puts in the value of a key from a Secret of the workspace with the
+label `prokube.ai/sandbox-credential=true`:
 
 ```python
 from prokube.sandbox import inject, passthrough
@@ -284,8 +285,9 @@ rule.
 | workspace | Atespace with the same name |
 | sandbox `demo` | Actor `sbx-demo` in that Atespace |
 | `create`, `list`, `get`, `delete`, `suspend`, `resume` | `ateapi.Control` (`CreateActor`, `ListActors`, ...) |
+| `list_actors`, `workers`, `worker_actors` | `ListActors` (every Actor), `ListWorkers`, `ListWorkerActorAssignments`, all pages |
 | preset | ActorTemplate `sandbox-templates/<template>` |
-| `create` | `CreateActor` on the preset's template, then `CreateActorEgressPolicy` |
+| `create` | `CreateActor` on the preset's template, then `CreateActorEgressPolicy` (preset's rules or `network`) |
 | `resize` | `SuspendActor`, `UpdateActor` (new `actor_template`), `ResumeActor` if it was running |
 | `network`, `set_network` | `GetActorEgressPolicy`, `UpdateActorEgressPolicy` |
 | `run`, `read_file`, `write_file`, `env()` | env guest API via `ate_env` |
@@ -332,6 +334,41 @@ own workspace only. Any JWT file that something keeps fresh works as the
 workload token, for example a SPIRE JWT-SVID that spiffe-helper writes: point
 `PROKUBE_SANDBOX_TOKEN_FILE` at it.
 
+## Use from a server
+
+A server that acts for many users, such as pkui, makes one client per
+request with the caller's token. That is cheap: the client connects on its
+first call, leaving `async with` closes it, and with a `token_provider` it
+needs no login, keyring or workload token.
+
+```python
+from prokube.sandbox import AsyncSandboxClient
+
+GATEWAY = "agentgateway-proxy.agentgateway-system.svc.cluster.local:80"
+
+async def list_sandboxes(namespace: str, token: str):
+    async with AsyncSandboxClient(
+        workspace=namespace, endpoint=GATEWAY, token_provider=lambda: token
+    ) as client:
+        return await client.list()
+```
+
+`endpoint` is the `host:port` of Agent Gateway's in-cluster Service; ate-api,
+the env guest API and the presets are all called there, and Substrate
+authorizes each call with the caller's token. Without a workspace, only
+`presets()`, `workers()`, `worker_actors(worker)` and
+`list_actors(all_workspaces=True)` work; other calls raise `ValueError`.
+Errors are the `ate_env` ones (`NotFoundError`, `PermissionDeniedError`, ...)
+and `PresetError`.
+
+Files can stream, so a large file never sits in memory whole:
+
+```python
+async for chunk in client.env("demo").read_file("/workspace/model.pt"):
+    ...
+await client.write_file("demo", "/workspace/data.csv", chunks)  # (async) iterable of bytes
+```
+
 ## Endpoints
 
 All platform addresses are derived from the platform URL in
@@ -339,9 +376,10 @@ All platform addresses are derived from the platform URL in
 guest API over native gRPC at `<domain>:443`, and SSH over
 `wss://<domain>/svc/sandbox/v1alpha/atespaces/<workspace>/envs/sbx-<name>/ports/8022/ssh`.
 The Agent Gateway routes behind them are defined in prokube/prokube-neo#97.
-In a workspace pod without a platform URL, the same gRPC routes are reached
-through `agentgateway-proxy.agentgateway-system.svc.cluster.local:80`
-(plaintext HTTP/2; the Istio sidecars encrypt the hop).
+Without a platform URL, or with `endpoint`, the same routes are reached
+through Agent Gateway's in-cluster Service, by default
+`agentgateway-proxy.agentgateway-system.svc.cluster.local:80` (plaintext
+HTTP/2; the Istio sidecars encrypt the hop).
 
 ## Development
 

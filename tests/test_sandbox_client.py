@@ -1,3 +1,4 @@
+import copy
 import time
 from typing import Any
 
@@ -24,6 +25,7 @@ from tests.test_presets import OPENCODE_POLICY, PRESETS, PRESETS_JSON
 
 URL = "https://platform.example.com"
 PRESETS_URL = f"{URL}/svc/sandbox/v1alpha/presets"
+ENDPOINT = "gateway.example:80"
 SHARED = "sandbox-templates"
 CODING = "registry.example.com/pk-sandbox-coding@sha256:" + "a" * 64
 OTHER_IMAGE = "registry.example.com/other@sha256:" + "b" * 64
@@ -97,8 +99,13 @@ class FakeControl:
         return request.egress_policy
 
     async def ListActors(self, request):
-        self.requests.append(("ListActors", request))
-        return self.pages.pop(0)
+        return self._page("ListActors", request)
+
+    async def ListWorkers(self, request):
+        return self._page("ListWorkers", request)
+
+    async def ListWorkerActorAssignments(self, request):
+        return self._page("ListWorkerActorAssignments", request)
 
     async def GetActor(self, request):
         self.requests.append(("GetActor", request))
@@ -129,6 +136,11 @@ class FakeControl:
         stored.actor_template.CopyFrom(request.actor.actor_template)
         stored.metadata.version += 1
         return stored
+
+    def _page(self, method, request):
+        # A copy, since the client reuses the request for the next page.
+        self.requests.append((method, copy.deepcopy(request)))
+        return self.pages.pop(0)
 
     def _set_state(self, request, state) -> ateapi.Actor:
         if request.actor.name not in self.actors:
@@ -199,6 +211,86 @@ async def test_list_follows_pages_and_keeps_only_sandboxes(client):
     tokens = [r.options.page_token for _, r in client._control.requests]
     assert tokens == ["", "p2"]
     assert all(r.atespace == "team-a" for _, r in client._control.requests)
+
+
+async def test_list_actors_returns_every_actor_of_all_workspaces(client):
+    client._control.pages = [
+        ateapi.ListActorsResponse(
+            actors=[actor("sbx-one"), actor("session-1", "team-b")],
+            next_page_token="p2",
+        ),
+        ateapi.ListActorsResponse(actors=[actor("sbx-two")]),
+    ]
+
+    actors = await client.list_actors(all_workspaces=True)
+
+    assert [a.metadata.name for a in actors] == ["sbx-one", "session-1", "sbx-two"]
+    requests = [request for _, request in client._control.requests]
+    assert [(r.atespace, r.options.page_token) for r in requests] == [
+        ("", ""),
+        ("", "p2"),
+    ]
+
+
+async def test_workers_and_their_actors_follow_pages(client):
+    def worker(name: str) -> ateapi.Worker:
+        return ateapi.Worker(metadata=ateapi.ResourceMetadata(name=name))
+
+    assignment = ateapi.ActorAssignment(actor=ref("team-a", "sbx-demo"))
+    client._control.pages = [
+        ateapi.ListWorkersResponse(workers=[worker("w-1")], next_page_token="p2"),
+        ateapi.ListWorkersResponse(workers=[worker("w-2")]),
+        ateapi.ListWorkerActorAssignmentsResponse(
+            actor_assignments=[assignment], next_page_token="p2"
+        ),
+        ateapi.ListWorkerActorAssignmentsResponse(),
+    ]
+
+    workers = await client.workers()
+    assignments = await client.worker_actors("w-1")
+
+    assert [w.metadata.name for w in workers] == ["w-1", "w-2"]
+    assert assignments == [assignment]
+    assert client._control.requests[-1] == (
+        "ListWorkerActorAssignments",
+        ateapi.ListWorkerActorAssignmentsRequest(
+            worker=ateapi.ObjectRef(name="w-1"),
+            options=ateapi.ListOptions(page_token="p2"),
+        ),
+    )
+
+
+async def test_without_a_workspace_only_global_reads_work(httpx_mock):
+    httpx_mock.add_response(
+        url=f"http://{ENDPOINT}/svc/sandbox/v1alpha/presets",
+        match_headers={"authorization": "Bearer caller"},
+        json=PRESETS_JSON,
+    )
+    async with AsyncSandboxClient(
+        endpoint=ENDPOINT, token_provider=lambda: "caller"
+    ) as client:
+        control = client._control = FakeControl()  # type: ignore[assignment]
+        control.pages = [
+            ateapi.ListActorsResponse(),
+            ateapi.ListWorkersResponse(),
+            ateapi.ListWorkerActorAssignmentsResponse(),
+        ]
+
+        assert client.workspace is None
+        assert await client.presets() == PRESETS
+        assert await client.list_actors(all_workspaces=True) == []
+        assert await client.workers() == []
+        assert await client.worker_actors("w-1") == []
+        for scoped in (
+            client.list(),
+            client.get("demo"),
+            client.create("demo"),
+            client.run("demo", "true"),
+        ):
+            with pytest.raises(ValueError, match="needs a workspace"):
+                await scoped
+        with pytest.raises(ValueError, match="needs a workspace"):
+            client.secret_uri("anthropic", "key")
 
 
 async def test_lifecycle_calls_address_the_sandbox_actor(client):
@@ -273,9 +365,14 @@ async def test_url_and_workspace_come_from_pk_login(monkeypatch):
         assert (client.url, client.workspace) == (URL, "team-b")
 
 
-async def test_url_and_workspace_are_required():
-    with pytest.raises(ValueError, match="PROKUBE_WORKSPACE"):
-        AsyncSandboxClient(URL)
+async def test_without_a_url_or_with_an_endpoint_calls_go_to_the_gateway():
+    async with AsyncSandboxClient(token_provider=lambda: "token") as client:
+        assert (client.url, client.endpoint) == (None, endpoints.IN_CLUSTER_GATEWAY)
+
+    async with AsyncSandboxClient(
+        URL, endpoint=ENDPOINT, token_provider=lambda: "token"
+    ) as client:
+        assert (client.url, client.endpoint) == (URL, ENDPOINT)
 
 
 async def test_default_credentials_are_the_stored_login():
@@ -395,14 +492,30 @@ async def test_workspace_pod_can_name_another_workspace(workload_token, gateway)
 
 async def test_with_a_url_the_workload_token_comes_after_the_login(workload_token):
     async with AsyncSandboxClient(URL) as client:
-        assert client.url == URL
+        assert (client.url, client.endpoint) == (URL, None)
         assert client.workspace == "team-pod"
-        assert client._ate_channel is not None
 
 
-async def test_without_url_or_workload_token_configuration_is_required():
-    with pytest.raises(ValueError, match="PROKUBE_URL"):
-        AsyncSandboxClient(token_provider=lambda: "token")
+async def test_a_server_sends_the_callers_token_to_the_endpoint(gateway, monkeypatch):
+    """As pkui does: one client per request, without login or workload token."""
+    endpoint = endpoints.IN_CLUSTER_GATEWAY  # where the gateway fixture listens
+    monkeypatch.setattr(endpoints, "IN_CLUSTER_GATEWAY", "unused.invalid:80")
+
+    async def chunks():
+        yield b"he"
+        yield b"llo"
+
+    async with AsyncSandboxClient(
+        workspace="team-a", endpoint=endpoint, token_provider=lambda: "caller"
+    ) as client:
+        await client.get("demo")
+        assert await client.write_file("demo", "/workspace/a.txt", chunks()) == 5
+        read = client.env("demo").read_file("/workspace/a.txt")
+        assert [chunk async for chunk in read] == [b"hi"]
+
+    assert [metadata["authorization"] for _, metadata in gateway] == [
+        "Bearer caller"
+    ] * 3
 
 
 def call_plugin(plugin: _BearerToken) -> tuple:
@@ -581,6 +694,25 @@ def test_secret_uri_names_a_secret_of_the_workspace():
     client.close()
 
 
+async def test_create_with_a_network_replaces_the_presets_rules(client, presets_api):
+    await client.create("demo", network=[passthrough("pypi.org")])
+    await client.create("closed", network=[])
+
+    first, second = (
+        request.egress_policy.rules
+        for method, request in client._control.requests
+        if method == "CreateActorEgressPolicy"
+    )
+    assert first == [
+        ateapi.EgressRule(
+            tls_passthrough=ateapi.TlsPassthroughRule(
+                hostnames=["pypi.org"], ports=ateapi.Ports(numbers=[443])
+            )
+        )
+    ]
+    assert not second
+
+
 async def test_create_from_a_named_preset(client, presets_api):
     created = await client.create("demo", preset="pk-default-large")
 
@@ -710,13 +842,6 @@ async def test_unreadable_presets_are_a_clear_error(client, httpx_mock):
     )
 
 
-def test_presets_url_in_a_workspace_pod_is_the_in_cluster_gateway():
-    assert endpoints.presets_url(None) == (
-        "http://agentgateway-proxy.agentgateway-system.svc.cluster.local:80"
-        "/svc/sandbox/v1alpha/presets"
-    )
-
-
 def test_sync_client_wraps_the_preset_calls(presets_api):
     with sync_client() as client:
         created = client.create("demo")
@@ -726,3 +851,21 @@ def test_sync_client_wraps_the_preset_calls(presets_api):
         assert created.actor_template == ref(SHARED, "pk-default-small-v1")
         assert resized.actor_template == ref(SHARED, "pk-default-medium-v1")
         assert client.has_env_guest("demo")
+        client.create("closed", network=[])
+        control: Any = client._client._control
+        assert not control.requests[-1][1].egress_policy.rules
+
+
+def test_sync_client_wraps_the_global_reads():
+    with SandboxClient(endpoint=ENDPOINT, token_provider=lambda: "token") as client:
+        control = client._client._control = FakeControl()  # type: ignore[assignment]
+        control.pages = [
+            ateapi.ListActorsResponse(actors=[actor("session-1")]),
+            ateapi.ListWorkersResponse(),
+            ateapi.ListWorkerActorAssignmentsResponse(),
+        ]
+
+        assert (client.endpoint, client.workspace) == (ENDPOINT, None)
+        assert client.list_actors(all_workspaces=True) == [actor("session-1")]
+        assert client.workers() == []
+        assert client.worker_actors("w-1") == []

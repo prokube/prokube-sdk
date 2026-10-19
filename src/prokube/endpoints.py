@@ -1,7 +1,8 @@
 """Every platform address the SDK uses, derived from the platform URL.
 
-The platform URL (``https://<domain>``) is the only input; in a workspace pod
-without one, the SDK uses ``IN_CLUSTER_GATEWAY``. The Agent Gateway
+The platform URL (``https://<domain>``) is the only input. Without one, or
+with an explicit ``endpoint``, the SDK calls Agent Gateway's in-cluster
+Service instead (``IN_CLUSTER_GATEWAY`` by default). The Agent Gateway
 routes are defined in prokube/prokube-neo#97 (``paas/substrate/README.md``,
 "Endpoints for CLI and SDK"); when they change, this module is the only place
 to adjust.
@@ -31,9 +32,10 @@ SCOPES = "openid profile email offline_access"
 TEMPLATE_ATESPACE = "sandbox-templates"
 
 
-# Agent Gateway's in-cluster Service, used from workspace pods that have no
-# platform URL (workload identity, prokube/prokube-neo#100). Same routes as
-# the public endpoint; plaintext HTTP/2, which the Istio sidecars encrypt.
+# Agent Gateway's in-cluster Service, used without a platform URL: from
+# workspace pods (workload identity, prokube/prokube-neo#100) and from servers
+# such as pkui. Same routes as the public endpoint; plaintext HTTP/2, which
+# the Istio sidecars encrypt.
 IN_CLUSTER_GATEWAY = "agentgateway-proxy.agentgateway-system.svc.cluster.local:80"
 
 # Port of the runtime image's WebSocket bridge to sshd (websocat on :8022, path
@@ -54,31 +56,21 @@ def dex_issuer(url: str) -> str:
     return f"{normalize_url(url)}/dex"
 
 
-def ate_api_target(url: str) -> str:
-    """gRPC target of ate-api (``ateapi.Control``) behind Agent Gateway."""
-    return _grpc_target(url)
+def grpc_target(url: str) -> str:
+    """gRPC target of ate-api (``ateapi.Control``) and the env guest API.
 
-
-def env_target(url: str) -> str:
-    """gRPC target of the env guest API (process and file services).
-
-    Calls carry ``x-env-id`` and ``x-env-atespace`` metadata, which the
-    gateway uses to reach the Actor.
+    Both are behind Agent Gateway. Env calls carry ``x-env-id`` and
+    ``x-env-atespace`` metadata, which the gateway uses to reach the Actor.
     """
-    return _grpc_target(url)
-
-
-def _grpc_target(url: str) -> str:
     parsed = urlparse(normalize_url(url))
     return f"{parsed.hostname}:{parsed.port or 443}"
 
 
-def presets_url(url: str | None) -> str:
+def presets_url(base: str) -> str:
     """The platform's sandbox presets (prokube/prokube-neo#132).
 
-    Without a platform URL, the same route on Agent Gateway's in-cluster Service.
+    ``base`` is the platform URL or ``http://<in-cluster endpoint>``.
     """
-    base = normalize_url(url) if url else f"http://{IN_CLUSTER_GATEWAY}"
     return f"{base}/svc/sandbox/v1alpha/presets"
 
 
