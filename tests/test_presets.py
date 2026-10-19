@@ -22,6 +22,7 @@ PRESETS_JSON = {
                 "title": size.capitalize(),
                 "description": "/workspace survives a suspend",
                 "size": size,
+                "fidelity": "VOLUMES",
                 "envGuest": True,
             }
             for size in ("small", "medium", "large")
@@ -33,6 +34,7 @@ PRESETS_JSON = {
                 "title": f"{size.capitalize()}, keeps memory",
                 "description": "memory and running processes survive a suspend",
                 "size": size,
+                "fidelity": "MEMORY",
                 "envGuest": True,
             }
             for size in ("small", "medium", "large")
@@ -107,3 +109,11 @@ def test_ateapi_is_public() -> None:
     from prokube.sandbox import ateapi as public
 
     assert public is ateapi
+
+
+def test_preset_fidelity():
+    assert PRESETS.get().fidelity == "VOLUMES"
+    assert PRESETS.get("pk-default-large-memory").fidelity == "MEMORY"
+    bare = dict(PRESETS_JSON["presets"][0])
+    del bare["fidelity"]
+    assert Presets.from_json({**PRESETS_JSON, "presets": [bare]}).get().fidelity == ""
