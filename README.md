@@ -404,6 +404,32 @@ The ate API stubs in `src/prokube/sandbox/_ateapi/` are generated from the
 pinned Substrate proto. To move the pin, edit `scripts/gen-ateapi.sh` and run
 it.
 
+### Benchmark against E2B
+
+`scripts/benchmark.py` runs the same operations on prokube sandboxes and on
+[E2B](https://e2b.dev) and prints p50/p95 per operation: create + first
+command, a command, two Python snippets in one interpreter, 1 KiB and 1 MiB
+file write and read, suspend, resume until a command works, delete. It uses
+your `pk login`; E2B is not an SDK dependency.
+
+```bash
+uv run --with e2b==2.56.0 --with e2b-code-interpreter==2.11.0 \
+    scripts/benchmark.py --rounds 20 --e2b-key-file ~/.e2b-key \
+    --location "Berlin, office" --json-output bench.json
+```
+
+Without `--e2b-key-file` only prokube is measured. `--preset` picks the
+prokube preset; E2B pauses keep the memory only for presets with `MEMORY`
+fidelity, and then a third snippet checks that the interpreter kept its state.
+There is no Python kernel in a prokube sandbox: the script feeds a `python3`
+process on stdin (`client.env(name).start_process(..., stdin=True)`), E2B uses
+`run_code`.
+
+`--sizes 1k,1m,100m` sets the file sizes (E2B files are also fetched from
+their `download_url`), and `--files 10000` also writes that many 1 KiB files
+of random content with one `write_files` call on both. A failed file
+operation is listed under `errors` and the round goes on.
+
 ## License
 
 MIT
