@@ -445,6 +445,8 @@ process on stdin (`client.env(name).start_process(..., stdin=True)`), E2B uses
 their `download_url`), and `--files 10000` also writes that many 1 KiB files
 of random content with one `write_files` call on both. A failed file
 operation is listed under `errors` and the round goes on.
+With `PROKUBE_API_KEY` set, prokube is called with that key instead of your
+login; the JSON records which credential was used.
 
 ## License
 
