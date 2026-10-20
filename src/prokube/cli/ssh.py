@@ -102,6 +102,16 @@ def forget_host(alias: str) -> None:
     host_config_file(alias).unlink(missing_ok=True)
 
 
+def resumes(alias: str) -> bool:
+    """Whether alias's config entry lets ssh resume a suspended sandbox."""
+    path = host_config_file(alias)
+    lines = path.read_text().splitlines() if path.exists() else []
+    return any(
+        line.lstrip().startswith("ProxyCommand ") and line.endswith(" --resume")
+        for line in lines
+    )
+
+
 def write_host_config(alias: str, proxy_command: list[str], identity: Path) -> Path:
     """Write the ssh config entry for alias and return its path."""
     lines = [
