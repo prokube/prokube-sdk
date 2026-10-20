@@ -299,13 +299,13 @@ rule.
 |-----|-----------|
 | workspace | Atespace with the same name |
 | sandbox `demo` | Actor `sbx-demo` in that Atespace |
-| `create`, `list`, `get`, `delete`, `suspend`, `resume` | `ateapi.Control` (`CreateActor`, `ListActors`, ...) |
+| `create`, `list`, `get`, `delete`, `suspend`, `resume`, `revert` | `ateapi.Control` (`CreateActor`, `ListActors`, ..., `RevertActor`) |
 | `list_actors`, `workers`, `worker_actors` | `ListActors` (every Actor), `ListWorkers`, `ListWorkerActorAssignments`, all pages |
 | preset | ActorTemplate `sandbox-templates/<template>` |
-| `create` | `CreateActor` on the preset's template, then `CreateActorEgressPolicy` (preset's rules or `network`) |
+| `create` | `CreateActor` on the preset's template, then `CreateActorEgressPolicy` (preset's rules or `network`); if that fails, `DeleteActor` |
 | `resize` | `SuspendActor`, `UpdateActor` (new `actor_template`), `ResumeActor` if it was running |
 | `network`, `set_network` | `GetActorEgressPolicy`, `UpdateActorEgressPolicy` |
-| `run`, `read_file`, `write_file`, `env()` | env guest API via `ate_env` |
+| `run`, `read_file`, `write_file`, `write_files`, `env()` | env guest API via `ate_env` |
 | return values | `Actor` protos and `ate_env.ShellResult` |
 | errors | `ate_env` errors (`NotFoundError`, `PermissionDeniedError`, `RpcError`, ...) |
 
@@ -330,7 +330,7 @@ in this order:
 ### API keys
 
 For CI, servers and agents outside the platform, create a key in the platform
-UI under AI Gateway Keys, with the scope "Sandboxes" and the format
+UI under AI Gateway Keys, with the scope "All sandboxes" and the format
 `x-api-key`. It can do what a workspace editor can, in the key's workspace
 only. No `pk login` needed:
 
