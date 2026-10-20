@@ -176,12 +176,15 @@ def listening_ports(proc_net_tcp: str) -> set[int]:
     return ports
 
 
-def proxy(url: str, token: str, stdin: int = 0, stdout: int = 1) -> None:
+def proxy(
+    url: str, credential: tuple[str, str], stdin: int = 0, stdout: int = 1
+) -> None:
     """Pump bytes between the file descriptors and the WebSocket at url.
 
-    Returns when either side closes. This is what OpenSSH runs as ProxyCommand.
+    ``credential`` is the header that authenticates the WebSocket. Returns when
+    either side closes. This is what OpenSSH runs as ProxyCommand.
     """
-    headers = {"Authorization": f"Bearer {token}"}
+    headers = dict([credential])
     # SSH traffic is encrypted, so compression would only cost CPU.
     with connect(url, additional_headers=headers, compression=None) as websocket:
 

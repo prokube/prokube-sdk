@@ -663,7 +663,21 @@ def test_proxy_opens_the_ssh_websocket_with_the_login_token(logged_in, monkeypat
 
     assert result.exit_code == 0, result.output
     path = "/svc/sandbox/v1alpha/atespaces/team-a/envs/sbx-demo/ports/8022/ssh"
-    assert opened == [(f"wss://platform.example.com{path}", logged_in)]
+    credential = ("authorization", f"Bearer {logged_in}")
+    assert opened == [(f"wss://platform.example.com{path}", credential)]
+
+
+def test_proxy_sends_an_api_key_without_a_login(monkeypatch):
+    opened = []
+    monkeypatch.setattr(commands.ssh, "proxy", lambda *args: opened.append(args))
+    monkeypatch.setenv("PROKUBE_URL", "https://platform.example.com")
+    monkeypatch.setenv("PROKUBE_WORKSPACE", "team-a")
+    monkeypatch.setenv("PROKUBE_API_KEY", "pk-key")
+
+    result = pk("sandbox", "proxy", "demo")
+
+    assert result.exit_code == 0, result.output
+    assert opened[0][1] == ("x-api-key", "pk-key")
 
 
 # --- Port forwarding -------------------------------------------------------

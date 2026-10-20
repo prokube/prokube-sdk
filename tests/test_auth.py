@@ -280,3 +280,16 @@ def test_default_token_provider_prefers_the_login(tmp_path, monkeypatch):
     user = make_jwt(time.time() + 3600)
     auth._save_tokens(URL, {"id_token": user, "expires_at": time.time() + 3600})
     assert auth.default_token_provider(URL)() == user
+
+
+def test_credential_prefers_a_token_provider_then_an_api_key(monkeypatch):
+    monkeypatch.setenv("PROKUBE_API_KEY", "env-key")
+
+    assert auth.credential(URL, lambda: "t")() == ("authorization", "Bearer t")
+    assert auth.credential(URL, api_key="key")() == ("x-api-key", "key")
+    assert auth.credential(URL)() == ("x-api-key", "env-key")
+
+
+def test_credential_without_an_api_key_needs_a_login():
+    with pytest.raises(auth.LoginRequired):
+        auth.credential(URL)

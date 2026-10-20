@@ -309,15 +309,31 @@ A new sandbox is `SUSPENDED`; its first command or `resume()` starts it.
 ## Credentials
 
 Every call sends `authorization: Bearer <token>`; Agent Gateway passes it
-through to Substrate, which authorizes the caller. The token comes from, in
-this order:
+through to Substrate, which authorizes the caller. The credential comes from,
+in this order:
 
 1. `token_provider`, any callable that returns a token:
    `SandboxClient(url, "my-workspace", token_provider=lambda: my_token)`
-2. the stored login for `url` (`prokube.auth.login`, `pk login`)
-3. the pod's workload token: the file in `PROKUBE_SANDBOX_TOKEN_FILE`, else
+2. an API key: `api_key`, else `PROKUBE_API_KEY`. It is sent as `x-api-key`
+   instead of a token (see [API keys](#api-keys)).
+3. the stored login for `url` (`prokube.auth.login`, `pk login`)
+4. the pod's workload token: the file in `PROKUBE_SANDBOX_TOKEN_FILE`, else
    `/var/run/secrets/prokube.ai/sandbox/token`. The SDK reads it again
    shortly before the token in it expires, since Kubernetes replaces it.
+
+### API keys
+
+For CI, servers and agents outside the platform, create a key in the platform
+UI under AI Gateway Keys, with the scope "Sandboxes" and the format
+`x-api-key`. It can do what a workspace editor can, in the key's workspace
+only. No `pk login` needed:
+
+```sh
+export PROKUBE_URL=https://my-platform.example.com
+export PROKUBE_WORKSPACE=my-workspace
+export PROKUBE_API_KEY=<key>
+pk sandbox create demo
+```
 
 ### In a workspace pod
 
