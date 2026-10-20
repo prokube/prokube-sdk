@@ -9,9 +9,9 @@ sandbox, a first and a second Python snippet in one interpreter (prokube: a
 python3 process fed on stdin, E2B: run_code), 1 KiB and 1 MiB file write and
 read, suspend (E2B: pause), resume until a command works (E2B: connect) and
 delete. --sizes changes the file sizes; E2B files are also fetched from their
-download_url. --files N also writes N 1 KiB files at once (prokube: concurrent
-write_file calls, E2B: one write_files batch). A failed file operation is
-reported and the round goes on; any other failure ends the round.
+download_url. --files N also writes N 1 KiB files of random content with one
+write_files call on both. A failed file operation is reported and the round
+goes on; any other failure ends the round.
 
 A prokube sandbox is created suspended and wakes on its first command. E2B
 pauses keep the memory only if the prokube preset's snapshots do (fidelity
@@ -46,8 +46,6 @@ from prokube.sandbox import AsyncSandboxClient
 from prokube.sandbox._ateapi import ateapi_pb2 as ateapi
 
 UNITS = {"k": 1024, "m": 1024 * 1024}
-# write_file calls in flight when writing many files to a prokube sandbox.
-CONCURRENCY = 32
 # Runs each line from stdin in one namespace; an exception ends the process.
 PYTHON = ["python3", "-u", "-c", "import sys\nfor line in sys.stdin: exec(line)"]
 E2B_API_HOST = "api.e2b.app"
@@ -116,10 +114,6 @@ async def prokube_round(
             raise RuntimeError(f"exit code {result.exit_code}: {result.stderr!r}")
         check(result.stdout, expected)
 
-    async def write(path: str, data: bytes, limit: asyncio.Semaphore) -> None:
-        async with limit:
-            await client.write_file(name, path, data)
-
     try:
         with timed("create_first_command"):
             created = await client.create(name, preset=preset)
@@ -139,11 +133,9 @@ async def prokube_round(
                 if await client.read_file(name, path) != data:
                     raise RuntimeError(f"{path} read back differently")
         if files:
-            data, limit = os.urandom(1024), asyncio.Semaphore(CONCURRENCY)
-            await run("mkdir /workspace/many && echo ok")
+            batch = {f"/workspace/many/{i}": os.urandom(1024) for i in range(files)}
             with timed(f"write_{files}_files", optional=True):  # with a count check
-                paths = [f"/workspace/many/{i}" for i in range(files)]
-                await asyncio.gather(*(write(path, data, limit) for path in paths))
+                await client.write_files(name, batch)
                 await run("find /workspace/many -type f | wc -l", str(files))
         with timed("suspend"):
             state = (await client.suspend(name)).status.state
@@ -203,12 +195,12 @@ def e2b_round(
                     if response.read() != data:
                         raise RuntimeError(f"{path} downloaded differently")
         if files:
-            data = os.urandom(1024)
+            batch = [
+                WriteEntry(path=f"/home/user/many/{i}", data=os.urandom(1024))
+                for i in range(files)
+            ]
             with timed(f"write_{files}_files", optional=True):  # with a count check
-                paths = [f"/home/user/many/{i}" for i in range(files)]
-                sandbox.files.write_files(
-                    [WriteEntry(path=p, data=data) for p in paths]
-                )
+                sandbox.files.write_files(batch)
                 find = sandbox.commands.run("find /home/user/many -type f | wc -l")
                 check(find.stdout, str(files))
         with timed("suspend"):

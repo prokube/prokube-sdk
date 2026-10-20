@@ -427,9 +427,8 @@ process on stdin (`client.env(name).start_process(..., stdin=True)`), E2B uses
 
 `--sizes 1k,1m,100m` sets the file sizes (E2B files are also fetched from
 their `download_url`), and `--files 10000` also writes that many 1 KiB files
-at once: 32 concurrent `write_file` calls on prokube, one `write_files` batch
-on E2B. A failed file operation is listed under `errors` and the round goes
-on.
+of random content with one `write_files` call on both. A failed file
+operation is listed under `errors` and the round goes on.
 
 ## License
 
