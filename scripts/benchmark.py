@@ -42,6 +42,7 @@ from urllib.parse import urlparse
 
 from ate_env import Process
 
+from prokube import auth
 from prokube.sandbox import AsyncSandboxClient
 from prokube.sandbox._ateapi import ateapi_pb2 as ateapi
 
@@ -299,7 +300,10 @@ async def main() -> None:
         "started": started.isoformat(timespec="seconds"),
         "location": args.location,
         "rounds": args.rounds,
-        "prokube": {"sdk": sdk_version("prokube-sdk")},
+        "prokube": {
+            "sdk": sdk_version("prokube-sdk"),
+            "credential": "api key" if os.environ.get(auth.API_KEY_ENV) else "token",
+        },
     }
     e2b_template = ""
     if e2b_key:
