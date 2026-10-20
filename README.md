@@ -127,6 +127,12 @@ pk sandbox create demo --install-ssh
 Then `ssh pk.my-workspace.demo` works, and VS Code Remote-SSH and JetBrains
 Gateway list `pk.my-workspace.demo` as a host, since they read `~/.ssh/config`.
 
+ssh does not resume a suspended sandbox: `pk sandbox proxy` refuses it with
+`Run: pk sandbox resume demo`, so an IDE that reconnects on its own does not
+wake it. `pk sandbox connect` and `forward` resume it, like `exec`, `cp` and
+the SDK. `pk sandbox ssh-config demo --resume` writes an entry that resumes it;
+`connect`, `forward` and `create` keep the entry's setting.
+
 `--install-ssh` (on `create` and `connect`, or `pk sandbox ssh-config demo
 --install` for an existing sandbox) writes the sandbox's host entry to
 `~/.config/prokube/ssh/hosts/pk.<workspace>.<name>.conf` and, once, adds this

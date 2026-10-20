@@ -245,11 +245,17 @@ def connect(
     help="Include all pk ssh hosts from ~/.ssh/config instead of printing the "
     "entry. NAME is optional then.",
 )
+@click.option(
+    "--resume",
+    is_flag=True,
+    help="Let ssh and IDEs resume the sandbox when it is suspended.",
+)
 @_identity_option
 @_target_options
 def ssh_config(
     name: str | None,
     install: bool,
+    resume: bool,
     identity: Path | None,
     url: str | None,
     workspace: str | None,
@@ -259,23 +265,42 @@ def ssh_config(
     Installs your public key and pins the host key like connect. With --install,
     adds an Include of the entries of all sandboxes at the top of
     ~/.ssh/config once, so ssh and IDEs that read it find them.
+
+    ssh through the entry refuses a suspended sandbox, so an IDE that reconnects
+    on its own does not wake it; --resume lets it resume the sandbox instead.
+    connect, forward and create keep the entry's setting.
     """
     if not install:
         if name is None:
             raise click.UsageError("Pass NAME, or --install.")
-        _, config_file = _prepare_ssh(name, identity, url, workspace)
+        _, config_file = _prepare_ssh(name, identity, url, workspace, resume)
         click.echo(config_file.read_text(), nl=False)
         return
-    alias = _prepare_ssh(name, identity, url, workspace)[0] if name else None
+    alias = _prepare_ssh(name, identity, url, workspace, resume)[0] if name else None
     _install_ssh(alias)
 
 
 @sandbox.command()
 @click.argument("name")
+@click.option("--resume", is_flag=True, help="Resume the sandbox if it is suspended.")
 @_target_options
-def proxy(name: str, url: str | None, workspace: str | None) -> None:
-    """Carry SSH to sandbox NAME over a WebSocket (OpenSSH ProxyCommand)."""
+def proxy(name: str, resume: bool, url: str | None, workspace: str | None) -> None:
+    """Carry SSH to sandbox NAME over a WebSocket (OpenSSH ProxyCommand).
+
+    Refuses a suspended sandbox unless --resume is given: connecting would
+    resume it.
+    """
     url, workspace = _require(url, workspace)
+    if not resume:
+        actor = _with_client(url, workspace, lambda client: client.get(name))
+        if actor.status.state in (
+            ateapi.ACTOR_STATE_SUSPENDED,
+            ateapi.ACTOR_STATE_SUSPENDING,
+        ):
+            raise click.ClickException(
+                f"{name} is suspended, and ssh does not resume it. "
+                f"Run: pk sandbox resume {name}"
+            )
     websocket_url = endpoints.ssh_url(url, workspace, actor_name(name))
     try:
         ssh.proxy(websocket_url, _credential(url))
@@ -395,7 +420,7 @@ def forward(
 @click.argument("name")
 @_target_options
 def suspend(name: str, url: str | None, workspace: str | None) -> None:
-    """Suspend sandbox NAME; its next use resumes it."""
+    """Suspend sandbox NAME; its next use resumes it, except plain ssh."""
     actor = _with_client(url, workspace, lambda client: client.suspend(name))
     click.echo(f"{_name(actor)}: {_state(actor)}")
 
@@ -546,9 +571,16 @@ def _install_ssh(alias: str | None) -> None:
 
 
 def _prepare_ssh(
-    name: str, identity: Path | None, url: str | None, workspace: str | None
+    name: str,
+    identity: Path | None,
+    url: str | None,
+    workspace: str | None,
+    resume: bool | None = None,
 ) -> tuple[str, Path]:
-    """Install the user's key, pin the host key and write the ssh config entry."""
+    """Install the user's key, pin the host key and write the ssh config entry.
+
+    resume None keeps whether the existing entry resumes a suspended sandbox.
+    """
     url, workspace = _require(url, workspace)
     identity = identity or ssh.default_identity()
     if identity is None:
@@ -569,8 +601,12 @@ def _prepare_ssh(
     host_key = _with_env_guest(url, workspace, name, install_key)
     alias = ssh.host_alias(workspace, actor_name(name).removeprefix(SANDBOX_PREFIX))
     ssh.pin_host_key(alias, host_key)
+    if resume is None:
+        resume = ssh.resumes(alias)
     proxy_command = [sys.executable, "-m", "prokube.cli", "sandbox", "proxy", name]
     proxy_command += ["--url", url, "--workspace", workspace]
+    if resume:
+        proxy_command.append("--resume")
     return alias, ssh.write_host_config(alias, proxy_command, identity)
 
 

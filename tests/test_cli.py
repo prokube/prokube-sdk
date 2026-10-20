@@ -668,7 +668,9 @@ def test_delete_forgets_the_ssh_entry(sandboxes, logged_in, identity, monkeypatc
     assert not ssh.host_config_file("pk.team-a.demo").exists()
 
 
-def test_proxy_opens_the_ssh_websocket_with_the_login_token(logged_in, monkeypatch):
+def test_proxy_opens_the_ssh_websocket_with_the_login_token(
+    sandboxes, logged_in, monkeypatch
+):
     opened = []
     monkeypatch.setattr(commands.ssh, "proxy", lambda *args: opened.append(args))
 
@@ -680,7 +682,7 @@ def test_proxy_opens_the_ssh_websocket_with_the_login_token(logged_in, monkeypat
     assert opened == [(f"wss://platform.example.com{path}", credential)]
 
 
-def test_proxy_sends_an_api_key_without_a_login(monkeypatch):
+def test_proxy_sends_an_api_key_without_a_login(sandboxes, monkeypatch):
     opened = []
     monkeypatch.setattr(commands.ssh, "proxy", lambda *args: opened.append(args))
     monkeypatch.setenv("PROKUBE_URL", "https://platform.example.com")
@@ -691,6 +693,42 @@ def test_proxy_sends_an_api_key_without_a_login(monkeypatch):
 
     assert result.exit_code == 0, result.output
     assert opened[0][1] == ("x-api-key", "pk-key")
+
+
+def test_proxy_does_not_resume_a_suspended_sandbox(sandboxes, logged_in, monkeypatch):
+    opened = []
+    monkeypatch.setattr(commands.ssh, "proxy", lambda *args: opened.append(args))
+    sandboxes.state = "ACTOR_STATE_SUSPENDED"
+
+    refused = pk("sandbox", "proxy", "demo")
+
+    assert refused.exit_code == 1
+    assert refused.output == (
+        "Error: demo is suspended, and ssh does not resume it. "
+        "Run: pk sandbox resume demo\n"
+    )
+    assert opened == []
+    assert pk("sandbox", "proxy", "demo", "--resume").exit_code == 0
+    assert len(opened) == 1
+
+
+def test_ssh_config_resume_stays_until_ssh_config_drops_it(
+    sandboxes, logged_in, identity, monkeypatch
+):
+    sandboxes.files[("demo", ssh.HOST_KEY_PATH)] = HOST_KEY.encode()
+    sandboxes.files[("demo", ssh.AUTHORIZED_KEYS_PATH)] = b""
+    monkeypatch.setattr(commands.os, "execvp", lambda file, args: None)
+    proxy = f"sandbox proxy demo --url {URL} --workspace team-a"
+
+    def entry() -> str:
+        return ssh.host_config_file("pk.team-a.demo").read_text()
+
+    pk("sandbox", "ssh-config", "demo", "--resume", "-i", str(identity))
+    assert f"{proxy} --resume\n" in entry()
+    pk("sandbox", "connect", "demo", "-i", str(identity))
+    assert f"{proxy} --resume\n" in entry()
+    pk("sandbox", "ssh-config", "demo", "-i", str(identity))
+    assert f"{proxy}\n" in entry()
 
 
 # --- Port forwarding -------------------------------------------------------
