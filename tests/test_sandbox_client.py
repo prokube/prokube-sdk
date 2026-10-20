@@ -1,4 +1,6 @@
 import copy
+import io
+import tarfile
 import time
 from typing import Any
 
@@ -547,6 +549,49 @@ def test_bearer_token_failure_fails_the_call():
     assert isinstance(error, auth.LoginRequired)
 
 
+async def test_write_files_uploads_one_archive_and_unpacks_it(client):
+    await client.write_files(
+        "demo", {"/workspace/src/a.py": "print(1)\n", "/home/developer/b": b"\x00"}
+    )
+
+    env = client._env.envs[("sbx-demo", "team-a")]
+    (upload,) = env.files
+    assert upload.startswith("/workspace/.pk-write-files-")
+    assert env.calls[0] == ("write_file", upload, 0o600)
+    _, command, _ = env.calls[1]
+    assert command.startswith(f"tar -xzf {upload} -C / --no-same-owner -m;")
+    assert f"rm -f {upload}" in command
+    members = {}
+    with tarfile.open(fileobj=io.BytesIO(env.files[upload])) as tar:
+        for member in tar:
+            content = tar.extractfile(member)
+            assert content is not None
+            members[member.name] = (member.mode, content.read())
+    assert members == {
+        "workspace/src/a.py": (0o644, b"print(1)\n"),
+        "home/developer/b": (0o644, b"\x00"),
+    }
+
+
+async def test_write_files_needs_absolute_paths(client):
+    with pytest.raises(ValueError, match="absolute path"):
+        await client.write_files("demo", {"a.py": "x"})
+
+    assert client._env.envs == {}
+
+
+async def test_write_files_reports_a_failed_unpack(client):
+    env = client._env.env("sbx-demo", atespace="team-a")
+
+    async def failing_shell(command, **kwargs):
+        return ShellResult(stdout="", stderr="tar: disk full\n", exit_code=2)
+
+    env.shell = failing_shell  # type: ignore[method-assign]
+
+    with pytest.raises(RuntimeError, match="tar: disk full"):
+        await client.write_files("demo", {"/workspace/a": "x"})
+
+
 def sync_client() -> SandboxClient:
     client = SandboxClient(URL, "team-a", token_provider=lambda: "token")
     client._client._control = FakeControl()  # type: ignore[assignment]
@@ -559,6 +604,7 @@ def test_sync_client_wraps_the_async_one():
         created = client.get("demo")
         result = client.run("demo", "echo hi")
         client.write_file("demo", "/workspace/a.txt", b"x")
+        client.write_files("demo", {"/workspace/b.txt": b"y"})
 
         assert created.metadata.name == "sbx-demo"
         assert result.exit_code == 0
