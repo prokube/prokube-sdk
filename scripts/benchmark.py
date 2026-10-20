@@ -41,7 +41,10 @@ Round = dict[str, float]
 @contextmanager
 def timed(samples: Round, operation: str) -> Iterator[None]:
     started = time.perf_counter()
-    yield
+    try:
+        yield
+    except Exception as error:
+        raise RuntimeError(f"{operation}: {type(error).__name__}: {error}") from error
     samples[operation] = time.perf_counter() - started
 
 
@@ -224,7 +227,7 @@ def main() -> None:
                 try:
                     rounds[arm].append(run_round())
                 except Exception as error:  # keep going; failures are reported
-                    errors[arm].append(f"{type(error).__name__}: {error}")
+                    errors[arm].append(str(error))
                     print(f"  {arm} failed: {errors[arm][-1]}", flush=True)
 
     for arm in arms:
