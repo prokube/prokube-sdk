@@ -425,6 +425,12 @@ There is no Python kernel in a prokube sandbox: the script feeds a `python3`
 process on stdin (`client.env(name).start_process(..., stdin=True)`), E2B uses
 `run_code`.
 
+`--sizes 1k,1m,100m` sets the file sizes (E2B files are also fetched from
+their `download_url`), and `--files 10000` also writes that many 1 KiB files
+at once: 32 concurrent `write_file` calls on prokube, one `write_files` batch
+on E2B. A failed file operation is listed under `errors` and the round goes
+on.
+
 ## License
 
 MIT

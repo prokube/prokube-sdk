@@ -8,8 +8,13 @@ Each round runs, on both: create + first command, a command in the running
 sandbox, a first and a second Python snippet in one interpreter (prokube: a
 python3 process fed on stdin, E2B: run_code), 1 KiB and 1 MiB file write and
 read, suspend (E2B: pause), resume until a command works (E2B: connect) and
-delete. A prokube sandbox is created suspended and wakes on its first command.
-E2B pauses keep the memory only if the prokube preset's snapshots do (fidelity
+delete. --sizes changes the file sizes; E2B files are also fetched from their
+download_url. --files N also writes N 1 KiB files at once (prokube: concurrent
+write_file calls, E2B: one write_files batch). A failed file operation is
+reported and the round goes on; any other failure ends the round.
+
+A prokube sandbox is created suspended and wakes on its first command. E2B
+pauses keep the memory only if the prokube preset's snapshots do (fidelity
 MEMORY); then a third snippet checks that the interpreter kept its state.
 Without --e2b-key-file, only prokube is measured.
 """
@@ -27,6 +32,7 @@ import socket
 import statistics
 import subprocess
 import time
+import urllib.request
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -39,21 +45,33 @@ from ate_env import Process
 from prokube.sandbox import AsyncSandboxClient
 from prokube.sandbox._ateapi import ateapi_pb2 as ateapi
 
-SIZES = {"1k": 1024, "1m": 1024 * 1024}
+UNITS = {"k": 1024, "m": 1024 * 1024}
+# write_file calls in flight when writing many files to a prokube sandbox.
+CONCURRENCY = 32
 # Runs each line from stdin in one namespace; an exception ends the process.
 PYTHON = ["python3", "-u", "-c", "import sys\nfor line in sys.stdin: exec(line)"]
 E2B_API_HOST = "api.e2b.app"
-Round = dict[str, float]
 
 
-@contextmanager
-def timed(samples: Round, operation: str) -> Iterator[None]:
-    started = time.perf_counter()
-    try:
-        yield
-    except Exception as error:
-        raise RuntimeError(f"{operation}: {type(error).__name__}: {error}") from error
-    samples[operation] = time.perf_counter() - started
+class Timer:
+    """The timings and failed optional operations of one round."""
+
+    def __init__(self) -> None:
+        self.samples: dict[str, float] = {}
+        self.errors: list[str] = []
+
+    @contextmanager
+    def __call__(self, operation: str, *, optional: bool = False) -> Iterator[None]:
+        started = time.perf_counter()
+        try:
+            yield
+        except Exception as error:
+            message = f"{operation}: {type(error).__name__}: {error}"
+            if not optional:
+                raise RuntimeError(message) from error
+            self.errors.append(message)
+        else:
+            self.samples[operation] = time.perf_counter() - started
 
 
 def check(stdout: str, expected: str = "ok") -> None:
@@ -81,56 +99,79 @@ class Python:
         check(stdout.decode(), expected)
 
 
-async def prokube_round(client: AsyncSandboxClient, preset: str, memory: bool) -> Round:
+async def prokube_round(
+    timed: Timer,
+    client: AsyncSandboxClient,
+    preset: str,
+    memory: bool,
+    sizes: dict[str, int],
+    files: int,
+) -> None:
     name = f"bench-{uuid.uuid4().hex[:8]}"
-    samples: Round = {}
     created = None
 
-    async def run() -> None:
-        result = await client.run(name, "echo ok")
+    async def run(command: str = "echo ok", expected: str = "ok") -> None:
+        result = await client.run(name, command)
         if result.exit_code != 0:
             raise RuntimeError(f"exit code {result.exit_code}: {result.stderr!r}")
-        check(result.stdout)
+        check(result.stdout, expected)
+
+    async def write(path: str, data: bytes, limit: asyncio.Semaphore) -> None:
+        async with limit:
+            await client.write_file(name, path, data)
 
     try:
-        with timed(samples, "create_first_command"):
+        with timed("create_first_command"):
             created = await client.create(name, preset=preset)
             await run()
-        with timed(samples, "command"):
+        with timed("command"):
             await run()
-        with timed(samples, "python_first"):
+        with timed("python_first"):
             python = Python(await client.env(name).start_process(PYTHON, stdin=True))
             await python.run("x = 41; print('ok')", "ok")
-        with timed(samples, "python"):
+        with timed("python"):
             await python.run("x += 1; print(x)", "42")
-        for label, size in SIZES.items():
+        for label, size in sizes.items():
             data, path = os.urandom(size), f"/workspace/bench-{label}"
-            with timed(samples, f"write_{label}"):
+            with timed(f"write_{label}", optional=True):
                 await client.write_file(name, path, data)
-            with timed(samples, f"read_{label}"):
+            with timed(f"read_{label}", optional=True):
                 if await client.read_file(name, path) != data:
                     raise RuntimeError(f"{path} read back differently")
-        with timed(samples, "suspend"):
+        if files:
+            data, limit = os.urandom(1024), asyncio.Semaphore(CONCURRENCY)
+            await run("mkdir /workspace/many && echo ok")
+            with timed(f"write_{files}_files", optional=True):  # with a count check
+                paths = [f"/workspace/many/{i}" for i in range(files)]
+                await asyncio.gather(*(write(path, data, limit) for path in paths))
+                await run("find /workspace/many -type f | wc -l", str(files))
+        with timed("suspend"):
             state = (await client.suspend(name)).status.state
         if state != ateapi.ACTOR_STATE_SUSPENDED:
             raise RuntimeError(f"suspend returned {ateapi.ActorState.Name(state)}")
-        with timed(samples, "resume_first_command"):
+        with timed("resume_first_command"):
             await client.resume(name)
             await run()
         if memory:
-            with timed(samples, "python_after_resume"):
+            with timed("python_after_resume"):
                 await python.run("x += 1; print(x)", "43")
     finally:
         if created is not None:
-            with timed(samples, "delete"):
+            with timed("delete"):
                 await client.delete(name)
-    return samples
 
 
-def e2b_round(api_key: str, template: str, memory: bool) -> Round:
+def e2b_round(
+    timed: Timer,
+    api_key: str,
+    template: str,
+    memory: bool,
+    sizes: dict[str, int],
+    files: int,
+) -> None:
+    from e2b.sandbox.filesystem.filesystem import WriteEntry
     from e2b_code_interpreter import Sandbox
 
-    samples: Round = {}
     sandbox = None
 
     def python(code: str, expected: str) -> None:
@@ -141,41 +182,53 @@ def e2b_round(api_key: str, template: str, memory: bool) -> Round:
         check("".join(execution.logs.stdout), expected)
 
     try:
-        with timed(samples, "create_first_command"):
+        with timed("create_first_command"):
             sandbox = Sandbox.create(template, api_key=api_key)
             check(sandbox.commands.run("echo ok").stdout)
-        with timed(samples, "command"):
+        with timed("command"):
             check(sandbox.commands.run("echo ok").stdout)
-        with timed(samples, "python_first"):
+        with timed("python_first"):
             python("x = 41; print('ok')", "ok")
-        with timed(samples, "python"):
+        with timed("python"):
             python("x += 1; print(x)", "42")
-        for label, size in SIZES.items():
+        for label, size in sizes.items():
             data, path = os.urandom(size), f"/home/user/bench-{label}"
-            with timed(samples, f"write_{label}"):
+            with timed(f"write_{label}", optional=True):
                 sandbox.files.write(path, data)
-            with timed(samples, f"read_{label}"):
+            with timed(f"read_{label}", optional=True):
                 if bytes(sandbox.files.read(path, format="bytes")) != data:
                     raise RuntimeError(f"{path} read back differently")
-        with timed(samples, "suspend"):
+            with timed(f"download_{label}", optional=True):
+                with urllib.request.urlopen(sandbox.download_url(path)) as response:
+                    if response.read() != data:
+                        raise RuntimeError(f"{path} downloaded differently")
+        if files:
+            data = os.urandom(1024)
+            with timed(f"write_{files}_files", optional=True):  # with a count check
+                paths = [f"/home/user/many/{i}" for i in range(files)]
+                sandbox.files.write_files(
+                    [WriteEntry(path=p, data=data) for p in paths]
+                )
+                find = sandbox.commands.run("find /home/user/many -type f | wc -l")
+                check(find.stdout, str(files))
+        with timed("suspend"):
             sandbox.pause(mode="full" if memory else "filesystem")
-        with timed(samples, "resume_first_command"):
+        with timed("resume_first_command"):
             sandbox = Sandbox.connect(sandbox.sandbox_id, api_key=api_key)
             check(sandbox.commands.run("echo ok").stdout)
         if memory:
-            with timed(samples, "python_after_resume"):
+            with timed("python_after_resume"):
                 python("x += 1; print(x)", "43")
     finally:
         if sandbox is not None:
-            with timed(samples, "delete"):
+            with timed("delete"):
                 sandbox.kill()
-    return samples
 
 
-def summary(rounds: list[Round]) -> dict[str, dict[str, float | int]]:
+def summary(rounds: list[dict[str, float]]) -> dict[str, dict[str, float | int]]:
     result: dict[str, dict[str, float | int]] = {}
-    for operation in rounds[0] if rounds else []:
-        ordered = sorted(r[operation] for r in rounds)
+    for operation in dict.fromkeys(op for samples in rounds for op in samples):
+        ordered = sorted(r[operation] for r in rounds if operation in r)
         result[operation] = {
             "count": len(ordered),
             "min_ms": round(ordered[0] * 1000, 1),
@@ -187,8 +240,14 @@ def summary(rounds: list[Round]) -> dict[str, dict[str, float | int]]:
 
 
 def print_table(result: dict[str, Any], arms: list[str]) -> None:
+    operations: list[str] = []  # each arm's order; extra ones after their predecessor
+    for timings in (list(result[arm]["timings"]) for arm in arms):
+        for i, operation in enumerate(timings):
+            if operation not in operations:
+                position = operations.index(timings[i - 1]) + 1 if i else 0
+                operations.insert(position, operation)
     print(f"\n{'p50 / p95 ms':<22}" + "".join(f"{arm:>22}" for arm in arms))
-    for operation in result["prokube"]["timings"]:
+    for operation in operations:
         cells = []
         for arm in arms:
             t = result[arm]["timings"].get(operation)
@@ -229,6 +288,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--preset", help="prokube preset (default: the platform's)")
     parser.add_argument("--e2b-key-file", type=Path, help="file with the E2B API key")
     parser.add_argument("--e2b-template", help="default: code-interpreter-v1")
+    parser.add_argument("--sizes", default="1k,1m", help="file sizes, e.g. 1k,100m")
+    parser.add_argument("--files", type=int, default=0, help="also write N files")
     parser.add_argument("--location", default="", help="where this client runs")
     parser.add_argument("--json-output", type=Path)
     args = parser.parse_args()
@@ -240,6 +301,7 @@ def parse_args() -> argparse.Namespace:
 async def main() -> None:
     args = parse_args()
     e2b_key = args.e2b_key_file.read_text().strip() if args.e2b_key_file else None
+    sizes = {s: int(s[:-1]) * UNITS[s[-1]] for s in args.sizes.split(",")}
     started = datetime.datetime.now(datetime.timezone.utc)
     result: dict[str, Any] = {
         "started": started.isoformat(timespec="seconds"),
@@ -271,22 +333,30 @@ async def main() -> None:
             fidelity=preset.fidelity,
             tcp_connect_ms=tcp_connect_ms(host) if host else None,
         )
-        arms = {"prokube": lambda: prokube_round(client, preset.name, memory)}
+        arms = {
+            "prokube": lambda timed: prokube_round(
+                timed, client, preset.name, memory, sizes, args.files
+            )
+        }
         if e2b_key:
             result["e2b"]["pause_mode"] = "full" if memory else "filesystem"
-            arms["e2b"] = lambda: asyncio.to_thread(
-                e2b_round, e2b_key, e2b_template, memory
+            arms["e2b"] = lambda timed: asyncio.to_thread(
+                e2b_round, timed, e2b_key, e2b_template, memory, sizes, args.files
             )
-        rounds: dict[str, list[Round]] = {arm: [] for arm in arms}
+        rounds: dict[str, list[dict[str, float]]] = {arm: [] for arm in arms}
         errors: dict[str, list[str]] = {arm: [] for arm in arms}
         for number in range(1, args.rounds + 1):
             print(f"round {number}/{args.rounds}", flush=True)
             for arm, run_round in arms.items():
+                timed = Timer()
                 try:
-                    rounds[arm].append(await run_round())
+                    await run_round(timed)
+                    rounds[arm].append(timed.samples)
                 except Exception as error:  # keep going; failures are reported
-                    errors[arm].append(str(error))
-                    print(f"  {arm} failed: {errors[arm][-1]}", flush=True)
+                    timed.errors.append(str(error))
+                for message in timed.errors:
+                    print(f"  {arm} failed: {message}", flush=True)
+                errors[arm] += timed.errors
 
     for arm in arms:
         result[arm].update(errors=errors[arm], timings=summary(rounds[arm]))
