@@ -92,6 +92,7 @@ class FakeSandboxes:
         # What pk-sandbox-hostkey prints; None is an older image without it.
         self.host_key: ShellResult | None = None
         self.proc_net_tcp = ""  # the sandbox's /proc/net/tcp and tcp6
+        self.state = "ACTOR_STATE_RUNNING"  # what get returns
 
     def __call__(self, url: str, workspace: str) -> "FakeSandboxes":
         self.targets.append((url, workspace))
@@ -144,6 +145,9 @@ class FakeSandboxes:
     async def resume(self, name):
         self.calls.append(("resume", name))
         return actor("sbx-" + name, "ACTOR_STATE_RUNNING")
+
+    async def get(self, name):
+        return actor("sbx-" + name, self.state)
 
     async def revert(self, name):
         self.calls.append(("revert", name))
@@ -343,6 +347,15 @@ def test_revert_asks_before_discarding_changes(sandboxes, logged_in):
     assert confirmed.output.endswith("demo: SUSPENDED\n")
     assert pk("sandbox", "revert", "demo", "--yes").output == "demo: SUSPENDED\n"
     assert sandboxes.calls == [("revert", "demo"), ("revert", "demo")]
+
+
+def test_revert_does_not_ask_for_a_crashed_sandbox(sandboxes, logged_in):
+    sandboxes.state = "ACTOR_STATE_CRASHED"
+
+    assert pk("sandbox", "revert", "demo").output == (
+        "demo crashed; its changes since the last snapshot are lost.\ndemo: SUSPENDED\n"
+    )
+    assert sandboxes.calls == [("revert", "demo")]
 
 
 def test_create_defaults_to_the_platforms_preset(sandboxes, logged_in):

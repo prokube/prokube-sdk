@@ -417,12 +417,17 @@ def revert(name: str, yes: bool, url: str | None, workspace: str | None) -> None
     """Return sandbox NAME to its last snapshot, suspended.
 
     Use it for a crashed sandbox, for example after a node restart.
-    Everything since the last snapshot is lost.
+    Everything since the last snapshot is lost. Asks first unless the sandbox
+    crashed: its changes are gone already.
     """
     if not yes:
-        click.confirm(
-            f"Discard all changes to {name} since its last snapshot?", abort=True
-        )
+        current = _with_client(url, workspace, lambda client: client.get(name))
+        if current.status.state == ateapi.ACTOR_STATE_CRASHED:
+            click.echo(f"{name} crashed; its changes since the last snapshot are lost.")
+        else:
+            click.confirm(
+                f"Discard all changes to {name} since its last snapshot?", abort=True
+            )
     actor = _with_client(url, workspace, lambda client: client.revert(name))
     click.echo(f"{_name(actor)}: {_state(actor)}")
 
