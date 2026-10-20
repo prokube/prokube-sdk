@@ -80,8 +80,9 @@ class AsyncSandboxClient:
 
     ``url`` (``https://<domain>``) defaults to ``$PROKUBE_URL`` and
     ``workspace`` to ``$PROKUBE_WORKSPACE``, both then to what ``pk login``
-    saved. ``token_provider`` defaults to the stored login for ``url`` (see
-    ``prokube.auth.login``), then to the pod's workload token.
+    saved. ``token_provider`` defaults to ``api_key`` (``$PROKUBE_API_KEY``),
+    a pkui API key with the scope "Sandboxes", then to the stored login for
+    ``url`` (see ``prokube.auth.login``), then to the pod's workload token.
 
     Without a URL, or with ``endpoint``, calls go in plaintext to Agent
     Gateway's in-cluster Service at ``endpoint`` (``host:port``, default
@@ -101,6 +102,7 @@ class AsyncSandboxClient:
         *,
         endpoint: str | None = None,
         token_provider: TokenProvider | None = None,
+        api_key: str | None = None,
     ) -> None:
         saved = auth.load_config()
         url = url or os.environ.get("PROKUBE_URL") or saved.get("url")
@@ -111,14 +113,13 @@ class AsyncSandboxClient:
             workspace = _pod_namespace()
         self.url = endpoints.normalize_url(url) if url else None
         self.workspace = workspace
-        if token_provider is None:
-            token_provider = auth.default_token_provider(self.url)
-        self._token_provider = token_provider
+        credential = auth.credential(self.url, token_provider, api_key)
+        self._credential = credential
         if self.url and not endpoint:
             self.endpoint = None
             credentials = grpc.composite_channel_credentials(
                 grpc.ssl_channel_credentials(),
-                grpc.metadata_call_credentials(_BearerToken(token_provider)),
+                grpc.metadata_call_credentials(_CredentialPlugin(credential)),
             )
             self._channel = grpc.aio.secure_channel(
                 endpoints.grpc_target(self.url), credentials
@@ -126,14 +127,14 @@ class AsyncSandboxClient:
             self._presets_url = endpoints.presets_url(self.url)
         else:
             self.endpoint = endpoint or endpoints.IN_CLUSTER_GATEWAY
-            # gRPC sends call credentials only over TLS, so the token goes in
-            # by interceptor, one per call type: grpc.aio registers an
+            # gRPC sends call credentials only over TLS, so the credential goes
+            # in by interceptor, one per call type: grpc.aio registers an
             # interceptor for only the first type it implements.
             interceptors: list[grpc.aio.ClientInterceptor] = [
-                _UnaryUnaryBearerToken(token_provider),
-                _UnaryStreamBearerToken(token_provider),
-                _StreamUnaryBearerToken(token_provider),
-                _StreamStreamBearerToken(token_provider),
+                _UnaryUnaryCredential(credential),
+                _UnaryStreamCredential(credential),
+                _StreamUnaryCredential(credential),
+                _StreamStreamCredential(credential),
             ]
             self._channel = grpc.aio.insecure_channel(
                 self.endpoint, interceptors=interceptors
@@ -245,9 +246,9 @@ class AsyncSandboxClient:
     async def presets(self) -> Presets:
         """The presets the platform offers and its default preset."""
         url = self._presets_url
-        token = await asyncio.to_thread(self._token_provider)
+        header = await asyncio.to_thread(self._credential)
         async with httpx.AsyncClient(timeout=30) as http:
-            response = await http.get(url, headers={"authorization": f"Bearer {token}"})
+            response = await http.get(url, headers=dict([header]))
         if response.status_code != 200:
             raise PresetError(
                 f"Cannot read the sandbox presets from {url}: HTTP {response.status_code}"
@@ -437,6 +438,7 @@ class SandboxClient:
         *,
         endpoint: str | None = None,
         token_provider: TokenProvider | None = None,
+        api_key: str | None = None,
     ) -> None:
         self._loop = asyncio.new_event_loop()
         self._thread = threading.Thread(target=self._loop.run_forever, daemon=True)
@@ -444,7 +446,11 @@ class SandboxClient:
 
         async def create_client() -> AsyncSandboxClient:
             return AsyncSandboxClient(
-                url, workspace, endpoint=endpoint, token_provider=token_provider
+                url,
+                workspace,
+                endpoint=endpoint,
+                token_provider=token_provider,
+                api_key=api_key,
             )
 
         try:
@@ -565,11 +571,11 @@ class SandboxClient:
         self._loop.close()
 
 
-class _BearerToken(grpc.AuthMetadataPlugin):
-    """Adds ``authorization: Bearer <token>``, asking the provider on every call."""
+class _CredentialPlugin(grpc.AuthMetadataPlugin):
+    """Adds the credential header, asking for it on every call."""
 
-    def __init__(self, token_provider: TokenProvider) -> None:
-        self._token_provider = token_provider
+    def __init__(self, credential: auth.Credential) -> None:
+        self._credential = credential
 
     def __call__(
         self,
@@ -577,7 +583,7 @@ class _BearerToken(grpc.AuthMetadataPlugin):
         callback: grpc.AuthMetadataPluginCallback,
     ) -> None:
         try:
-            callback((("authorization", f"Bearer {self._token_provider()}"),), None)
+            callback((self._credential(),), None)
         except Exception as error:  # e.g. LoginRequired; fails the call with it
             callback((), error)
 
@@ -592,18 +598,18 @@ class _CallDetails(
     pass
 
 
-class _BearerTokenInterceptor:
-    """Adds ``authorization: Bearer <token>`` on plaintext channels.
+class _CredentialInterceptor:
+    """Adds the credential header on plaintext channels.
 
-    Like the upstream ``ate_env`` client's, but asks the provider on every call.
+    Like the upstream ``ate_env`` client's, but asks for it on every call.
     """
 
-    def __init__(self, token_provider: TokenProvider) -> None:
-        self._token_provider = token_provider
+    def __init__(self, credential: auth.Credential) -> None:
+        self._credential = credential
 
     def _with_token(self, details: grpc.aio.ClientCallDetails) -> _CallDetails:
         metadata = list(details.metadata or [])
-        metadata.append(("authorization", f"Bearer {self._token_provider()}"))
+        metadata.append(self._credential())
         return _CallDetails(
             details.method,
             details.timeout,
@@ -613,22 +619,22 @@ class _BearerTokenInterceptor:
         )
 
 
-class _UnaryUnaryBearerToken(
-    _BearerTokenInterceptor, grpc.aio.UnaryUnaryClientInterceptor
+class _UnaryUnaryCredential(
+    _CredentialInterceptor, grpc.aio.UnaryUnaryClientInterceptor
 ):
     async def intercept_unary_unary(self, continuation, client_call_details, request):
         return await continuation(self._with_token(client_call_details), request)
 
 
-class _UnaryStreamBearerToken(
-    _BearerTokenInterceptor, grpc.aio.UnaryStreamClientInterceptor
+class _UnaryStreamCredential(
+    _CredentialInterceptor, grpc.aio.UnaryStreamClientInterceptor
 ):
     async def intercept_unary_stream(self, continuation, client_call_details, request):
         return await continuation(self._with_token(client_call_details), request)
 
 
-class _StreamUnaryBearerToken(
-    _BearerTokenInterceptor, grpc.aio.StreamUnaryClientInterceptor
+class _StreamUnaryCredential(
+    _CredentialInterceptor, grpc.aio.StreamUnaryClientInterceptor
 ):
     async def intercept_stream_unary(
         self, continuation, client_call_details, request_iterator
@@ -638,8 +644,8 @@ class _StreamUnaryBearerToken(
         )
 
 
-class _StreamStreamBearerToken(
-    _BearerTokenInterceptor, grpc.aio.StreamStreamClientInterceptor
+class _StreamStreamCredential(
+    _CredentialInterceptor, grpc.aio.StreamStreamClientInterceptor
 ):
     async def intercept_stream_stream(
         self, continuation, client_call_details, request_iterator

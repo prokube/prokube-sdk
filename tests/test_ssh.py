@@ -27,7 +27,8 @@ def websocket_server(handler: Callable[[ServerConnection], None]) -> Iterator[st
 
 
 def run_proxy(url: str, stdin: int, stdout: int) -> None:
-    thread = threading.Thread(target=ssh.proxy, args=(url, "tok", stdin, stdout))
+    credential = ("authorization", "Bearer tok")
+    thread = threading.Thread(target=ssh.proxy, args=(url, credential, stdin, stdout))
     thread.start()
     thread.join(timeout=10)
     assert not thread.is_alive(), "proxy did not return"

@@ -146,6 +146,9 @@ def auth_status(url: str | None, workspace: str | None) -> None:
         raise click.ClickException("Not logged in. Run: pk login <url>")
     click.echo(f"Platform:  {url}")
     click.echo(f"Workspace: {workspace or '-'}")
+    if os.environ.get(auth.API_KEY_ENV):
+        click.echo(f"User:      API key (${auth.API_KEY_ENV})")
+        return
     claims = _claims(_token(url))
     expires = datetime.fromtimestamp(claims["exp"], timezone.utc)
     click.echo(f"User:      {claims.get('email') or claims.get('sub')}")
@@ -275,7 +278,7 @@ def proxy(name: str, url: str | None, workspace: str | None) -> None:
     url, workspace = _require(url, workspace)
     websocket_url = endpoints.ssh_url(url, workspace, actor_name(name))
     try:
-        ssh.proxy(websocket_url, _token(url))
+        ssh.proxy(websocket_url, _credential(url))
     except (WebSocketException, OSError) as error:
         raise click.ClickException(
             f"SSH connection to {name} failed: {error}"
@@ -665,11 +668,24 @@ def _token(url: str) -> str:
         ) from error
 
 
+def _credential(url: str) -> tuple[str, str]:
+    """The credential header: ``$PROKUBE_API_KEY``, else the login's token."""
+    try:
+        return auth.credential(url)()
+    except auth.LoginRequired as error:
+        raise click.ClickException(
+            f"Not logged in to {url}. Run: pk login {url}"
+        ) from error
+
+
 def _resolve(url: str | None, workspace: str | None) -> tuple[str | None, str | None]:
-    """Fill in url and workspace from the saved config."""
+    """Fill in url and workspace from $PROKUBE_URL, $PROKUBE_WORKSPACE, then the saved config."""
     saved = auth.load_config()
-    url = url or saved.get("url")
-    return (_normalize(url) if url else None), workspace or saved.get("workspace")
+    url = url or os.environ.get("PROKUBE_URL") or saved.get("url")
+    workspace = (
+        workspace or os.environ.get("PROKUBE_WORKSPACE") or saved.get("workspace")
+    )
+    return (_normalize(url) if url else None), workspace
 
 
 def _require(url: str | None, workspace: str | None) -> tuple[str, str]:

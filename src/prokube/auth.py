@@ -12,6 +12,9 @@ so the new one is stored each time.
 In a workspace pod, ``TokenFile`` reads the pod's own token instead (workload
 identity, prokube/prokube-neo#100). ``default_token_provider`` picks between
 the two.
+
+Without a login, a pkui API key with the scope "Sandboxes" works too: it goes
+in the ``x-api-key`` header instead of a token. ``credential`` picks the header.
 """
 
 from __future__ import annotations
@@ -39,6 +42,12 @@ from prokube import endpoints
 # Returns the bearer token for the next API call. Any callable works, so other
 # credentials can be plugged in.
 TokenProvider = Callable[[], str]
+
+# Returns the credential header for the next API call: (name, value).
+Credential = Callable[[], tuple[str, str]]
+
+# A pkui API key with the scope "Sandboxes" of a workspace.
+API_KEY_ENV = "PROKUBE_API_KEY"
 
 KEYRING_SERVICE = "prokube"
 REFRESH_MARGIN_SECONDS = 60
@@ -135,6 +144,27 @@ def default_token_provider(url: str | None) -> TokenProvider:
             f"mount a token at {DEFAULT_TOKEN_FILE} (set {TOKEN_FILE_ENV})."
         )
     return TokenFile(token_file).token
+
+
+def credential(
+    url: str | None,
+    token_provider: TokenProvider | None = None,
+    api_key: str | None = None,
+) -> Credential:
+    """The credential header for API calls.
+
+    ``Authorization: Bearer`` with ``token_provider``'s tokens; else
+    ``x-api-key`` with ``api_key`` or ``$PROKUBE_API_KEY``; else the bearer
+    tokens of ``default_token_provider(url)``.
+    """
+    if token_provider is None:
+        api_key = api_key or os.environ.get(API_KEY_ENV)
+        if api_key:
+            key = api_key
+            return lambda: ("x-api-key", key)
+        token_provider = default_token_provider(url)
+    provider = token_provider
+    return lambda: ("authorization", f"Bearer {provider()}")
 
 
 def login(url: str, *, open_browser: bool = True, timeout: float = 300) -> LoginSession:

@@ -21,7 +21,7 @@ from prokube.sandbox import (
 )
 from prokube.sandbox import client as client_module
 from prokube.sandbox._ateapi import ateapi_pb2 as ateapi
-from prokube.sandbox.client import _BearerToken
+from prokube.sandbox.client import _CredentialPlugin
 from tests.conftest import make_jwt
 from tests.test_presets import OPENCODE_POLICY, PRESETS, PRESETS_JSON
 
@@ -524,7 +524,19 @@ async def test_a_server_sends_the_callers_token_to_the_endpoint(gateway, monkeyp
     ] * 3
 
 
-def call_plugin(plugin: _BearerToken) -> tuple:
+async def test_an_api_key_goes_in_x_api_key(gateway, monkeypatch):
+    endpoint = endpoints.IN_CLUSTER_GATEWAY  # where the gateway fixture listens
+    monkeypatch.setenv("PROKUBE_API_KEY", "pk-key")
+
+    async with AsyncSandboxClient(workspace="team-a", endpoint=endpoint) as client:
+        await client.get("demo")
+
+    [(_, metadata)] = gateway
+    assert metadata["x-api-key"] == "pk-key"
+    assert "authorization" not in metadata
+
+
+def call_plugin(plugin: _CredentialPlugin) -> tuple:
     """Invoke the gRPC auth plugin the way gRPC does and return what it sent."""
     sent = []
     plugin(None, lambda metadata, error: sent.append((metadata, error)))  # type: ignore[arg-type]
@@ -533,7 +545,7 @@ def call_plugin(plugin: _BearerToken) -> tuple:
 
 def test_bearer_token_is_asked_for_on_every_call():
     tokens = iter(["first", "second"])
-    plugin = _BearerToken(lambda: next(tokens))
+    plugin = _CredentialPlugin(auth.credential(None, lambda: next(tokens)))
 
     assert call_plugin(plugin) == ((("authorization", "Bearer first"),), None)
     assert call_plugin(plugin) == ((("authorization", "Bearer second"),), None)
@@ -543,7 +555,7 @@ def test_bearer_token_failure_fails_the_call():
     def expired() -> str:
         raise auth.LoginRequired("expired")
 
-    metadata, error = call_plugin(_BearerToken(expired))
+    metadata, error = call_plugin(_CredentialPlugin(auth.credential(None, expired)))
 
     assert metadata == ()
     assert isinstance(error, auth.LoginRequired)
