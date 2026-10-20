@@ -404,6 +404,23 @@ The ate API stubs in `src/prokube/sandbox/_ateapi/` are generated from the
 pinned Substrate proto. To move the pin, edit `scripts/gen-ateapi.sh` and run
 it.
 
+### Benchmark against E2B
+
+`scripts/benchmark.py` runs the same operations on prokube sandboxes and on
+[E2B](https://e2b.dev) and prints p50/p95 per operation: create + first
+command, a command, 1 KiB and 1 MiB file write and read, suspend, resume
+until a command works, delete. It uses your `pk login`; E2B is not an SDK
+dependency.
+
+```bash
+uv run --with e2b==2.56.0 scripts/benchmark.py --rounds 20 \
+    --e2b-key-file ~/.e2b-key --location "Berlin, office" --json-output bench.json
+```
+
+Without `--e2b-key-file` only prokube is measured. `--preset` picks the
+prokube preset; E2B pauses keep the memory only for presets with `MEMORY`
+fidelity.
+
 ## License
 
 MIT
