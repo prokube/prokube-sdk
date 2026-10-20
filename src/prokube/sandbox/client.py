@@ -17,8 +17,11 @@ from __future__ import annotations
 
 import asyncio
 import collections
+import io
 import os
+import tarfile
 import threading
+import uuid
 from collections.abc import (
     AsyncIterable,
     Awaitable,
@@ -361,6 +364,35 @@ class AsyncSandboxClient:
             data = data.encode()
         return await self.env(name).write_file(path, data, mode=mode)
 
+    async def write_files(
+        self, name: str, files: Mapping[str, bytes | str], *, mode: int = 0o644
+    ) -> None:
+        """Write many files in one upload, replacing existing ones.
+
+        ``files`` maps absolute paths to contents. They travel as one gzipped
+        tar archive, built in memory, which tar unpacks in the sandbox; missing
+        directories are created. Unlike write_file, paths may lie outside
+        /workspace.
+        """
+        archive = io.BytesIO()
+        with tarfile.open(fileobj=archive, mode="w:gz", compresslevel=6) as tar:
+            for path, data in files.items():
+                if not path.startswith("/"):
+                    raise ValueError(f"Expected an absolute path, got {path!r}")
+                content = data.encode() if isinstance(data, str) else data
+                info = tarfile.TarInfo(path.lstrip("/"))
+                info.size, info.mode = len(content), mode
+                tar.addfile(info, io.BytesIO(content))
+        upload = f"/workspace/.pk-write-files-{uuid.uuid4().hex}.tar.gz"
+        await self.write_file(name, upload, archive.getvalue(), mode=0o600)
+        result = await self.run(
+            name,
+            f"tar -xzf {upload} -C / --no-same-owner -m;"
+            f" status=$?; rm -f {upload}; exit $status",
+        )
+        if result.exit_code != 0:
+            raise RuntimeError(f"Unpacking the files failed: {result.stderr.strip()}")
+
     async def close(self) -> None:
         await self._channel.close()
 
@@ -507,6 +539,12 @@ class SandboxClient:
         self, name: str, path: str, data: FileData, *, mode: int = 0o644
     ) -> int:
         return self._run(self._client.write_file(name, path, data, mode=mode))
+
+    def write_files(
+        self, name: str, files: Mapping[str, bytes | str], *, mode: int = 0o644
+    ) -> None:
+        """Write many files in one upload (see AsyncSandboxClient)."""
+        return self._run(self._client.write_files(name, files, mode=mode))
 
     def close(self) -> None:
         self._run(self._client.close())

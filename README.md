@@ -50,6 +50,7 @@ with SandboxClient("https://my-platform.example.com", "my-workspace") as client:
 
     client.write_file("demo", "/workspace/hello.txt", "hello")
     print(client.read_file("demo", "/workspace/hello.txt"))
+    client.write_files("demo", {"/workspace/src/a.py": "...", "/workspace/src/b.py": "..."})
 
     for actor in client.list():
         print(actor.metadata.name, actor.status.state)
@@ -67,6 +68,9 @@ with SandboxClient("https://my-platform.example.com", "my-workspace") as client:
 to what `pk login` saved (see [Command line](#command-line)).
 `SandboxClient` works in scripts and in notebooks. `read_file` and `write_file`
 only accept paths under `/workspace`; use `run` for files elsewhere.
+`write_files` sends many files as one gzipped tar archive, which `tar` unpacks
+in the sandbox. That is much faster than one `write_file` per file, and it
+also takes absolute paths outside `/workspace`.
 
 ### Async
 
