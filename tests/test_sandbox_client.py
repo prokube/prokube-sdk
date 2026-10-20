@@ -7,7 +7,7 @@ from typing import Any
 import grpc
 import grpc.aio
 import pytest
-from ate_env import NotFoundError, ShellResult
+from ate_env import NotFoundError, PermissionDeniedError, ShellResult
 from ate_env._gen.ateenv.v1alpha import guest_pb2
 
 from prokube import auth, endpoints
@@ -795,6 +795,24 @@ async def test_create_keeps_an_existing_egress_policy(client, presets_api):
     created = await client.create("demo")
 
     assert created.actor_template == ref(SHARED, "pk-default-small-v1")
+
+
+async def test_create_leaves_no_sandbox_when_its_network_fails(client, presets_api):
+    async def denied(request):
+        raise grpc.aio.AioRpcError(
+            grpc.StatusCode.PERMISSION_DENIED,
+            grpc.aio.Metadata(),
+            grpc.aio.Metadata(),
+            details="egress policy denied",
+        )
+
+    client._control.CreateActorEgressPolicy = denied
+
+    with pytest.raises(PermissionDeniedError, match="egress policy denied"):
+        await client.create("demo")
+
+    assert client._control.methods() == ["CreateActor", "DeleteActor"]
+    assert client._control.requests[-1][1].actor == ref("team-a", "sbx-demo")
 
 
 async def test_create_from_an_unknown_preset_creates_nothing(client, presets_api):

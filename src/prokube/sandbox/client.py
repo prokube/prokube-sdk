@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import collections
+import contextlib
 import io
 import os
 import tarfile
@@ -39,7 +40,7 @@ import grpc
 import grpc.aio
 import httpx
 from ate_env import Client as EnvClient
-from ate_env import Env, RpcError, ShellResult, map_rpc_error
+from ate_env import Env, EnvError, ShellResult, map_rpc_error
 from google.protobuf import json_format
 
 from prokube import auth, endpoints
@@ -175,9 +176,13 @@ class AsyncSandboxClient:
         request = ateapi.CreateActorEgressPolicyRequest(actor=ref, egress_policy=policy)
         try:
             await _call(self._control.CreateActorEgressPolicy(request))
-        except RpcError as error:  # it has one already; keep that
-            if error.code != grpc.StatusCode.ALREADY_EXISTS:
-                raise
+        except EnvError as error:
+            if getattr(error, "code", None) == grpc.StatusCode.ALREADY_EXISTS:
+                return created  # it has one already; keep that
+            # Leave no sandbox without its network rules behind.
+            with contextlib.suppress(EnvError):
+                await self.delete(name)
+            raise
         return created
 
     async def resize(self, name: str, *, preset: str) -> Actor:
