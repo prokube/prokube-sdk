@@ -163,9 +163,9 @@ For a server in the sandbox, such as `opencode serve`, Jupyter or a dev
 server, forward a local port to it:
 
 ```bash
-pk sandbox connect demo                            # there: opencode serve --port 4096
+pk sandbox connect demo                            # there: OPENCODE_PASSWORD=<password> opencode serve --port 4096
 pk sandbox forward demo 4096                       # another terminal; Ctrl-C stops it
-opencode --server http://localhost:4096            # a third terminal
+OPENCODE_PASSWORD=<password> opencode --server http://localhost:4096   # a third terminal
 ```
 
 `pk sandbox forward NAME REMOTE_PORT [--local-port PORT]` runs

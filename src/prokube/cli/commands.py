@@ -388,11 +388,12 @@ def forward(
     """Forward localhost to REMOTE_PORT in sandbox NAME until Ctrl-C.
 
     The tunnel runs over SSH, like connect, and listens on localhost only.
-    For example, after `opencode serve --port 4096` in the sandbox:
+    For example, after `OPENCODE_PASSWORD=<password> opencode serve --port 4096`
+    in the sandbox:
 
     \b
     pk sandbox forward demo 4096
-    opencode --server http://localhost:4096
+    OPENCODE_PASSWORD=<password> opencode --server http://localhost:4096
     """
     local_port = local_port or remote_port
     if ssh.port_in_use(local_port):
