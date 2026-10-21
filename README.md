@@ -165,7 +165,7 @@ server, forward a local port to it:
 ```bash
 pk sandbox connect demo                            # there: opencode serve --port 4096
 pk sandbox forward demo 4096                       # another terminal; Ctrl-C stops it
-opencode attach http://localhost:4096              # a third terminal
+opencode --server http://localhost:4096            # a third terminal
 ```
 
 `pk sandbox forward NAME REMOTE_PORT [--local-port PORT]` runs
