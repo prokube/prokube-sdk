@@ -1,734 +1,694 @@
-"""HTTP client for sandbox API operations."""
+"""Sandboxes on Agent Substrate.
+
+A sandbox is an Actor named ``sbx-<name>`` in the Atespace of a workspace
+(Atespace name = workspace namespace). Lifecycle calls go to the ate API
+(``ateapi.Control``); commands and files go to the env guest API through the
+upstream ``ate_env`` client. Every call carries the caller's token, which
+Agent Gateway passes through to Substrate. Results are the upstream types
+(``Actor`` protos, ``ate_env.ShellResult``) and errors the ``ate_env`` ones.
+
+Without a platform URL, or with ``endpoint``, the client calls Agent
+Gateway's in-cluster Service. In a workspace pod with a workload token
+(prokube/prokube-neo#100), it acts as the pod and defaults to the pod's
+workspace.
+"""
 
 from __future__ import annotations
 
-import base64
-import re
-from collections.abc import Sequence
-from typing import TYPE_CHECKING
-
-from prokube.common.compat import check_backend_compatibility
-from prokube.common.exceptions import NotFoundError, ProKubeError, SandboxError
-from prokube.common.http import HttpClient
-from prokube.sandbox.models import (
-    BatchFileWriteRequest,
-    BatchFileWriteResponse,
-    BatchFileWriteResult,
-    ClaimRequest,
-    CodeResult,
-    CommandResult,
-    CreateRequest,
-    EnvVarInput,
-    ExecRequest,
-    FileInfo,
-    FileWriteRequest,
-    SandboxInfo,
-    SandboxInfoPage,
-    SandboxStatus,
-    parse_auto_idle_timeout,
-    to_env_vars,
+import asyncio
+import collections
+import contextlib
+import io
+import os
+import tarfile
+import threading
+import uuid
+from collections.abc import (
+    AsyncIterable,
+    Awaitable,
+    Callable,
+    Coroutine,
+    Iterable,
+    Mapping,
+    Sequence,
 )
+from datetime import timedelta
+from pathlib import Path
+from typing import Any, TypeVar
 
-if TYPE_CHECKING:
-    from prokube.common.config import Config
+import grpc
+import grpc.aio
+import httpx
+from ate_env import Client as EnvClient
+from ate_env import Env, EnvError, ShellResult, map_rpc_error
+from google.protobuf import json_format
+
+from prokube import auth, endpoints
+from prokube.auth import TokenProvider
+from prokube.sandbox._ateapi import ateapi_pb2 as ateapi
+from prokube.sandbox._ateapi.ateapi_pb2_grpc import ControlStub
+from prokube.sandbox.presets import PresetError, Presets
+
+SANDBOX_PREFIX = "sbx-"
+# Every Actor's EgressPolicy is a singleton with this name, as in pkui.
+EGRESS_POLICY_NAME = "default"
+# Credential URI of a key in a Secret of a workspace; the platform's credential
+# provider resolves it for that workspace's sandboxes (prokube/prokube-neo#116).
+SECRET_URI = "ate-secret://k8s.io/default/{workspace}/{secret}/{key}"
+# The env guest of pk-sandbox-coding answers here once it serves; templates
+# whose guest container has this wakeup probe support exec, files and SSH.
+ENV_GUEST_PATH = "/readyz"
+ENV_GUEST_PORT = 80
+
+# Namespace of the pod, which is its workspace.
+NAMESPACE_FILE = "/var/run/secrets/kubernetes.io/serviceaccount/namespace"
+
+Actor = ateapi.Actor
+ActorAssignment = ateapi.ActorAssignment
+Worker = ateapi.Worker
+# What write_file() takes; an (async) iterable of chunks is streamed.
+FileData = bytes | str | Iterable[bytes] | AsyncIterable[bytes]
+T = TypeVar("T")
 
 
-def _parse_status(status_str: str | None, default: SandboxStatus) -> SandboxStatus:
-    """Parse status string to SandboxStatus enum.
+def actor_name(name: str) -> str:
+    """Return the Actor name of a sandbox; names already starting with sbx- are kept."""
+    return name if name.startswith(SANDBOX_PREFIX) else SANDBOX_PREFIX + name
 
-    Args:
-        status_str: Status string from API response.
-        default: Default status to use if status_str is None/empty.
 
-    Returns:
-        SandboxStatus enum value. Returns default if status_str is falsy,
-        or UNKNOWN if the status string doesn't match any known status.
+class AsyncSandboxClient:
+    """Create and use the sandboxes of a workspace.
+
+    ``url`` (``https://<domain>``) defaults to ``$PROKUBE_URL`` and
+    ``workspace`` to ``$PROKUBE_WORKSPACE``, both then to what ``pk login``
+    saved. ``token_provider`` defaults to ``api_key`` (``$PROKUBE_API_KEY``),
+    a pkui API key with the scope "Sandboxes", then to the stored login for
+    ``url`` (see ``prokube.auth.login``), then to the pod's workload token.
+
+    Without a URL, or with ``endpoint``, calls go in plaintext to Agent
+    Gateway's in-cluster Service at ``endpoint`` (``host:port``, default
+    ``endpoints.IN_CLUSTER_GATEWAY``). In a workspace pod with a workload
+    token, the workspace defaults to the pod's namespace. Without a
+    workspace, only presets(), workers(), worker_actors() and
+    list_actors(all_workspaces=True) work.
+
+    The client connects on its first call; close() releases it. Create it
+    inside the event loop that uses it.
     """
-    if not status_str:
-        return default
-    try:
-        return SandboxStatus(status_str)
-    except ValueError:
-        return SandboxStatus.UNKNOWN
 
-
-def _parse_sandbox_info(
-    raw: dict,
-    workspace: str,
-    default_status: SandboxStatus = SandboxStatus.UNKNOWN,
-) -> SandboxInfo:
-    """Build a SandboxInfo from one raw backend Sandbox body.
-
-    The backend has used both camelCase and snake_case spellings for these
-    fields, and reports the phase as either ``status`` or ``phase``; accept
-    every spelling so all endpoints stay in sync.
-    """
-    return SandboxInfo(
-        name=raw["name"],
-        workspace=workspace,
-        status=_parse_status(raw.get("status") or raw.get("phase"), default_status),
-        image=raw.get("image") or None,
-        pool=raw.get("poolName") or raw.get("pool"),
-        created_at=raw.get("createdAt") or raw.get("created_at"),
-        auto_idle_timeout_seconds=parse_auto_idle_timeout(raw),
-        last_error=raw.get("lastError") or raw.get("last_error"),
-    )
-
-
-def _parse_batch_file_write_response(
-    response: dict[str, object],
-) -> BatchFileWriteResponse:
-    """Normalize the batch file write response contract."""
-    raw_results = response.get("results")
-    if not isinstance(raw_results, list):
-        raise ValueError("Batch file write response must include a results list")
-
-    results: list[BatchFileWriteResult] = []
-    for index, item in enumerate(raw_results):
-        if not isinstance(item, dict):
-            raise ValueError(
-                f"Batch file write response item {index} must be an object"
-            )
-        results.append(
-            BatchFileWriteResult(
-                index=_require_batch_result_int(item, "index"),
-                path=_require_batch_result_str(item, "path"),
-                success=_require_batch_result_bool(item, "success"),
-                error=item.get("error"),
-            )
-        )
-
-    results.sort(key=lambda item: item.index)
-    seen_indexes: set[int] = set()
-    for item in results:
-        if item.index < 0:
-            raise ValueError("Batch file write response index must be non-negative")
-        if item.index in seen_indexes:
-            raise ValueError("Batch file write response indexes must be unique")
-        seen_indexes.add(item.index)
-
-    raw_success_count = response.get("successCount", response.get("success_count"))
-    raw_failure_count = response.get("failureCount", response.get("failure_count"))
-
-    if raw_success_count is None:
-        success_count = sum(1 for item in results if item.success)
-    else:
-        success_count = _require_response_count(raw_success_count, "successCount")
-    if raw_failure_count is None:
-        failure_count = len(results) - success_count
-    else:
-        failure_count = _require_response_count(raw_failure_count, "failureCount")
-
-    raw_total = response.get("total")
-    total = (
-        len(results)
-        if "total" not in response
-        else _require_response_count(raw_total, "total")
-    )
-
-    success = response.get("success")
-    if not isinstance(success, bool):
-        raise ValueError("Batch file write response must include a boolean success")
-
-    return BatchFileWriteResponse(
-        success=success,
-        total=total,
-        success_count=success_count,
-        failure_count=failure_count,
-        results=results,
-    )
-
-
-def _require_batch_result_str(item: dict[str, object], field: str) -> str:
-    value = item.get(field)
-    if not isinstance(value, str) or not value:
-        raise ValueError(f"Batch file write response item is missing {field}")
-    return value
-
-
-def _require_batch_result_int(item: dict[str, object], field: str) -> int:
-    value = item.get(field)
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise ValueError(f"Batch file write response item is missing {field}")
-    return value
-
-
-def _require_batch_result_bool(item: dict[str, object], field: str) -> bool:
-    value = item.get(field)
-    if not isinstance(value, bool):
-        raise ValueError(f"Batch file write response item is missing {field}")
-    return value
-
-
-def _require_response_count(value: object, field: str) -> int:
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise ValueError(f"Batch file write response {field} must be an integer")
-    return value
-
-
-def _is_timeout_execution_response(response: dict[str, object]) -> bool:
-    error_names = (response.get("error_name"), response.get("errorName"))
-    if any(
-        isinstance(value, str) and re.search(r"timeout", value, re.I)
-        for value in error_names
-    ):
-        return True
-
-    structured_values = (
-        response.get("error_value"),
-        response.get("errorValue"),
-        response.get("detail"),
-    )
-    if any(
-        isinstance(value, str) and re.search(r"\btime(?:d)?\s*out\b", value, re.I)
-        for value in structured_values
-    ):
-        return True
-
-    stderr = response.get("stderr")
-    return isinstance(stderr, str) and _is_timeout_stderr(stderr)
-
-
-def _is_timeout_stderr(value: str) -> bool:
-    return bool(
-        re.search(r"^\s*(?:\[timeout:|timeout:)", value, re.I)
-        or re.search(r"\b(?:execution|command|code)\s+timed\s+out\b", value, re.I)
-    )
-
-
-# Long-poll status GET (``?wait_phase=&timeout=``) tuning. The backend caps
-# the hold at 30s and defaults to 20s; the SDK mirrors those numbers so it
-# never asks for a window the backend will silently shorten. The margin is
-# how much longer than the hold a request is allowed to take, covering the
-# round trip of a response that only arrives when the hold expires.
-_DEFAULT_WAIT_TIMEOUT_SECONDS = 20
-_MAX_WAIT_TIMEOUT_SECONDS = 30
-_WAIT_REQUEST_MARGIN_SECONDS = 5
-
-
-class SandboxClient:
-    """Client for sandbox API operations."""
-
-    def __init__(self, config: Config, check_version: bool = True) -> None:
-        """Initialize sandbox client.
-
-        Args:
-            config: SDK configuration.
-            check_version: Whether to check backend version compatibility.
-        """
-        self.config = config
-        self._http = HttpClient(config)
-
-        if check_version:
-            check_backend_compatibility(self._http)
-
-    def close(self) -> None:
-        """Close the client."""
-        self._http.close()
-
-    def _sandboxes_path(self) -> str:
-        """Get API path for the sandboxes collection."""
-        ws = self.config.workspace
-        if self.config.use_api_key:
-            return f"/sandbox/{ws}/sandboxes"
-        return f"/_platform/sandbox/{ws}/sandboxes"
-
-    def _sandbox_path(self, name: str) -> str:
-        """Get API path for a specific sandbox."""
-        return f"{self._sandboxes_path()}/{name}"
-
-    def _sandbox_sub_path(self, name: str, sub: str) -> str:
-        """Get API path for a sandbox sub-resource (exec, files, etc.).
-
-        Uses _sandbox_path (which includes /sandboxes/) for both internal
-        and external access to ensure consistent URL structure.
-        """
-        return f"{self._sandbox_path(name)}/{sub}"
-
-    def claim_from_pool(
-        self, pool: str, auto_idle_timeout_seconds: int | None = None
-    ) -> SandboxInfo:
-        """Claim a sandbox from a warm pool.
-
-        The backend accepts the claim with HTTP 202 and adopts a warm pod
-        asynchronously, so the returned sandbox usually starts out Pending.
-        Poll :meth:`get` (or ``Sandbox.wait_until_ready``) until it is Running.
-
-        Args:
-            pool: Name of the warm pool.
-            auto_idle_timeout_seconds: Per-claim auto-idle override in seconds.
-
-        Returns:
-            Information about the claimed sandbox.
-        """
-        request = ClaimRequest(
-            pool_name=pool,
-            auto_idle_timeout_seconds=auto_idle_timeout_seconds,
-        )
-        response = self._http.post(
-            f"{self._sandboxes_path()}/claim",
-            json=request.model_dump(by_alias=True, exclude_none=True),
-        )
-        info = _parse_sandbox_info(
-            response, self.config.workspace, SandboxStatus.PENDING
-        )
-        if info.pool is None:
-            info.pool = pool
-        if info.auto_idle_timeout_seconds is None:
-            info.auto_idle_timeout_seconds = auto_idle_timeout_seconds
-        return info
-
-    def create(
+    def __init__(
         self,
-        image: str,
-        name: str | None = None,
-        cpu: str | None = None,
-        memory: str | None = None,
-        allow_internet_access: bool | None = None,
-        auto_idle_timeout_seconds: int | None = None,
-        env_vars: Sequence[EnvVarInput] | None = None,
-        secret_refs: list[str] | None = None,
-    ) -> SandboxInfo:
-        """Create a new sandbox.
-
-        Args:
-            image: Container image to use.
-            name: Optional sandbox name (auto-generated if not provided).
-            cpu: CPU resource request (e.g. '2'). Backend default used if None.
-            memory: Memory resource request (e.g. '4Gi'). Backend default used
-                if None.
-            allow_internet_access: Whether the sandbox may reach the public
-                internet. Backend default used if None.
-            auto_idle_timeout_seconds: Per-sandbox auto-idle override in seconds.
-            env_vars: Environment variables to inject into the sandbox. Each
-                entry is an :class:`EnvVar` or an equivalent
-                ``{"name": ..., "value": ...}`` mapping.
-            secret_refs: Names of workspace secrets to mount into the sandbox.
-
-        Returns:
-            Information about the created sandbox.
-        """
-        import uuid
-
-        # Generate name if not provided (backend requires name)
-        if name is None:
-            name = f"sandbox-{uuid.uuid4().hex[:8]}"
-
-        request = CreateRequest(
-            image=image,
-            name=name,
-            cpu=cpu,
-            memory=memory,
-            allow_internet_access=allow_internet_access,
-            auto_idle_timeout_seconds=auto_idle_timeout_seconds,
-            env_vars=to_env_vars(env_vars),
-            secret_refs=secret_refs,
-        )
-        # The backend has two create wire shapes: the internal route's
-        # CreateSandboxRequest nests cpu/memory under `resources` (and
-        # silently ignores top-level keys), while the external API-key
-        # route's ExternalCreateRequest takes them flat (and ignores
-        # `resources`). Send both; each route reads its own shape.
-        payload = request.model_dump(by_alias=True, exclude_none=True)
-        resources = {
-            key: value for key, value in {"cpu": cpu, "memory": memory}.items() if value
-        }
-        if resources:
-            payload["resources"] = resources
-        response = self._http.post(self._sandboxes_path(), json=payload)
-        info = _parse_sandbox_info(
-            response, self.config.workspace, SandboxStatus.PENDING
-        )
-        info.image = info.image or image
-        if info.auto_idle_timeout_seconds is None:
-            info.auto_idle_timeout_seconds = auto_idle_timeout_seconds
-        return info
-
-    def list(self) -> list[SandboxInfo]:
-        """List all sandboxes in the configured workspace.
-
-        Returns:
-            List of sandbox info objects.
-        """
-        response = self._http.get(
-            self._sandboxes_path(),
-        )
-        sandboxes = response.get("sandboxes", [])
-        return [_parse_sandbox_info(s, self.config.workspace) for s in sandboxes]
-
-    def list_page(
-        self,
+        url: str | None = None,
+        workspace: str | None = None,
         *,
-        limit: int = 25,
-        continue_token: str | None = None,
-    ) -> SandboxInfoPage:
-        """List one bounded page of sandboxes.
-
-        There is exactly one name-ordered listing across every sandbox state.
-        The continuation token is an opaque keyset cursor and must be reused
-        with the same limit that produced it. An empty token means "no token":
-        the backend rejects ``continueToken=`` with HTTP 422, so it is treated
-        the same as ``None`` and requests the first page.
-        """
-        if not 1 <= limit <= 100:
-            raise ValueError("limit must be between 1 and 100")
-
-        params: dict[str, str | int] = {"limit": limit}
-        if continue_token:
-            params["continueToken"] = continue_token
-        response = self._http.get(self._sandboxes_path(), params=params)
-        sandboxes = response.get("sandboxes", [])
-        infos = [_parse_sandbox_info(s, self.config.workspace) for s in sandboxes]
-        return SandboxInfoPage(
-            sandboxes=infos,
-            loaded=response.get("loaded", len(infos)),
-            has_more=response.get("hasMore", False),
-            continue_token=response.get("continueToken"),
-        )
-
-    def get(
-        self,
-        name: str,
-        request_timeout: float | None = None,
-        wait_phase: str | None = None,
-        wait_timeout: float | None = None,
-    ) -> SandboxInfo:
-        """Get information about a sandbox.
-
-        This is the poll target for every asynchronous lifecycle operation.
-
-        Args:
-            name: Sandbox name.
-            request_timeout: Optional per-request timeout override, in
-                seconds. Passing ``None`` (the default) leaves the client's
-                configured timeout in place; callers polling toward a
-                deadline (e.g. ``wait_until_ready``) should pass the
-                remaining budget so a single stalled request cannot outlast
-                the caller's overall timeout.
-            wait_phase: Optional phase to long-poll for (e.g. ``"Running"``).
-                When given, the backend holds the request open until the
-                sandbox reaches that phase or its own wait window elapses,
-                and answers with the current payload either way — a response
-                that still reports another phase is a normal timeout, not an
-                error. Backends that predate the parameter ignore it and
-                answer immediately, which degrades to plain polling.
-            wait_timeout: How long, in seconds, the backend may hold the
-                request when ``wait_phase`` is set. Defaults to
-                ``_DEFAULT_WAIT_TIMEOUT_SECONDS`` and is clamped to the
-                server-side cap.
-
-        Returns:
-            Information about the sandbox.
-        """
-        kwargs: dict[str, object] = {}
-        if request_timeout is not None:
-            kwargs["timeout"] = request_timeout
-        if wait_phase is not None:
-            hold = int(
-                min(
-                    _MAX_WAIT_TIMEOUT_SECONDS,
-                    _DEFAULT_WAIT_TIMEOUT_SECONDS
-                    if wait_timeout is None
-                    else wait_timeout,
-                )
-            )
-            if request_timeout is not None:
-                # The server holds the connection for the whole wait window
-                # before answering, so the per-request timeout must outlast
-                # it — same reasoning as the request_timeout cap above, in
-                # the other direction. Leave a margin for the response trip
-                # so a long-poll that answers right at its cap still lands.
-                # Once too little budget is left to hold anything, fall back
-                # to a plain (immediate) status GET.
-                hold = min(hold, int(request_timeout) - _WAIT_REQUEST_MARGIN_SECONDS)
-            if hold >= 1:
-                kwargs["params"] = {"wait_phase": wait_phase, "timeout": hold}
-        response = self._http.get(self._sandbox_path(name), **kwargs)
-        return _parse_sandbox_info(response, self.config.workspace)
-
-    def ping_kernel(
-        self,
-        name: str,
-        wait_timeout: int,
-        request_timeout: float | None = None,
+        endpoint: str | None = None,
+        token_provider: TokenProvider | None = None,
+        api_key: str | None = None,
     ) -> None:
-        """Block on the sandbox agent until its Jupyter kernel is warm.
-
-        Calls ``GET <sandbox>/ping?wait=kernel&timeout=<wait_timeout>`` on
-        the sandbox agent (the same per-sandbox base path ``exec`` uses, so
-        it is proxied exactly like code execution). Returning normally means
-        the agent answered 200 — the kernel has started.
-
-        Args:
-            name: Sandbox name.
-            wait_timeout: Seconds the agent may block waiting for the kernel.
-            request_timeout: Optional per-request timeout override.
-
-        Raises:
-            NotFoundError: The agent (or the proxy in front of it) does not
-                expose the endpoint — an older agent, so the caller must fall
-                back to probing the kernel through ``exec``.
-            ProKubeError: Any other non-2xx answer. ``status_code == 503``
-                means the kernel is not warm yet and the call may be retried;
-                400/405 likewise indicate an agent without this endpoint.
-        """
-        kwargs: dict[str, object] = {
-            "params": {"wait": "kernel", "timeout": wait_timeout},
-        }
-        if request_timeout is not None:
-            kwargs["timeout"] = request_timeout
-        # The agent answers plain text ("pong"), not JSON: fetch bytes so the
-        # shared error translation still runs without a JSON parse of the body.
-        self._http.get_bytes(self._sandbox_sub_path(name, "ping"), **kwargs)
-
-    def pause(self, name: str) -> SandboxInfo:
-        """Pause a running sandbox.
-
-        Frees compute resources while preserving /workspace and /home/agent.
-        The backend accepts the request with HTTP 202 and reports phase
-        ``Pausing`` until its worker settles the sandbox on ``Paused``; poll
-        :meth:`get` to observe the final phase.
-
-        Args:
-            name: Sandbox name.
-
-        Returns:
-            Sandbox information as of the accepted pause request.
-
-        Raises:
-            SandboxError: If sandbox is not in Running state (HTTP 409).
-        """
-        try:
-            response = self._http.post(self._sandbox_sub_path(name, "pause"))
-        except ProKubeError as e:
-            if e.status_code == 409:
-                raise SandboxError(str(e), status_code=409) from e
-            raise
-        return _parse_sandbox_info(
-            response, self.config.workspace, SandboxStatus.PAUSING
+        saved = auth.load_config()
+        url = url or os.environ.get("PROKUBE_URL") or saved.get("url")
+        workspace = (
+            workspace or os.environ.get("PROKUBE_WORKSPACE") or saved.get("workspace")
         )
+        if not workspace and auth.workload_token_file():
+            workspace = _pod_namespace()
+        self.url = endpoints.normalize_url(url) if url else None
+        self.workspace = workspace
+        credential = auth.credential(self.url, token_provider, api_key)
+        self._credential = credential
+        if self.url and not endpoint:
+            self.endpoint = None
+            credentials = grpc.composite_channel_credentials(
+                grpc.ssl_channel_credentials(),
+                grpc.metadata_call_credentials(_CredentialPlugin(credential)),
+            )
+            self._channel = grpc.aio.secure_channel(
+                endpoints.grpc_target(self.url), credentials
+            )
+            self._presets_url = endpoints.presets_url(self.url)
+        else:
+            self.endpoint = endpoint or endpoints.IN_CLUSTER_GATEWAY
+            # gRPC sends call credentials only over TLS, so the credential goes
+            # in by interceptor, one per call type: grpc.aio registers an
+            # interceptor for only the first type it implements.
+            interceptors: list[grpc.aio.ClientInterceptor] = [
+                _UnaryUnaryCredential(credential),
+                _UnaryStreamCredential(credential),
+                _StreamUnaryCredential(credential),
+                _StreamStreamCredential(credential),
+            ]
+            self._channel = grpc.aio.insecure_channel(
+                self.endpoint, interceptors=interceptors
+            )
+            self._presets_url = endpoints.presets_url(f"http://{self.endpoint}")
+        self._control = ControlStub(self._channel)
+        self._env = EnvClient(channel=self._channel)
 
-    def resume(self, name: str) -> SandboxInfo:
-        """Resume a paused sandbox.
-
-        A new pod starts with the same PVC mounts at /workspace and /home/agent.
-        The backend accepts the request with HTTP 202 and reports phase
-        ``Resuming`` until the new pod is up; poll :meth:`get` until Running.
-
-        Args:
-            name: Sandbox name.
-
-        Returns:
-            Sandbox information as of the accepted resume request.
-
-        Raises:
-            SandboxError: If sandbox is not in Paused state (HTTP 409).
-        """
-        try:
-            response = self._http.post(self._sandbox_sub_path(name, "resume"))
-        except ProKubeError as e:
-            if e.status_code == 409:
-                raise SandboxError(str(e), status_code=409) from e
-            raise
-        return _parse_sandbox_info(
-            response, self.config.workspace, SandboxStatus.RESUMING
-        )
-
-    def delete(self, name: str) -> None:
-        """Delete a sandbox.
-
-        The backend accepts the request with HTTP 202 and an empty body, then
-        tears the sandbox down (including its persistence records)
-        asynchronously. Poll :meth:`get` until it raises
-        :class:`NotFoundError` to know the name has been released.
-
-        Args:
-            name: Sandbox name.
-        """
-        self._http.delete(self._sandbox_path(name))
-
-    def exec_code(
+    async def create(
         self,
         name: str,
-        code: str,
-        language: str = "python",
-        timeout: int = 300,
-        session_id: str | None = None,
-        reset_session: bool = False,
-    ) -> CodeResult:
-        """Execute code in sandbox using Jupyter kernel.
+        *,
+        preset: str | None = None,
+        network: Sequence[Mapping[str, Any]] | None = None,
+    ) -> Actor:
+        """Create a sandbox from a preset (default: the platform's default one).
 
-        Args:
-            name: Sandbox name.
-            code: Code to execute.
-            language: Programming language.
-            timeout: Timeout in seconds.
-            session_id: Session ID for stateful execution (reuse from previous call).
-            reset_session: If True, restart the kernel before executing code.
-
-        Returns:
-            Code execution result including session_id for subsequent calls.
+        The preset's golden snapshot makes this fast. The sandbox gets the
+        preset's network rules, or ``network`` instead (rules as for
+        set_network()). It starts SUSPENDED and wakes on its first command or
+        on resume().
         """
-        request = ExecRequest(
-            code=code,
-            use_jupyter=True,
-            timeout=timeout,
-            language=language,
-            session_id=session_id,
-            reset_session=reset_session,
+        ref = self._ref(name)
+        chosen = (await self.presets()).get(preset)
+        rules = chosen.network.rules if network is None else _parse_rules(network)
+        actor = ateapi.Actor(
+            metadata=ateapi.ResourceMetadata(atespace=ref.atespace, name=ref.name),
+            actor_template=chosen.ref,
         )
-        # Note: exec endpoint uses snake_case (use_jupyter, session_id, reset_session)
-        # unlike other endpoints that use camelCase. Do NOT use by_alias=True here.
-        response = self._http.post(
-            self._sandbox_sub_path(name, "exec"),
-            json=request.model_dump(exclude_none=True),
-        )
-        timed_out = _is_timeout_execution_response(response)
-        return CodeResult(
-            stdout=response.get("stdout", ""),
-            stderr=response.get("stderr", ""),
-            success=response.get("success", False) and not timed_out,
-            execution_time_ms=response.get(
-                "durationMs", response.get("execution_time_ms", 0)
+        request = ateapi.CreateActorRequest(actor=actor)
+        created = await _call(self._control.CreateActor(request))
+        policy = ateapi.EgressPolicy(
+            metadata=ateapi.ResourceMetadata(
+                atespace=ref.atespace, name=EGRESS_POLICY_NAME
             ),
-            error_name=response.get("errorName") or response.get("error_name"),
-            error_value=response.get("errorValue") or response.get("error_value"),
-            traceback=response.get("traceback"),
-            session_id=response.get("session_id"),
+            rules=rules,
+        )
+        request = ateapi.CreateActorEgressPolicyRequest(actor=ref, egress_policy=policy)
+        try:
+            await _call(self._control.CreateActorEgressPolicy(request))
+        except EnvError as error:
+            if getattr(error, "code", None) == grpc.StatusCode.ALREADY_EXISTS:
+                return created  # it has one already; keep that
+            # Leave no sandbox without its network rules behind.
+            with contextlib.suppress(EnvError):
+                await self.delete(name)
+            raise
+        return created
+
+    async def resize(self, name: str, *, preset: str) -> Actor:
+        """Switch a sandbox to another preset, e.g. one with more CPU and memory.
+
+        The preset must have the sandbox's image and snapshot fidelity. A
+        running sandbox is suspended first and resumed afterwards: /workspace
+        is kept, running processes restart. A suspended sandbox stays
+        suspended. Network rules and credentials stay.
+        """
+        actor = await self.get(name)
+        target = (await self.presets()).get(preset).ref
+        if target == actor.actor_template:
+            return actor
+        current = await self._template(actor.actor_template)
+        new = await self._template(target)
+        for what, have, want in (
+            ("image", current.containers[0].image, new.containers[0].image),
+            (
+                "snapshot fidelity",
+                current.snapshot_config.preferred_fidelity,
+                new.snapshot_config.preferred_fidelity,
+            ),
+        ):
+            if have != want:
+                raise PresetError(
+                    f"Preset {preset!r} has another {what} than sandbox {name!r}. "
+                    "Create a new sandbox from it instead."
+                )
+        was_running = actor.status.state == ateapi.ACTOR_STATE_RUNNING
+        # A no-op for a suspended sandbox; also uploads a paused one's snapshot.
+        actor = await self.suspend(name)
+        actor.actor_template.CopyFrom(target)
+        actor.ClearField("status")
+        request = ateapi.UpdateActorRequest(actor=actor)
+        actor = await _call(self._control.UpdateActor(request))
+        return await self.resume(name) if was_running else actor
+
+    async def network(self, name: str) -> list[dict[str, Any]]:
+        """The sandbox's egress rules, as JSON like the presets' network rules."""
+        return _rules(await self._egress_policy(name))
+
+    async def set_network(
+        self, name: str, rules: Sequence[Mapping[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Replace the sandbox's egress rules; they apply right away.
+
+        A rule is the JSON of an ``ateapi.EgressRule``; passthrough() and
+        inject() build the common ones.
+        """
+        policy = await self._egress_policy(name)
+        del policy.rules[:]
+        policy.rules.extend(_parse_rules(rules))
+        request = ateapi.UpdateActorEgressPolicyRequest(
+            actor=self._ref(name), egress_policy=policy
+        )
+        return _rules(await _call(self._control.UpdateActorEgressPolicy(request)))
+
+    def secret_uri(self, secret: str, key: str) -> str:
+        """The credentialUri of a key in a Secret of the workspace.
+
+        The Secret needs the label ``prokube.ai/sandbox-credential=true``.
+        """
+        return SECRET_URI.format(workspace=self._atespace(), secret=secret, key=key)
+
+    async def presets(self) -> Presets:
+        """The presets the platform offers and its default preset."""
+        url = self._presets_url
+        header = await asyncio.to_thread(self._credential)
+        async with httpx.AsyncClient(timeout=30) as http:
+            response = await http.get(url, headers=dict([header]))
+        if response.status_code != 200:
+            raise PresetError(
+                f"Cannot read the sandbox presets from {url}: HTTP {response.status_code}"
+            )
+        return Presets.from_json(response.json())
+
+    async def has_env_guest(self, name: str) -> bool:
+        """Whether the sandbox's image is based on pk-sandbox-coding.
+
+        Only then do run, read_file, write_file, env(), the terminal and SSH work.
+        """
+        actor = await self.get(name)
+        template = await self._template(actor.actor_template)
+        return any(
+            container.name == "guest"
+            and container.wakeup_probe.http_get.path == ENV_GUEST_PATH
+            and container.wakeup_probe.http_get.port == ENV_GUEST_PORT
+            for container in template.containers
         )
 
-    def exec_command(
+    async def list_actors(self, *, all_workspaces: bool = False) -> list[Actor]:
+        """Return every Actor of the workspace, sandboxes or not.
+
+        With all_workspaces, those of all Atespaces the caller may list.
+        """
+        atespace = "" if all_workspaces else self._atespace()  # "" lists all
+        request = ateapi.ListActorsRequest(atespace=atespace)
+        return await _list_all(self._control.ListActors, request, "actors")
+
+    async def workers(self) -> list[Worker]:
+        """Return Substrate's Workers, the nodes that run Actors."""
+        request = ateapi.ListWorkersRequest()
+        return await _list_all(self._control.ListWorkers, request, "workers")
+
+    async def worker_actors(self, worker: str) -> list[ActorAssignment]:
+        """Return the assignments of Actors to the Worker called worker."""
+        request = ateapi.ListWorkerActorAssignmentsRequest(
+            worker=ateapi.ObjectRef(name=worker)
+        )
+        return await _list_all(
+            self._control.ListWorkerActorAssignments, request, "actor_assignments"
+        )
+
+    async def list(self) -> list[Actor]:
+        """Return all sandboxes of the workspace."""
+        return [
+            actor
+            for actor in await self.list_actors()
+            if actor.metadata.name.startswith(SANDBOX_PREFIX)
+        ]
+
+    async def get(self, name: str) -> Actor:
+        request = ateapi.GetActorRequest(actor=self._ref(name))
+        return await _call(self._control.GetActor(request))
+
+    async def delete(self, name: str) -> Actor:
+        """Delete a sandbox in any state, including a running one."""
+        request = ateapi.DeleteActorRequest(actor=self._ref(name), any_state=True)
+        return await _call(self._control.DeleteActor(request))
+
+    async def suspend(self, name: str) -> Actor:
+        """Snapshot a running sandbox and free its worker."""
+        request = ateapi.SuspendActorRequest(actor=self._ref(name))
+        return (await _call(self._control.SuspendActor(request))).actor
+
+    async def resume(self, name: str) -> Actor:
+        """Start a suspended sandbox from its latest snapshot."""
+        request = ateapi.ResumeActorRequest(actor=self._ref(name))
+        return (await _call(self._control.ResumeActor(request))).actor
+
+    async def revert(self, name: str) -> Actor:
+        """Return a crashed or running sandbox to its last snapshot, suspended.
+
+        Everything since that snapshot is lost. A crashed sandbox cannot be
+        resumed until it is reverted.
+        """
+        request = ateapi.RevertActorRequest(actor=self._ref(name))
+        return (await _call(self._control.RevertActor(request))).actor
+
+    def env(self, name: str) -> Env:
+        """Return the upstream env handle for processes and files.
+
+        Use this client, not the handle, for lifecycle calls.
+        """
+        return self._env.env(actor_name(name), atespace=self._atespace())
+
+    async def run(
         self,
         name: str,
         command: str,
-        timeout: int = 300,
-    ) -> CommandResult:
-        """Execute shell command in sandbox.
+        *,
+        stdin: bytes | str | None = None,
+        cwd: str = "",
+        env: Mapping[str, str] | None = None,
+        timeout: float | timedelta | None = None,
+    ) -> ShellResult:
+        """Run ``sh -c command`` in the sandbox and wait for it to exit."""
+        return await self.env(name).shell(
+            command, stdin=stdin, cwd=cwd, env=env, timeout=timeout
+        )
 
-        Args:
-            name: Sandbox name.
-            command: Shell command to execute.
-            timeout: Timeout in seconds.
+    async def read_file(self, name: str, path: str) -> bytes:
+        """Read a file; the env file API only allows paths under /workspace."""
+        return await self.env(name).read_file_bytes(path)
 
-        Returns:
-            Command execution result.
+    async def write_file(
+        self, name: str, path: str, data: FileData, *, mode: int = 0o644
+    ) -> int:
+        """Write a file, replacing it; returns the number of bytes written.
+
+        The env file API only allows paths under /workspace.
         """
-        request = ExecRequest(
-            code=command,
-            use_jupyter=False,
-            timeout=timeout,
-        )
-        # Exclude Jupyter-specific fields for shell commands
-        # (language field triggers Python interpreter in backend)
-        response = self._http.post(
-            self._sandbox_sub_path(name, "exec"),
-            json=request.model_dump(
-                exclude={"language", "session_id", "reset_session"}
-            ),
-        )
-        timed_out = _is_timeout_execution_response(response)
-        exit_code = response.get("exitCode", response.get("exit_code", -1))
-        return CommandResult(
-            stdout=response.get("stdout", ""),
-            stderr=response.get("stderr", ""),
-            exit_code=-1 if timed_out else exit_code,
-            duration_ms=response.get("durationMs", response.get("duration_ms", 0)),
-        )
+        if isinstance(data, str):
+            data = data.encode()
+        return await self.env(name).write_file(path, data, mode=mode)
 
-    def write_file(self, name: str, path: str, content: bytes) -> None:
-        """Write a file to sandbox.
+    async def write_files(
+        self, name: str, files: Mapping[str, bytes | str], *, mode: int = 0o644
+    ) -> None:
+        """Write many files in one upload, replacing existing ones.
 
-        Args:
-            name: Sandbox name.
-            path: Path in sandbox where to write.
-            content: File content as bytes.
+        ``files`` maps absolute paths to contents. They travel as one gzipped
+        tar archive, built in memory, which tar unpacks in the sandbox; missing
+        directories are created. Unlike write_file, paths may lie outside
+        /workspace.
         """
-        request = FileWriteRequest(
-            path=path,
-            content=base64.b64encode(content).decode("ascii"),
+        archive = io.BytesIO()
+        with tarfile.open(fileobj=archive, mode="w:gz", compresslevel=6) as tar:
+            for path, data in files.items():
+                if not path.startswith("/"):
+                    raise ValueError(f"Expected an absolute path, got {path!r}")
+                content = data.encode() if isinstance(data, str) else data
+                info = tarfile.TarInfo(path.lstrip("/"))
+                info.size, info.mode = len(content), mode
+                tar.addfile(info, io.BytesIO(content))
+        upload = f"/workspace/.pk-write-files-{uuid.uuid4().hex}.tar.gz"
+        await self.write_file(name, upload, archive.getvalue(), mode=0o600)
+        result = await self.run(
+            name,
+            f"tar -xzf {upload} -C / --no-same-owner -m;"
+            f" status=$?; rm -f {upload}; exit $status",
         )
-        self._http.post(
-            self._sandbox_sub_path(name, "files"),
-            json=request.model_dump(),
-        )
+        if result.exit_code != 0:
+            raise RuntimeError(f"Unpacking the files failed: {result.stderr.strip()}")
 
-    def write_files_batch(
-        self, name: str, items: Sequence[tuple[str, bytes]]
-    ) -> BatchFileWriteResponse:
-        """Write multiple files to a sandbox in one request."""
-        request = BatchFileWriteRequest(
-            items=[
-                FileWriteRequest(
-                    path=path,
-                    content=base64.b64encode(content).decode("ascii"),
-                    encoding="base64",
-                )
-                for path, content in items
-            ]
-        )
-        try:
-            response = self._http.post(
-                self._sandbox_sub_path(name, "files/batch"),
-                json=request.model_dump(),
+    async def close(self) -> None:
+        await self._channel.close()
+
+    async def __aenter__(self) -> AsyncSandboxClient:
+        return self
+
+    async def __aexit__(self, *exc_info: object) -> None:
+        await self.close()
+
+    def _atespace(self) -> str:
+        if not self.workspace:
+            raise ValueError(
+                "This call needs a workspace: pass workspace, set "
+                "PROKUBE_WORKSPACE or run pk login --workspace."
             )
-        except NotFoundError as e:
-            try:
-                self.get(name)
-            except NotFoundError:
-                raise
-            raise SandboxError(
-                "Batch file writes require a backend that supports the "
-                "sandbox /files/batch endpoint",
-                status_code=e.status_code,
-            ) from e
-        except ProKubeError as e:
-            if e.status_code == 405:
-                raise SandboxError(
-                    "Batch file writes require a backend that supports the "
-                    "sandbox /files/batch endpoint",
-                    status_code=e.status_code,
-                ) from e
+        return self.workspace
+
+    def _ref(self, name: str) -> ateapi.ObjectRef:
+        return ateapi.ObjectRef(atespace=self._atespace(), name=actor_name(name))
+
+    async def _egress_policy(self, name: str) -> ateapi.EgressPolicy:
+        request = ateapi.GetActorEgressPolicyRequest(
+            actor=self._ref(name), name=EGRESS_POLICY_NAME
+        )
+        return await _call(self._control.GetActorEgressPolicy(request))
+
+    async def _template(self, ref: ateapi.ObjectRef) -> ateapi.ActorTemplate:
+        request = ateapi.GetActorTemplateRequest(actor_template=ref)
+        return await _call(self._control.GetActorTemplate(request))
+
+
+class SandboxClient:
+    """Blocking version of AsyncSandboxClient; also works inside notebooks.
+
+    It runs an AsyncSandboxClient on its own event loop in a background thread.
+    """
+
+    def __init__(
+        self,
+        url: str | None = None,
+        workspace: str | None = None,
+        *,
+        endpoint: str | None = None,
+        token_provider: TokenProvider | None = None,
+        api_key: str | None = None,
+    ) -> None:
+        self._loop = asyncio.new_event_loop()
+        self._thread = threading.Thread(target=self._loop.run_forever, daemon=True)
+        self._thread.start()
+
+        async def create_client() -> AsyncSandboxClient:
+            return AsyncSandboxClient(
+                url,
+                workspace,
+                endpoint=endpoint,
+                token_provider=token_provider,
+                api_key=api_key,
+            )
+
+        try:
+            self._client = self._run(create_client())
+        except BaseException:
+            self._stop_loop()
             raise
-        return _parse_batch_file_write_response(response)
+        self.url = self._client.url
+        self.workspace = self._client.workspace
+        self.endpoint = self._client.endpoint
+
+    def create(
+        self,
+        name: str,
+        *,
+        preset: str | None = None,
+        network: Sequence[Mapping[str, Any]] | None = None,
+    ) -> Actor:
+        """Create a sandbox from a preset (see AsyncSandboxClient)."""
+        return self._run(self._client.create(name, preset=preset, network=network))
+
+    def resize(self, name: str, *, preset: str) -> Actor:
+        """Switch a sandbox to another preset (see AsyncSandboxClient)."""
+        return self._run(self._client.resize(name, preset=preset))
+
+    def network(self, name: str) -> list[dict[str, Any]]:
+        """The sandbox's egress rules (see AsyncSandboxClient)."""
+        return self._run(self._client.network(name))
+
+    def set_network(
+        self, name: str, rules: Sequence[Mapping[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Replace the sandbox's egress rules (see AsyncSandboxClient)."""
+        return self._run(self._client.set_network(name, rules))
+
+    def secret_uri(self, secret: str, key: str) -> str:
+        return self._client.secret_uri(secret, key)
+
+    def presets(self) -> Presets:
+        return self._run(self._client.presets())
+
+    def has_env_guest(self, name: str) -> bool:
+        return self._run(self._client.has_env_guest(name))
+
+    def list_actors(self, *, all_workspaces: bool = False) -> list[Actor]:
+        return self._run(self._client.list_actors(all_workspaces=all_workspaces))
+
+    def workers(self) -> list[Worker]:
+        return self._run(self._client.workers())
+
+    def worker_actors(self, worker: str) -> list[ActorAssignment]:
+        return self._run(self._client.worker_actors(worker))
+
+    def list(self) -> list[Actor]:
+        return self._run(self._client.list())
+
+    def get(self, name: str) -> Actor:
+        return self._run(self._client.get(name))
+
+    def delete(self, name: str) -> Actor:
+        return self._run(self._client.delete(name))
+
+    def suspend(self, name: str) -> Actor:
+        return self._run(self._client.suspend(name))
+
+    def resume(self, name: str) -> Actor:
+        return self._run(self._client.resume(name))
+
+    def revert(self, name: str) -> Actor:
+        return self._run(self._client.revert(name))
+
+    def run(
+        self,
+        name: str,
+        command: str,
+        *,
+        stdin: bytes | str | None = None,
+        cwd: str = "",
+        env: Mapping[str, str] | None = None,
+        timeout: float | timedelta | None = None,
+    ) -> ShellResult:
+        return self._run(
+            self._client.run(
+                name, command, stdin=stdin, cwd=cwd, env=env, timeout=timeout
+            )
+        )
 
     def read_file(self, name: str, path: str) -> bytes:
-        """Read a file from sandbox.
+        return self._run(self._client.read_file(name, path))
 
-        Args:
-            name: Sandbox name.
-            path: Path in sandbox to read.
+    def write_file(
+        self, name: str, path: str, data: FileData, *, mode: int = 0o644
+    ) -> int:
+        return self._run(self._client.write_file(name, path, data, mode=mode))
 
-        Returns:
-            File content as bytes.
-        """
-        return self._http.get_bytes(
-            self._sandbox_sub_path(name, "files/download"),
-            params={"path": path},
+    def write_files(
+        self, name: str, files: Mapping[str, bytes | str], *, mode: int = 0o644
+    ) -> None:
+        """Write many files in one upload (see AsyncSandboxClient)."""
+        return self._run(self._client.write_files(name, files, mode=mode))
+
+    def close(self) -> None:
+        self._run(self._client.close())
+        self._stop_loop()
+
+    def __enter__(self) -> SandboxClient:
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self.close()
+
+    def _run(self, coroutine: Coroutine[Any, Any, T]) -> T:
+        return asyncio.run_coroutine_threadsafe(coroutine, self._loop).result()
+
+    def _stop_loop(self) -> None:
+        self._loop.call_soon_threadsafe(self._loop.stop)
+        self._thread.join()
+        self._loop.close()
+
+
+class _CredentialPlugin(grpc.AuthMetadataPlugin):
+    """Adds the credential header, asking for it on every call."""
+
+    def __init__(self, credential: auth.Credential) -> None:
+        self._credential = credential
+
+    def __call__(
+        self,
+        context: grpc.AuthMetadataContext,
+        callback: grpc.AuthMetadataPluginCallback,
+    ) -> None:
+        try:
+            callback((self._credential(),), None)
+        except Exception as error:  # e.g. LoginRequired; fails the call with it
+            callback((), error)
+
+
+class _CallDetails(
+    collections.namedtuple(
+        "_CallDetails",
+        ["method", "timeout", "metadata", "credentials", "wait_for_ready"],
+    ),
+    grpc.aio.ClientCallDetails,
+):
+    pass
+
+
+class _CredentialInterceptor:
+    """Adds the credential header on plaintext channels.
+
+    Like the upstream ``ate_env`` client's, but asks for it on every call.
+    """
+
+    def __init__(self, credential: auth.Credential) -> None:
+        self._credential = credential
+
+    def _with_token(self, details: grpc.aio.ClientCallDetails) -> _CallDetails:
+        metadata = list(details.metadata or [])
+        metadata.append(self._credential())
+        return _CallDetails(
+            details.method,
+            details.timeout,
+            metadata,
+            details.credentials,
+            details.wait_for_ready,
         )
 
-    def list_files(self, name: str, path: str = "/workspace") -> list[FileInfo]:
-        """List files in a directory.
 
-        Args:
-            name: Sandbox name.
-            path: Directory path to list.
+class _UnaryUnaryCredential(
+    _CredentialInterceptor, grpc.aio.UnaryUnaryClientInterceptor
+):
+    async def intercept_unary_unary(self, continuation, client_call_details, request):
+        return await continuation(self._with_token(client_call_details), request)
 
-        Returns:
-            List of file information.
-        """
-        response = self._http.get(
-            self._sandbox_sub_path(name, "files"),
-            params={"path": path},
+
+class _UnaryStreamCredential(
+    _CredentialInterceptor, grpc.aio.UnaryStreamClientInterceptor
+):
+    async def intercept_unary_stream(self, continuation, client_call_details, request):
+        return await continuation(self._with_token(client_call_details), request)
+
+
+class _StreamUnaryCredential(
+    _CredentialInterceptor, grpc.aio.StreamUnaryClientInterceptor
+):
+    async def intercept_stream_unary(
+        self, continuation, client_call_details, request_iterator
+    ):
+        return await continuation(
+            self._with_token(client_call_details), request_iterator
         )
-        files = response.get("files", [])
-        return [
-            FileInfo(
-                name=f["name"],
-                path=f["path"],
-                # Handle both snake_case and camelCase from backend
-                is_dir=f.get("is_dir", f.get("isDir", False)),
-                size=f.get("size", 0),
-                modified=f.get("modified"),
-            )
-            for f in files
-        ]
+
+
+class _StreamStreamCredential(
+    _CredentialInterceptor, grpc.aio.StreamStreamClientInterceptor
+):
+    async def intercept_stream_stream(
+        self, continuation, client_call_details, request_iterator
+    ):
+        return await continuation(
+            self._with_token(client_call_details), request_iterator
+        )
+
+
+def _rules(policy: ateapi.EgressPolicy) -> list[dict[str, Any]]:
+    return [json_format.MessageToDict(rule) for rule in policy.rules]
+
+
+def _parse_rules(rules: Sequence[Mapping[str, Any]]) -> list[ateapi.EgressRule]:
+    return [json_format.ParseDict(dict(rule), ateapi.EgressRule()) for rule in rules]
+
+
+def _pod_namespace() -> str | None:
+    path = Path(NAMESPACE_FILE)
+    return path.read_text().strip() if path.is_file() else None
+
+
+async def _call(awaitable: Awaitable[T]) -> T:
+    """Await an ate API call and raise the same errors as the env client."""
+    try:
+        return await awaitable
+    except grpc.RpcError as error:
+        raise map_rpc_error(error) from error
+
+
+async def _list_all(
+    method: Callable[[Any], Awaitable[Any]], request: Any, field: str
+) -> list[Any]:
+    """Call an ate API List method page by page; return field of all pages."""
+    items: list[Any] = []
+    while True:
+        response = await _call(method(request))
+        items += getattr(response, field)
+        request.options.page_token = response.next_page_token
+        if not request.options.page_token:
+            return items
