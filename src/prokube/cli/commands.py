@@ -392,7 +392,7 @@ def forward(
 
     \b
     pk sandbox forward demo 4096
-    opencode attach http://localhost:4096
+    opencode --server http://localhost:4096
     """
     local_port = local_port or remote_port
     if ssh.port_in_use(local_port):

@@ -884,7 +884,7 @@ def test_forward_help_shows_the_opencode_example():
     help_text = pk("sandbox", "forward", "--help").output
 
     assert "pk sandbox forward demo 4096\n" in help_text
-    assert "opencode attach http://localhost:4096\n" in help_text
+    assert "opencode --server http://localhost:4096\n" in help_text
 
 
 def test_version_is_plain_outside_a_terminal():
