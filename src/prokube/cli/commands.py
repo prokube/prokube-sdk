@@ -15,11 +15,20 @@ from typing import Any, TypeVar
 import click
 import httpx
 from ate_env import EnvError
+from google.protobuf import json_format
 from websockets.exceptions import WebSocketException
 
 from prokube import auth, endpoints
 from prokube.cli import banner, ssh
-from prokube.sandbox import AsyncSandboxClient, PresetError, Presets, actor_name
+from prokube.sandbox import (
+    AsyncSandboxClient,
+    PresetError,
+    Presets,
+    actor_name,
+    add_rules,
+    inject,
+    passthrough,
+)
 from prokube.sandbox._ateapi import ateapi_pb2 as ateapi
 from prokube.sandbox.client import SANDBOX_PREFIX
 
@@ -158,6 +167,67 @@ def auth_status(url: str | None, workspace: str | None) -> None:
 # --- Sandboxes -------------------------------------------------------------
 
 
+def _network_options(command: Callable[..., Any]) -> Callable[..., Any]:
+    """--inject, --inject-bearer and --passthrough, for create and network."""
+    options = [
+        click.option(
+            "--inject",
+            "injects",
+            nargs=3,
+            multiple=True,
+            metavar="HOST HEADER SECRET/KEY",
+            help="Set HEADER on HTTPS to HOST to key KEY of Secret SECRET in the "
+            "workspace (label prokube.ai/sandbox-credential=true). Repeatable.",
+        ),
+        click.option(
+            "--inject-bearer",
+            "bearer_injects",
+            nargs=2,
+            multiple=True,
+            metavar="HOST SECRET/KEY",
+            help="Like --inject, as 'Authorization: Bearer <key>'. Repeatable.",
+        ),
+        click.option(
+            "--passthrough",
+            "passthroughs",
+            multiple=True,
+            metavar="HOST",
+            help="Let TLS to HOST through unchanged. Repeatable.",
+        ),
+    ]
+    for option in reversed(options):
+        command = option(command)
+    return command
+
+
+def _network_rules(
+    client: AsyncSandboxClient,
+    injects: tuple[tuple[str, str, str], ...],
+    bearer_injects: tuple[tuple[str, str], ...],
+    passthroughs: tuple[str, ...],
+) -> list[dict[str, Any]]:
+    """The rules the network options ask for."""
+
+    def uri(reference: str) -> str:
+        return client.secret_uri(*_secret_key(reference))
+
+    rules = [inject(host, header, uri(ref)) for host, header, ref in injects]
+    rules += [
+        inject(host, "authorization", uri(ref), prefix="Bearer ")
+        for host, ref in bearer_injects
+    ]
+    if passthroughs:
+        rules.append(passthrough(*passthroughs))
+    return rules
+
+
+def _secret_key(reference: str) -> tuple[str, str]:
+    secret, _, key = reference.partition("/")
+    if not secret or not key:
+        raise click.BadParameter(f"Expected SECRET/KEY, got {reference!r}.")
+    return secret, key
+
+
 @cli.group()
 def sandbox() -> None:
     """Create and use sandboxes in a workspace."""
@@ -171,6 +241,7 @@ def sandbox() -> None:
     help="Preset to start from (default: the platform's default preset).",
 )
 @click.option("--connect", is_flag=True, help="Open an SSH session afterwards.")
+@_network_options
 @_install_ssh_option
 @_identity_option
 @_target_options
@@ -178,15 +249,34 @@ def create(
     name: str,
     preset: str | None,
     connect: bool,
+    injects: tuple[tuple[str, str, str], ...],
+    bearer_injects: tuple[tuple[str, str], ...],
+    passthroughs: tuple[str, ...],
     install_ssh: bool,
     identity: Path | None,
     url: str | None,
     workspace: str | None,
 ) -> None:
-    """Create sandbox NAME from a preset, with the platform's network rules."""
+    """Create sandbox NAME from a preset, with the platform's network rules.
+
+    \b
+    pk sandbox create demo --inject api.anthropic.com x-api-key anthropic/API_KEY
+    pk sandbox create demo --inject-bearer api.openai.com openai/API_KEY
+
+    --inject, --inject-bearer and --passthrough add rules to the preset's; a
+    host they name leaves the preset's rules. See pk sandbox network.
+    """
+    for reference in [i[2] for i in injects] + [i[1] for i in bearer_injects]:
+        _secret_key(reference)
 
     async def run(client: AsyncSandboxClient) -> tuple[ateapi.Actor, Presets]:
-        return await client.create(name, preset=preset), await client.presets()
+        presets = await client.presets()
+        extra = _network_rules(client, injects, bearer_injects, passthroughs)
+        if not extra:
+            return await client.create(name, preset=preset), presets
+        base = [json_format.MessageToDict(r) for r in presets.get(preset).network.rules]
+        network = add_rules(base, *extra)
+        return await client.create(name, preset=preset, network=network), presets
 
     actor, presets = _with_client(url, workspace, run)
     click.echo(f"Created {_name(actor)} ({_summary(actor, presets)})")
@@ -488,6 +578,52 @@ def resize(name: str, preset: str, url: str | None, workspace: str | None) -> No
 
     actor, presets = _with_client(url, workspace, run)
     click.echo(f"{_name(actor)}: {_summary(actor, presets)}")
+
+
+@sandbox.command()
+@click.argument("name")
+@click.option(
+    "--set",
+    "rules_file",
+    type=click.File(),
+    help="Replace the rules with the JSON list in FILE (- for stdin).",
+)
+@_network_options
+@_target_options
+def network(
+    name: str,
+    rules_file: Any,
+    injects: tuple[tuple[str, str, str], ...],
+    bearer_injects: tuple[tuple[str, str], ...],
+    passthroughs: tuple[str, ...],
+    url: str | None,
+    workspace: str | None,
+) -> None:
+    """Show or change sandbox NAME's network rules.
+
+    \b
+    pk sandbox network demo
+    pk sandbox network demo --inject api.anthropic.com x-api-key anthropic/API_KEY
+    pk sandbox network demo --set rules.json
+
+    Prints the rules as the JSON of Substrate EgressRules. --set replaces
+    them; --inject, --inject-bearer and --passthrough add rules, and a host
+    they name leaves the other rules. Changes apply right away.
+    """
+    for reference in [i[2] for i in injects] + [i[1] for i in bearer_injects]:
+        _secret_key(reference)
+    rules = json.load(rules_file) if rules_file else None
+    if rules is not None and not isinstance(rules, list):
+        raise click.BadParameter("Expected a JSON list of rules.", param_hint="--set")
+
+    async def run(client: AsyncSandboxClient) -> list[dict[str, Any]]:
+        extra = _network_rules(client, injects, bearer_injects, passthroughs)
+        if rules is None and not extra:
+            return await client.network(name)
+        current = rules if rules is not None else await client.network(name)
+        return await client.set_network(name, add_rules(current, *extra))
+
+    click.echo(json.dumps(_with_client(url, workspace, run), indent=2))
 
 
 @sandbox.command()

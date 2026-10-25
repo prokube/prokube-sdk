@@ -103,6 +103,7 @@ pk sandbox cp demo:/workspace/model.pt .
 pk sandbox suspend demo
 pk sandbox resume demo
 pk sandbox revert demo                              # after a crash: back to the last snapshot
+pk sandbox network demo                             # egress rules; see Network and credentials
 pk sandbox delete demo
 pk logout
 ```
@@ -279,19 +280,37 @@ gateway puts in the value of a key from a Secret of the workspace with the
 label `prokube.ai/sandbox-credential=true`:
 
 ```python
-from prokube.sandbox import inject, passthrough
+from prokube.sandbox import add_rules, inject, passthrough
 
 key = client.secret_uri("anthropic-api-key", "ANTHROPIC_API_KEY")
-client.set_network("demo", [
+client.set_network("demo", add_rules(
+    client.network("demo"),
     inject("api.anthropic.com", "x-api-key", key),
     passthrough("github.com", "registry.npmjs.org"),
-])
+))
 ```
 
 `inject` and `passthrough` return the rules' JSON; `network` returns the same
 form. The presets' images trust the gateway's CA (`SSL_CERT_FILE`,
 `NODE_EXTRA_CA_CERTS` and others). Each host name and port can be in only one
-rule.
+rule: `add_rules` appends rules and takes their host names out of the others,
+so the example keeps the preset's rules and moves `api.anthropic.com` from its
+passthrough rule to the injecting one.
+
+The same from the command line, at create time or later:
+
+```bash
+kubectl -n my-workspace create secret generic anthropic-api-key --from-file=ANTHROPIC_API_KEY=key.txt
+kubectl -n my-workspace label secret anthropic-api-key prokube.ai/sandbox-credential=true
+
+pk sandbox create demo --inject api.anthropic.com x-api-key anthropic-api-key/ANTHROPIC_API_KEY
+pk sandbox network demo --inject-bearer api.openai.com openai/API_KEY --passthrough github.com
+pk sandbox network demo                     # the rules as JSON
+pk sandbox network demo --set rules.json    # replace them
+```
+
+The sandbox sends the header with any placeholder, e.g.
+`ANTHROPIC_API_KEY=placeholder` for Claude Code.
 
 ## How it maps to Substrate
 
