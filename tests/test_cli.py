@@ -15,10 +15,10 @@ from click.testing import CliRunner
 
 from prokube import auth
 from prokube.cli import banner, commands, ssh
-from prokube.sandbox import PresetError
+from prokube.sandbox import PresetError, inject, passthrough
 from prokube.sandbox._ateapi import ateapi_pb2 as ateapi
 from tests.conftest import make_jwt
-from tests.test_presets import PRESETS
+from tests.test_presets import OPENCODE_RULE, PRESETS
 
 URL = "https://platform.example.com"
 HTTP2_ERROR = (
@@ -93,6 +93,8 @@ class FakeSandboxes:
         self.host_key: ShellResult | None = None
         self.proc_net_tcp = ""  # the sandbox's /proc/net/tcp and tcp6
         self.state = "ACTOR_STATE_RUNNING"  # what get returns
+        self.network_rules: list[dict] = [OPENCODE_RULE]  # what network returns
+        self.created_network: list[dict] | None = None
 
     def __call__(self, url: str, workspace: str) -> "FakeSandboxes":
         self.targets.append((url, workspace))
@@ -104,8 +106,9 @@ class FakeSandboxes:
     async def __aexit__(self, *exc_info: object) -> None:
         pass
 
-    async def create(self, name, *, preset):
+    async def create(self, name, *, preset, network=None):
         self.calls.append(("create", name, preset))
+        self.created_network = network
         return actor(
             "sbx-" + name, template=("sandbox-templates", "pk-default-large-v1")
         )
@@ -181,6 +184,17 @@ class FakeSandboxes:
 
     def env(self, name):
         return FakeEnv(self, name)
+
+    async def network(self, name):
+        return self.network_rules
+
+    async def set_network(self, name, rules):
+        self.calls.append(("set_network", name))
+        self.network_rules = rules
+        return rules
+
+    def secret_uri(self, secret, key):
+        return f"ate-secret://k8s.io/default/team-a/{secret}/{key}"
 
 
 @pytest.fixture
@@ -356,6 +370,92 @@ def test_revert_does_not_ask_for_a_crashed_sandbox(sandboxes, logged_in):
         "demo crashed; its changes since the last snapshot are lost.\ndemo: SUSPENDED\n"
     )
     assert sandboxes.calls == [("revert", "demo")]
+
+
+def test_create_injects_credentials_into_the_presets_rules(sandboxes, logged_in):
+    result = pk(
+        "sandbox", "create", "demo",
+        "--inject", "opencode.ai", "x-api-key", "opencode/API_KEY",
+        "--inject-bearer", "api.openai.com", "openai/API_KEY",
+        "--passthrough", "github.com",
+    )  # fmt: skip
+
+    assert result.exit_code == 0, result.output
+    assert sandboxes.created_network == [
+        passthrough("models.opencode.ai"),
+        inject(
+            "opencode.ai",
+            "x-api-key",
+            "ate-secret://k8s.io/default/team-a/opencode/API_KEY",
+        ),
+        inject(
+            "api.openai.com",
+            "authorization",
+            "ate-secret://k8s.io/default/team-a/openai/API_KEY",
+            prefix="Bearer ",
+        ),
+        passthrough("github.com"),
+    ]
+
+
+def test_create_without_network_options_keeps_the_presets_rules(sandboxes, logged_in):
+    assert pk("sandbox", "create", "demo").exit_code == 0
+    assert sandboxes.created_network is None
+
+
+def test_create_rejects_a_credential_without_key(sandboxes, logged_in):
+    result = pk("sandbox", "create", "demo", "--inject-bearer", "h", "openai")
+
+    assert result.exit_code == 2
+    assert "Expected SECRET/KEY, got 'openai'" in result.output
+    assert sandboxes.calls == []
+
+
+def test_network_shows_the_rules(sandboxes, logged_in):
+    result = pk("sandbox", "network", "demo")
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output) == [OPENCODE_RULE]
+    assert sandboxes.calls == []
+
+
+def test_network_adds_rules(sandboxes, logged_in):
+    result = pk(
+        "sandbox", "network", "demo",
+        "--inject", "opencode.ai", "x-api-key", "opencode/API_KEY",
+    )  # fmt: skip
+
+    assert result.exit_code == 0, result.output
+    expected = [
+        passthrough("models.opencode.ai"),
+        inject(
+            "opencode.ai",
+            "x-api-key",
+            "ate-secret://k8s.io/default/team-a/opencode/API_KEY",
+        ),
+    ]
+    assert json.loads(result.output) == expected == sandboxes.network_rules
+    assert sandboxes.calls == [("set_network", "demo")]
+
+
+def test_network_set_replaces_the_rules(sandboxes, logged_in, tmp_path):
+    rules_file = tmp_path / "rules.json"
+    rules_file.write_text(json.dumps([passthrough("pypi.org")]))
+
+    result = pk("sandbox", "network", "demo", "--set", str(rules_file))
+
+    assert result.exit_code == 0, result.output
+    assert sandboxes.network_rules == [passthrough("pypi.org")]
+
+
+def test_network_set_needs_a_list(sandboxes, logged_in, tmp_path):
+    rules_file = tmp_path / "rules.json"
+    rules_file.write_text("{}")
+
+    result = pk("sandbox", "network", "demo", "--set", str(rules_file))
+
+    assert result.exit_code == 2
+    assert "Expected a JSON list of rules." in result.output
 
 
 def test_create_defaults_to_the_platforms_preset(sandboxes, logged_in):

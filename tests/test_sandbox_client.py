@@ -16,6 +16,7 @@ from prokube.sandbox import (
     PresetError,
     SandboxClient,
     actor_name,
+    add_rules,
     inject,
     passthrough,
 )
@@ -745,6 +746,37 @@ def test_rule_builders():
             },
         }
     }
+
+
+def test_add_rules_moves_the_new_rules_hosts_out_of_the_others():
+    base = [
+        passthrough("api.openai.com", "api.anthropic.com"),
+        passthrough("pypi.org"),
+        {"http": {"hostnames": ["deb.debian.org"], "ports": {"numbers": [80]}}},
+    ]
+    key = inject("api.anthropic.com", "x-api-key", "ate-secret://x")
+
+    rules = add_rules(
+        base, key, passthrough("pypi.org"), passthrough("pypi.org", port=80)
+    )
+
+    assert rules == [
+        passthrough("api.openai.com"),
+        {"http": {"hostnames": ["deb.debian.org"], "ports": {"numbers": [80]}}},
+        key,
+        passthrough("pypi.org"),
+        passthrough("pypi.org", port=80),
+    ]
+    assert base[0] == passthrough("api.openai.com", "api.anthropic.com")
+
+
+def test_add_rules_keeps_a_host_on_another_port():
+    base = [passthrough("github.com", port=22)]
+
+    assert add_rules(base, passthrough("github.com")) == [
+        passthrough("github.com", port=22),
+        passthrough("github.com"),
+    ]
 
 
 def test_secret_uri_names_a_secret_of_the_workspace():
