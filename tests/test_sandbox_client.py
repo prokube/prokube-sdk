@@ -563,7 +563,7 @@ def test_bearer_token_failure_fails_the_call():
 
 async def test_write_files_uploads_one_archive_and_unpacks_it(client):
     await client.write_files(
-        "demo", {"/workspace/src/a.py": "print(1)\n", "/home/developer/b": b"\x00"}
+        "demo", {"/workspace/src/a.py": "print(1)\n", "/opt/tool/b": b"\x00"}
     )
 
     env = client._env.envs[("sbx-demo", "team-a")]
@@ -581,7 +581,7 @@ async def test_write_files_uploads_one_archive_and_unpacks_it(client):
             members[member.name] = (member.mode, content.read())
     assert members == {
         "workspace/src/a.py": (0o644, b"print(1)\n"),
-        "home/developer/b": (0o644, b"\x00"),
+        "opt/tool/b": (0o644, b"\x00"),
     }
 
 

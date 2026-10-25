@@ -1,8 +1,8 @@
 """OpenSSH to sandboxes over a WebSocket.
 
 The runtime image (prokube/sandbox-images#16) bridges a WebSocket on port 8022,
-path ``/ssh``, to its sshd. sshd accepts public keys for the user ``developer``
-from ``/workspace/ssh/authorized_keys`` and keeps its host key in
+path ``/ssh``, to its sshd. sshd accepts public keys for ``root``, the only user
+in the sandbox, from ``/workspace/ssh/authorized_keys`` and keeps its host key in
 ``/workspace/ssh/``. The CLI installs the user's key and reads the host key
 (``pk-sandbox-hostkey``) through the authenticated env guest API, so the host
 key it pins is the sandbox's real key, not one learned on first use. sshd allows
@@ -30,7 +30,7 @@ from websockets.sync.client import connect
 
 from prokube import auth
 
-SSH_USER = "developer"
+SSH_USER = "root"
 HOST_KEY_PATH = "/workspace/ssh/ssh_host_ed25519_key.pub"
 # Prints the sandbox's own host public key, generating it first in a clone of a
 # golden snapshot (prokube/sandbox-images#21). Older images only have the file.
