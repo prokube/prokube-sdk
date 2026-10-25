@@ -1,0 +1,993 @@
+import copy
+import io
+import tarfile
+import time
+from typing import Any
+
+import grpc
+import grpc.aio
+import pytest
+from ate_env import NotFoundError, PermissionDeniedError, ShellResult
+from ate_env._gen.ateenv.v1alpha import guest_pb2
+
+from prokube import auth, endpoints
+from prokube.sandbox import (
+    AsyncSandboxClient,
+    PresetError,
+    SandboxClient,
+    actor_name,
+    add_rules,
+    inject,
+    passthrough,
+)
+from prokube.sandbox import client as client_module
+from prokube.sandbox._ateapi import ateapi_pb2 as ateapi
+from prokube.sandbox.client import _CredentialPlugin
+from tests.conftest import make_jwt
+from tests.test_presets import OPENCODE_POLICY, PRESETS, PRESETS_JSON
+
+URL = "https://platform.example.com"
+PRESETS_URL = f"{URL}/svc/sandbox/v1alpha/presets"
+ENDPOINT = "gateway.example:80"
+SHARED = "sandbox-templates"
+CODING = "registry.example.com/pk-sandbox-coding@sha256:" + "a" * 64
+OTHER_IMAGE = "registry.example.com/other@sha256:" + "b" * 64
+SUSPENDED = ateapi.ACTOR_STATE_SUSPENDED
+RUNNING = ateapi.ACTOR_STATE_RUNNING
+
+
+def actor(name: str, atespace: str = "team-a") -> ateapi.Actor:
+    return ateapi.Actor(metadata=ateapi.ResourceMetadata(atespace=atespace, name=name))
+
+
+def template(
+    name: str,
+    image: str = CODING,
+    fidelity: ateapi.SnapshotFidelity = ateapi.SNAPSHOT_FIDELITY_VOLUMES,
+    env_guest: bool = True,
+) -> ateapi.ActorTemplate:
+    """A shared template with what resize and the env guest check read."""
+    guest = ateapi.Container(name="guest", image=image)
+    if env_guest:
+        guest.wakeup_probe.http_get.CopyFrom(
+            ateapi.HttpGetAction(path="/readyz", port=80)
+        )
+    return ateapi.ActorTemplate(
+        metadata=ateapi.ResourceMetadata(atespace=SHARED, name=name),
+        containers=[guest],
+        snapshot_config=ateapi.SnapshotConfig(preferred_fidelity=fidelity),
+    )
+
+
+class FakeControl:
+    """Stands in for ateapi.Control; records every request.
+
+    Actors in ``actors`` behave like stored ones: create adds them, suspend,
+    resume and update change them. ``templates`` are the presets' templates.
+    """
+
+    def __init__(self) -> None:
+        self.requests: list[tuple[str, object]] = []
+        self.pages = [ateapi.ListActorsResponse()]
+        self.actors: dict[str, ateapi.Actor] = {}
+        self.egress = ateapi.EgressPolicy()
+        memory = ateapi.SNAPSHOT_FIDELITY_MEMORY
+        self.templates: dict[str, ateapi.ActorTemplate] = {}
+        for size in ("small", "medium", "large"):
+            plain, kept = f"pk-default-{size}-v1", f"pk-default-{size}-memory-v1"
+            self.templates[plain] = template(plain)
+            self.templates[kept] = template(kept, fidelity=memory)
+
+    def methods(self) -> list[str]:
+        return [method for method, _ in self.requests]
+
+    async def CreateActor(self, request):
+        self.requests.append(("CreateActor", request))
+        stored = self.actors[request.actor.metadata.name] = ateapi.Actor()
+        stored.CopyFrom(request.actor)
+        return request.actor
+
+    async def CreateActorEgressPolicy(self, request):
+        self.requests.append(("CreateActorEgressPolicy", request))
+        return request.egress_policy
+
+    async def GetActorEgressPolicy(self, request):
+        self.requests.append(("GetActorEgressPolicy", request))
+        return self.egress
+
+    async def UpdateActorEgressPolicy(self, request):
+        self.requests.append(("UpdateActorEgressPolicy", request))
+        # Substrate needs the UID and version of the stored policy.
+        assert request.egress_policy.metadata == self.egress.metadata
+        return request.egress_policy
+
+    async def ListActors(self, request):
+        return self._page("ListActors", request)
+
+    async def ListWorkers(self, request):
+        return self._page("ListWorkers", request)
+
+    async def ListWorkerActorAssignments(self, request):
+        return self._page("ListWorkerActorAssignments", request)
+
+    async def GetActor(self, request):
+        self.requests.append(("GetActor", request))
+        return self.actors.get(request.actor.name) or actor(request.actor.name)
+
+    async def GetActorTemplate(self, request):
+        self.requests.append(("GetActorTemplate", request))
+        return self.templates[request.actor_template.name]
+
+    async def DeleteActor(self, request):
+        self.requests.append(("DeleteActor", request))
+        return actor(request.actor.name)
+
+    async def SuspendActor(self, request):
+        self.requests.append(("SuspendActor", request))
+        return ateapi.SuspendActorResponse(actor=self._set_state(request, SUSPENDED))
+
+    async def ResumeActor(self, request):
+        self.requests.append(("ResumeActor", request))
+        return ateapi.ResumeActorResponse(actor=self._set_state(request, RUNNING))
+
+    async def RevertActor(self, request):
+        self.requests.append(("RevertActor", request))
+        return ateapi.RevertActorResponse(actor=self._set_state(request, SUSPENDED))
+
+    async def UpdateActor(self, request):
+        self.requests.append(("UpdateActor", request))
+        stored = self.actors[request.actor.metadata.name]
+        assert request.actor.metadata.uid == stored.metadata.uid
+        assert request.actor.metadata.version == stored.metadata.version
+        assert stored.status.state == SUSPENDED
+        stored.actor_template.CopyFrom(request.actor.actor_template)
+        stored.metadata.version += 1
+        return stored
+
+    def _page(self, method, request):
+        # A copy, since the client reuses the request for the next page.
+        self.requests.append((method, copy.deepcopy(request)))
+        return self.pages.pop(0)
+
+    def _set_state(self, request, state) -> ateapi.Actor:
+        if request.actor.name not in self.actors:
+            return actor(request.actor.name)
+        stored = self.actors[request.actor.name]
+        stored.status.state = state
+        stored.metadata.version += 1
+        return stored
+
+
+class FakeEnv:
+    """Stands in for an ate_env.Env handle."""
+
+    def __init__(self, id: str, atespace: str) -> None:
+        self.id = id
+        self.atespace = atespace
+        self.calls: list[tuple] = []
+        self.files: dict[str, bytes] = {}
+
+    async def shell(self, command, **kwargs):
+        self.calls.append(("shell", command, kwargs))
+        return ShellResult(stdout="hi\n", stderr="", exit_code=0)
+
+    async def read_file_bytes(self, path):
+        return self.files[path]
+
+    async def write_file(self, path, data, *, mode):
+        self.files[path] = data
+        self.calls.append(("write_file", path, mode))
+        return len(data)
+
+
+class FakeEnvClient:
+    """Stands in for ate_env.Client; hands out one FakeEnv per sandbox."""
+
+    def __init__(self) -> None:
+        self.envs: dict[tuple[str, str], FakeEnv] = {}
+
+    def env(self, id: str, *, atespace: str) -> FakeEnv:
+        return self.envs.setdefault((id, atespace), FakeEnv(id, atespace))
+
+
+@pytest.fixture
+async def client():
+    client = AsyncSandboxClient(URL, "team-a", token_provider=lambda: "token")
+    client._control = FakeControl()  # type: ignore[assignment]
+    client._env = FakeEnvClient()  # type: ignore[assignment]
+    yield client
+    await client.close()
+
+
+def test_sandbox_names_get_the_sbx_prefix_once():
+    assert actor_name("demo") == "sbx-demo"
+    assert actor_name("sbx-demo") == "sbx-demo"
+
+
+async def test_list_follows_pages_and_keeps_only_sandboxes(client):
+    client._control.pages = [
+        ateapi.ListActorsResponse(
+            actors=[actor("sbx-one"), actor("session-123")], next_page_token="p2"
+        ),
+        ateapi.ListActorsResponse(actors=[actor("sbx-two")]),
+    ]
+
+    sandboxes = await client.list()
+
+    assert [s.metadata.name for s in sandboxes] == ["sbx-one", "sbx-two"]
+    tokens = [r.options.page_token for _, r in client._control.requests]
+    assert tokens == ["", "p2"]
+    assert all(r.atespace == "team-a" for _, r in client._control.requests)
+
+
+async def test_list_actors_returns_every_actor_of_all_workspaces(client):
+    client._control.pages = [
+        ateapi.ListActorsResponse(
+            actors=[actor("sbx-one"), actor("session-1", "team-b")],
+            next_page_token="p2",
+        ),
+        ateapi.ListActorsResponse(actors=[actor("sbx-two")]),
+    ]
+
+    actors = await client.list_actors(all_workspaces=True)
+
+    assert [a.metadata.name for a in actors] == ["sbx-one", "session-1", "sbx-two"]
+    requests = [request for _, request in client._control.requests]
+    assert [(r.atespace, r.options.page_token) for r in requests] == [
+        ("", ""),
+        ("", "p2"),
+    ]
+
+
+async def test_workers_and_their_actors_follow_pages(client):
+    def worker(name: str) -> ateapi.Worker:
+        return ateapi.Worker(metadata=ateapi.ResourceMetadata(name=name))
+
+    assignment = ateapi.ActorAssignment(actor=ref("team-a", "sbx-demo"))
+    client._control.pages = [
+        ateapi.ListWorkersResponse(workers=[worker("w-1")], next_page_token="p2"),
+        ateapi.ListWorkersResponse(workers=[worker("w-2")]),
+        ateapi.ListWorkerActorAssignmentsResponse(
+            actor_assignments=[assignment], next_page_token="p2"
+        ),
+        ateapi.ListWorkerActorAssignmentsResponse(),
+    ]
+
+    workers = await client.workers()
+    assignments = await client.worker_actors("w-1")
+
+    assert [w.metadata.name for w in workers] == ["w-1", "w-2"]
+    assert assignments == [assignment]
+    assert client._control.requests[-1] == (
+        "ListWorkerActorAssignments",
+        ateapi.ListWorkerActorAssignmentsRequest(
+            worker=ateapi.ObjectRef(name="w-1"),
+            options=ateapi.ListOptions(page_token="p2"),
+        ),
+    )
+
+
+async def test_without_a_workspace_only_global_reads_work(httpx_mock):
+    httpx_mock.add_response(
+        url=f"http://{ENDPOINT}/svc/sandbox/v1alpha/presets",
+        match_headers={"authorization": "Bearer caller"},
+        json=PRESETS_JSON,
+    )
+    async with AsyncSandboxClient(
+        endpoint=ENDPOINT, token_provider=lambda: "caller"
+    ) as client:
+        control = client._control = FakeControl()  # type: ignore[assignment]
+        control.pages = [
+            ateapi.ListActorsResponse(),
+            ateapi.ListWorkersResponse(),
+            ateapi.ListWorkerActorAssignmentsResponse(),
+        ]
+
+        assert client.workspace is None
+        assert await client.presets() == PRESETS
+        assert await client.list_actors(all_workspaces=True) == []
+        assert await client.workers() == []
+        assert await client.worker_actors("w-1") == []
+        for scoped in (
+            client.list(),
+            client.get("demo"),
+            client.create("demo"),
+            client.run("demo", "true"),
+        ):
+            with pytest.raises(ValueError, match="needs a workspace"):
+                await scoped
+        with pytest.raises(ValueError, match="needs a workspace"):
+            client.secret_uri("anthropic", "key")
+
+
+async def test_lifecycle_calls_address_the_sandbox_actor(client):
+    await client.get("demo")
+    await client.suspend("demo")
+    resumed = await client.resume("sbx-demo")
+    await client.delete("demo")
+
+    ref = ateapi.ObjectRef(atespace="team-a", name="sbx-demo")
+    requests = client._control.requests
+    assert [method for method, _ in requests] == [
+        "GetActor",
+        "SuspendActor",
+        "ResumeActor",
+        "DeleteActor",
+    ]
+    assert all(request.actor == ref for _, request in requests)
+    assert requests[-1][1].any_state is True
+    assert resumed.metadata.name == "sbx-demo"
+
+
+async def test_ate_api_errors_become_env_client_errors(client):
+    async def missing(request):
+        raise grpc.aio.AioRpcError(
+            grpc.StatusCode.NOT_FOUND,
+            grpc.aio.Metadata(),
+            grpc.aio.Metadata(),
+            details="actor not found",
+        )
+
+    client._control.GetActor = missing
+
+    with pytest.raises(NotFoundError, match="actor not found"):
+        await client.get("demo")
+
+
+async def test_commands_and_files_go_through_the_env_client(client):
+    result = await client.run("demo", "echo hi", timeout=30)
+    written = await client.write_file("demo", "/workspace/a.txt", "hello")
+    content = await client.read_file("demo", "/workspace/a.txt")
+
+    env = client._env.envs[("sbx-demo", "team-a")]
+    assert result.stdout == "hi\n"
+    assert env.calls[0] == (
+        "shell",
+        "echo hi",
+        {"stdin": None, "cwd": "", "env": None, "timeout": 30},
+    )
+    assert env.calls[1] == ("write_file", "/workspace/a.txt", 0o644)
+    assert written == 5
+    assert content == b"hello"
+    assert client.env("demo") is env
+
+
+async def test_url_and_workspace_come_from_the_environment(monkeypatch):
+    monkeypatch.setenv("PROKUBE_URL", URL + "/")
+    monkeypatch.setenv("PROKUBE_WORKSPACE", "team-b")
+
+    async with AsyncSandboxClient(token_provider=lambda: "token") as client:
+        assert client.url == URL
+        assert client.workspace == "team-b"
+
+
+async def test_url_and_workspace_come_from_pk_login(monkeypatch):
+    auth.save_config(URL, "team-a")
+
+    async with AsyncSandboxClient(token_provider=lambda: "token") as client:
+        assert (client.url, client.workspace) == (URL, "team-a")
+
+    monkeypatch.setenv("PROKUBE_WORKSPACE", "team-b")
+    async with AsyncSandboxClient(token_provider=lambda: "token") as client:
+        assert (client.url, client.workspace) == (URL, "team-b")
+
+
+async def test_without_a_url_or_with_an_endpoint_calls_go_to_the_gateway():
+    async with AsyncSandboxClient(token_provider=lambda: "token") as client:
+        assert (client.url, client.endpoint) == (None, endpoints.IN_CLUSTER_GATEWAY)
+
+    async with AsyncSandboxClient(
+        URL, endpoint=ENDPOINT, token_provider=lambda: "token"
+    ) as client:
+        assert (client.url, client.endpoint) == (URL, ENDPOINT)
+
+
+async def test_default_credentials_are_the_stored_login():
+    with pytest.raises(auth.LoginRequired):
+        AsyncSandboxClient(URL, "team-a")
+
+    auth._save_tokens(
+        URL, {"id_token": "t", "refresh_token": "r", "expires_at": time.time() + 3600}
+    )
+    async with AsyncSandboxClient(URL, "team-a") as client:
+        assert client.workspace == "team-a"
+
+
+@pytest.fixture
+def workload_token(tmp_path, monkeypatch) -> str:
+    """A workspace pod: a workload token and namespace team-pod."""
+    token = make_jwt(time.time() + 3600)
+    (tmp_path / "token").write_text(token)
+    (tmp_path / "namespace").write_text("team-pod\n")
+    monkeypatch.setenv("PROKUBE_SANDBOX_TOKEN_FILE", str(tmp_path / "token"))
+    monkeypatch.setattr(client_module, "NAMESPACE_FILE", str(tmp_path / "namespace"))
+    return token
+
+
+@pytest.fixture
+async def gateway(monkeypatch):
+    """A plaintext gRPC server standing in for the in-cluster Agent Gateway.
+
+    Records the request and metadata of each call; streaming calls record
+    their first request.
+    """
+    calls: list[tuple[Any, dict[str, str]]] = []
+
+    async def get_actor(request, context):
+        calls.append((request, dict(context.invocation_metadata())))
+        return actor(request.actor.name, request.actor.atespace)
+
+    async def read_file(request, context):  # unary-stream
+        calls.append((request, dict(context.invocation_metadata())))
+        yield guest_pb2.ReadFileResponse(chunk=b"hi")
+
+    async def write_file(request_iterator, context):  # stream-unary
+        requests = [request async for request in request_iterator]
+        calls.append((requests[0], dict(context.invocation_metadata())))
+        return guest_pb2.WriteFileResponse(
+            bytes_written=sum(len(request.chunk) for request in requests)
+        )
+
+    server = grpc.aio.server()
+    server.add_generic_rpc_handlers(
+        [
+            grpc.method_handlers_generic_handler(
+                "ateapi.Control",
+                {
+                    "GetActor": grpc.unary_unary_rpc_method_handler(
+                        get_actor,
+                        request_deserializer=ateapi.GetActorRequest.FromString,
+                        response_serializer=ateapi.Actor.SerializeToString,
+                    )
+                },
+            ),
+            grpc.method_handlers_generic_handler(
+                "ateenv.v1alpha.FileSystemService",
+                {
+                    "ReadFile": grpc.unary_stream_rpc_method_handler(
+                        read_file,
+                        request_deserializer=guest_pb2.ReadFileRequest.FromString,
+                        response_serializer=guest_pb2.ReadFileResponse.SerializeToString,
+                    ),
+                    "WriteFile": grpc.stream_unary_rpc_method_handler(
+                        write_file,
+                        request_deserializer=guest_pb2.WriteFileRequest.FromString,
+                        response_serializer=guest_pb2.WriteFileResponse.SerializeToString,
+                    ),
+                },
+            ),
+        ]
+    )
+    port = server.add_insecure_port("127.0.0.1:0")
+    await server.start()
+    monkeypatch.setattr(endpoints, "IN_CLUSTER_GATEWAY", f"127.0.0.1:{port}")
+    yield calls
+    await server.stop(None)
+
+
+async def test_workspace_pod_needs_no_configuration(workload_token, gateway):
+    async with AsyncSandboxClient() as client:
+        assert client.url is None
+        assert client.workspace == "team-pod"
+        await client.get("demo")
+
+    [(request, metadata)] = gateway
+    assert request.actor == ateapi.ObjectRef(atespace="team-pod", name="sbx-demo")
+    assert metadata["authorization"] == f"Bearer {workload_token}"
+
+
+async def test_workspace_pod_sends_the_token_on_streaming_calls(
+    workload_token, gateway
+):
+    async with AsyncSandboxClient() as client:
+        assert await client.write_file("demo", "/workspace/a.txt", b"hi") == 2
+        assert await client.read_file("demo", "/workspace/a.txt") == b"hi"
+
+    [(write, write_metadata), (read, read_metadata)] = gateway
+    assert (write.path, read.path) == ("/workspace/a.txt", "/workspace/a.txt")
+    for metadata in (write_metadata, read_metadata):
+        assert metadata["authorization"] == f"Bearer {workload_token}"
+        assert metadata["x-env-id"] == "sbx-demo"
+
+
+async def test_workspace_pod_can_name_another_workspace(workload_token, gateway):
+    async with AsyncSandboxClient(workspace="team-b") as client:
+        await client.get("demo")
+
+    assert gateway[0][0].actor.atespace == "team-b"
+
+
+async def test_with_a_url_the_workload_token_comes_after_the_login(workload_token):
+    async with AsyncSandboxClient(URL) as client:
+        assert (client.url, client.endpoint) == (URL, None)
+        assert client.workspace == "team-pod"
+
+
+async def test_a_server_sends_the_callers_token_to_the_endpoint(gateway, monkeypatch):
+    """As pkui does: one client per request, without login or workload token."""
+    endpoint = endpoints.IN_CLUSTER_GATEWAY  # where the gateway fixture listens
+    monkeypatch.setattr(endpoints, "IN_CLUSTER_GATEWAY", "unused.invalid:80")
+
+    async def chunks():
+        yield b"he"
+        yield b"llo"
+
+    async with AsyncSandboxClient(
+        workspace="team-a", endpoint=endpoint, token_provider=lambda: "caller"
+    ) as client:
+        await client.get("demo")
+        assert await client.write_file("demo", "/workspace/a.txt", chunks()) == 5
+        read = client.env("demo").read_file("/workspace/a.txt")
+        assert [chunk async for chunk in read] == [b"hi"]
+
+    assert [metadata["authorization"] for _, metadata in gateway] == [
+        "Bearer caller"
+    ] * 3
+
+
+async def test_an_api_key_goes_in_x_api_key(gateway, monkeypatch):
+    endpoint = endpoints.IN_CLUSTER_GATEWAY  # where the gateway fixture listens
+    monkeypatch.setenv("PROKUBE_API_KEY", "pk-key")
+
+    async with AsyncSandboxClient(workspace="team-a", endpoint=endpoint) as client:
+        await client.get("demo")
+
+    [(_, metadata)] = gateway
+    assert metadata["x-api-key"] == "pk-key"
+    assert "authorization" not in metadata
+
+
+def call_plugin(plugin: _CredentialPlugin) -> tuple:
+    """Invoke the gRPC auth plugin the way gRPC does and return what it sent."""
+    sent = []
+    plugin(None, lambda metadata, error: sent.append((metadata, error)))  # type: ignore[arg-type]
+    return sent[0]
+
+
+def test_bearer_token_is_asked_for_on_every_call():
+    tokens = iter(["first", "second"])
+    plugin = _CredentialPlugin(auth.credential(None, lambda: next(tokens)))
+
+    assert call_plugin(plugin) == ((("authorization", "Bearer first"),), None)
+    assert call_plugin(plugin) == ((("authorization", "Bearer second"),), None)
+
+
+def test_bearer_token_failure_fails_the_call():
+    def expired() -> str:
+        raise auth.LoginRequired("expired")
+
+    metadata, error = call_plugin(_CredentialPlugin(auth.credential(None, expired)))
+
+    assert metadata == ()
+    assert isinstance(error, auth.LoginRequired)
+
+
+async def test_write_files_uploads_one_archive_and_unpacks_it(client):
+    await client.write_files(
+        "demo", {"/workspace/src/a.py": "print(1)\n", "/opt/tool/b": b"\x00"}
+    )
+
+    env = client._env.envs[("sbx-demo", "team-a")]
+    (upload,) = env.files
+    assert upload.startswith("/workspace/.pk-write-files-")
+    assert env.calls[0] == ("write_file", upload, 0o600)
+    _, command, _ = env.calls[1]
+    assert command.startswith(f"tar -xzf {upload} -C / --no-same-owner -m;")
+    assert f"rm -f {upload}" in command
+    members = {}
+    with tarfile.open(fileobj=io.BytesIO(env.files[upload])) as tar:
+        for member in tar:
+            content = tar.extractfile(member)
+            assert content is not None
+            members[member.name] = (member.mode, content.read())
+    assert members == {
+        "workspace/src/a.py": (0o644, b"print(1)\n"),
+        "opt/tool/b": (0o644, b"\x00"),
+    }
+
+
+async def test_write_files_needs_absolute_paths(client):
+    with pytest.raises(ValueError, match="absolute path"):
+        await client.write_files("demo", {"a.py": "x"})
+
+    assert client._env.envs == {}
+
+
+async def test_write_files_reports_a_failed_unpack(client):
+    env = client._env.env("sbx-demo", atespace="team-a")
+
+    async def failing_shell(command, **kwargs):
+        return ShellResult(stdout="", stderr="tar: disk full\n", exit_code=2)
+
+    env.shell = failing_shell  # type: ignore[method-assign]
+
+    with pytest.raises(RuntimeError, match="tar: disk full"):
+        await client.write_files("demo", {"/workspace/a": "x"})
+
+
+def sync_client() -> SandboxClient:
+    client = SandboxClient(URL, "team-a", token_provider=lambda: "token")
+    client._client._control = FakeControl()  # type: ignore[assignment]
+    client._client._env = FakeEnvClient()  # type: ignore[assignment]
+    return client
+
+
+def test_sync_client_wraps_the_async_one():
+    with sync_client() as client:
+        created = client.get("demo")
+        result = client.run("demo", "echo hi")
+        client.write_file("demo", "/workspace/a.txt", b"x")
+        client.write_files("demo", {"/workspace/b.txt": b"y"})
+
+        assert created.metadata.name == "sbx-demo"
+        assert result.exit_code == 0
+        assert client.read_file("demo", "/workspace/a.txt") == b"x"
+        assert client.list() == []
+        assert client.workspace == "team-a"
+
+
+async def test_sync_client_works_inside_a_running_event_loop():
+    # As in a Jupyter notebook, where a loop is already running.
+    with sync_client() as client:
+        assert client.get("demo").metadata.name == "sbx-demo"
+
+
+def test_sync_client_reports_construction_errors():
+    with pytest.raises(auth.LoginRequired):
+        SandboxClient(URL, "team-a")
+
+
+# --- Presets: create and resize ---------------------------------------------
+
+
+def ref(atespace: str, name: str) -> ateapi.ObjectRef:
+    return ateapi.ObjectRef(atespace=atespace, name=name)
+
+
+@pytest.fixture
+def presets_api(httpx_mock):
+    httpx_mock.add_response(
+        url=PRESETS_URL, json=PRESETS_JSON, is_reusable=True, is_optional=True
+    )
+    return httpx_mock
+
+
+@pytest.fixture
+def sandbox(client, presets_api):
+    """The client with a running sandbox demo from the small preset."""
+    client._control.actors["sbx-demo"] = ateapi.Actor(
+        metadata=ateapi.ResourceMetadata(
+            atespace="team-a", name="sbx-demo", uid="u-1", version=3
+        ),
+        actor_template=ref(SHARED, "pk-default-small-v1"),
+        status=ateapi.ActorStatus(state=RUNNING),
+    )
+    return client
+
+
+async def test_create_from_the_default_preset_sets_its_network(client, presets_api):
+    created = await client.create("demo")
+
+    assert client._control.methods() == ["CreateActor", "CreateActorEgressPolicy"]
+    assert created.metadata == ateapi.ResourceMetadata(
+        atespace="team-a", name="sbx-demo"
+    )
+    assert created.actor_template == ref(SHARED, "pk-default-small-v1")
+    egress = client._control.requests[-1][1]
+    assert egress.actor == ref("team-a", "sbx-demo")
+    assert egress.egress_policy == ateapi.EgressPolicy(
+        metadata=ateapi.ResourceMetadata(atespace="team-a", name="default"),
+        rules=OPENCODE_POLICY.rules,
+    )
+
+
+STORED_EGRESS = ateapi.EgressPolicy(
+    metadata=ateapi.ResourceMetadata(
+        atespace="team-a", name="default", uid="p-1", version=7
+    ),
+    rules=[
+        ateapi.EgressRule(
+            tls_passthrough=ateapi.TlsPassthroughRule(
+                hostnames=["pypi.org"], ports=ateapi.Ports(numbers=[443])
+            )
+        )
+    ],
+)
+
+
+async def test_network_is_the_rules_as_json(client):
+    client._control.egress = STORED_EGRESS
+
+    rules = await client.network("demo")
+
+    assert rules == [
+        {"tlsPassthrough": {"hostnames": ["pypi.org"], "ports": {"numbers": [443]}}}
+    ]
+    assert client._control.requests == [
+        (
+            "GetActorEgressPolicy",
+            ateapi.GetActorEgressPolicyRequest(
+                actor=ref("team-a", "sbx-demo"), name="default"
+            ),
+        )
+    ]
+
+
+async def test_set_network_replaces_the_rules(client):
+    client._control.egress = STORED_EGRESS
+    key = client.secret_uri("anthropic", "key")
+    rules = [
+        inject("api.anthropic.com", "x-api-key", key),
+        inject("api.github.com", "Authorization", key, prefix="Bearer "),
+        passthrough("github.com", "registry.npmjs.org"),
+    ]
+
+    # The builders' JSON survives the round trip through the proto unchanged.
+    assert await client.set_network("demo", rules) == rules
+    assert client._control.methods() == [
+        "GetActorEgressPolicy",
+        "UpdateActorEgressPolicy",
+    ]
+    assert client._control.requests[-1][1].actor == ref("team-a", "sbx-demo")
+
+
+def test_rule_builders():
+    assert passthrough("github.com", port=22) == {
+        "tlsPassthrough": {"hostnames": ["github.com"], "ports": {"numbers": [22]}}
+    }
+    assert inject("api.example.com", "x-api-key", "ate-secret://x") == {
+        "https": {
+            "hostnames": ["api.example.com"],
+            "ports": {"numbers": [443]},
+            "effects": {
+                "replaceHeaders": [
+                    {"header": "x-api-key", "credentialUri": "ate-secret://x"}
+                ]
+            },
+        }
+    }
+
+
+def test_add_rules_moves_the_new_rules_hosts_out_of_the_others():
+    base = [
+        passthrough("api.openai.com", "api.anthropic.com"),
+        passthrough("pypi.org"),
+        {"http": {"hostnames": ["deb.debian.org"], "ports": {"numbers": [80]}}},
+    ]
+    key = inject("api.anthropic.com", "x-api-key", "ate-secret://x")
+
+    rules = add_rules(
+        base, key, passthrough("pypi.org"), passthrough("pypi.org", port=80)
+    )
+
+    assert rules == [
+        passthrough("api.openai.com"),
+        {"http": {"hostnames": ["deb.debian.org"], "ports": {"numbers": [80]}}},
+        key,
+        passthrough("pypi.org"),
+        passthrough("pypi.org", port=80),
+    ]
+    assert base[0] == passthrough("api.openai.com", "api.anthropic.com")
+
+
+def test_add_rules_keeps_a_host_on_another_port():
+    base = [passthrough("github.com", port=22)]
+
+    assert add_rules(base, passthrough("github.com")) == [
+        passthrough("github.com", port=22),
+        passthrough("github.com"),
+    ]
+
+
+def test_secret_uri_names_a_secret_of_the_workspace():
+    client = SandboxClient(URL, "team-a", token_provider=lambda: "token")
+
+    assert client.secret_uri("anthropic", "key") == (
+        "ate-secret://k8s.io/default/team-a/anthropic/key"
+    )
+    client.close()
+
+
+async def test_create_with_a_network_replaces_the_presets_rules(client, presets_api):
+    await client.create("demo", network=[passthrough("pypi.org")])
+    await client.create("closed", network=[])
+
+    first, second = (
+        request.egress_policy.rules
+        for method, request in client._control.requests
+        if method == "CreateActorEgressPolicy"
+    )
+    assert first == [
+        ateapi.EgressRule(
+            tls_passthrough=ateapi.TlsPassthroughRule(
+                hostnames=["pypi.org"], ports=ateapi.Ports(numbers=[443])
+            )
+        )
+    ]
+    assert not second
+
+
+async def test_create_from_a_named_preset(client, presets_api):
+    created = await client.create("demo", preset="pk-default-large")
+
+    assert created.actor_template == ref(SHARED, "pk-default-large-v1")
+
+
+async def test_create_keeps_an_existing_egress_policy(client, presets_api):
+    async def already_exists(request):
+        raise grpc.aio.AioRpcError(
+            grpc.StatusCode.ALREADY_EXISTS,
+            grpc.aio.Metadata(),
+            grpc.aio.Metadata(),
+            details="egress policy exists",
+        )
+
+    client._control.CreateActorEgressPolicy = already_exists
+
+    created = await client.create("demo")
+
+    assert created.actor_template == ref(SHARED, "pk-default-small-v1")
+
+
+async def test_create_leaves_no_sandbox_when_its_network_fails(client, presets_api):
+    async def denied(request):
+        raise grpc.aio.AioRpcError(
+            grpc.StatusCode.PERMISSION_DENIED,
+            grpc.aio.Metadata(),
+            grpc.aio.Metadata(),
+            details="egress policy denied",
+        )
+
+    client._control.CreateActorEgressPolicy = denied
+
+    with pytest.raises(PermissionDeniedError, match="egress policy denied"):
+        await client.create("demo")
+
+    assert client._control.methods() == ["CreateActor", "DeleteActor"]
+    assert client._control.requests[-1][1].actor == ref("team-a", "sbx-demo")
+
+
+async def test_create_from_an_unknown_preset_creates_nothing(client, presets_api):
+    with pytest.raises(PresetError, match="Unknown preset 'rust'"):
+        await client.create("demo", preset="rust")
+
+    assert client._control.requests == []
+
+
+async def test_resize_suspends_switches_the_preset_and_resumes(sandbox):
+    control = sandbox._control
+
+    resized = await sandbox.resize("demo", preset="pk-default-medium")
+
+    assert control.methods() == [
+        "GetActor",
+        "GetActorTemplate",
+        "GetActorTemplate",
+        "SuspendActor",
+        "UpdateActor",
+        "ResumeActor",
+    ]
+    update = control.requests[4][1]
+    assert update.actor.metadata.uid == "u-1"
+    assert update.actor.metadata.version == 4  # after the suspend
+    assert update.actor.actor_template == ref(SHARED, "pk-default-medium-v1")
+    assert resized.status.state == RUNNING
+    assert resized.actor_template == ref(SHARED, "pk-default-medium-v1")
+
+
+async def test_resize_keeps_a_suspended_sandbox_suspended(sandbox):
+    control = sandbox._control
+    control.actors["sbx-demo"].status.state = SUSPENDED
+
+    resized = await sandbox.resize("demo", preset="pk-default-medium")
+
+    assert resized.status.state == SUSPENDED
+    assert control.methods()[-2:] == ["SuspendActor", "UpdateActor"]
+
+
+async def test_resize_to_the_current_preset_changes_nothing(sandbox):
+    resized = await sandbox.resize("demo", preset="pk-default-small")
+
+    assert resized.status.state == RUNNING
+    assert sandbox._control.methods() == ["GetActor"]
+
+
+async def test_resize_refuses_another_snapshot_fidelity(sandbox):
+    with pytest.raises(PresetError) as error:
+        await sandbox.resize("demo", preset="pk-default-medium-memory")
+
+    assert str(error.value) == (
+        "Preset 'pk-default-medium-memory' has another snapshot fidelity than "
+        "sandbox 'demo'. Create a new sandbox from it instead."
+    )
+    assert "SuspendActor" not in sandbox._control.methods()
+
+
+async def test_resize_refuses_another_image(sandbox):
+    sandbox._control.templates["pk-default-large-v1"] = template(
+        "pk-default-large-v1", OTHER_IMAGE
+    )
+
+    with pytest.raises(PresetError, match="has another image than sandbox 'demo'"):
+        await sandbox.resize("demo", preset="pk-default-large")
+
+    assert "SuspendActor" not in sandbox._control.methods()
+
+
+async def test_resize_works_within_the_memory_presets(sandbox):
+    sandbox._control.actors["sbx-demo"].actor_template.CopyFrom(
+        ref(SHARED, "pk-default-small-memory-v1")
+    )
+
+    resized = await sandbox.resize("demo", preset="pk-default-large-memory")
+
+    assert resized.actor_template == ref(SHARED, "pk-default-large-memory-v1")
+
+
+async def test_has_env_guest_reads_the_sandboxs_template(sandbox):
+    assert await sandbox.has_env_guest("demo")
+
+    sandbox._control.templates["pk-default-small-v1"] = template(
+        "pk-default-small-v1", env_guest=False
+    )
+    assert not await sandbox.has_env_guest("demo")
+
+
+async def test_presets_are_read_with_the_callers_token(client, httpx_mock):
+    httpx_mock.add_response(
+        url=PRESETS_URL,
+        match_headers={"authorization": "Bearer token"},
+        json=PRESETS_JSON,
+    )
+
+    assert await client.presets() == PRESETS
+
+
+async def test_unreadable_presets_are_a_clear_error(client, httpx_mock):
+    httpx_mock.add_response(url=PRESETS_URL, status_code=404, text="route not found")
+
+    with pytest.raises(PresetError) as error:
+        await client.presets()
+
+    assert str(error.value) == (
+        f"Cannot read the sandbox presets from {PRESETS_URL}: HTTP 404"
+    )
+
+
+def test_sync_client_wraps_the_preset_calls(presets_api):
+    with sync_client() as client:
+        created = client.create("demo")
+        resized = client.resize("demo", preset="pk-default-medium")
+
+        assert client.presets() == PRESETS
+        assert created.actor_template == ref(SHARED, "pk-default-small-v1")
+        assert resized.actor_template == ref(SHARED, "pk-default-medium-v1")
+        assert client.has_env_guest("demo")
+        client.create("closed", network=[])
+        control: Any = client._client._control
+        assert not control.requests[-1][1].egress_policy.rules
+
+
+def test_sync_client_wraps_the_global_reads():
+    with SandboxClient(endpoint=ENDPOINT, token_provider=lambda: "token") as client:
+        control = client._client._control = FakeControl()  # type: ignore[assignment]
+        control.pages = [
+            ateapi.ListActorsResponse(actors=[actor("session-1")]),
+            ateapi.ListWorkersResponse(),
+            ateapi.ListWorkerActorAssignmentsResponse(),
+        ]
+
+        assert (client.endpoint, client.workspace) == (ENDPOINT, None)
+        assert client.list_actors(all_workspaces=True) == [actor("session-1")]
+        assert client.workers() == []
+        assert client.worker_actors("w-1") == []
+
+
+async def test_revert_returns_a_crashed_sandbox_to_its_snapshot(sandbox):
+    control = sandbox._control
+
+    reverted = await sandbox.revert("demo")
+
+    assert control.methods() == ["RevertActor"]
+    assert control.requests[0][1].actor.name == "sbx-demo"
+    assert reverted.status.state == SUSPENDED
