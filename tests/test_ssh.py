@@ -123,7 +123,7 @@ def test_host_config_pins_the_private_known_hosts(tmp_path):
 
     assert path.read_text() == (
         "Host pk.team-a.demo\n"
-        "  User developer\n"
+        "  User root\n"
         "  ProxyCommand pk 'a b' %%h\n"
         "  HostKeyAlias pk.team-a.demo\n"
         f'  UserKnownHostsFile "{ssh.known_hosts_file()}"\n'
@@ -218,7 +218,7 @@ def test_openssh_reads_the_host_entry_through_the_include(tmp_path):
         check=True,
     )
 
-    assert "user developer" in result.stdout.splitlines()
+    assert "user root" in result.stdout.splitlines()
     assert "hostkeyalias pk.team-a.demo" in result.stdout.splitlines()
 
 

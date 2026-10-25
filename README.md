@@ -147,7 +147,7 @@ Include "/home/me/.config/prokube/ssh/hosts/*.conf"
 
 `pk sandbox connect demo` installs your public key (`~/.ssh/id_ed25519.pub`,
 or the key given with `--identity`) in the sandbox, pins the sandbox's host key
-in `~/.config/prokube/ssh/known_hosts` and runs `ssh` as user `developer`. Both
+in `~/.config/prokube/ssh/known_hosts` and runs `ssh` as `root`. Both
 keys go through the authenticated env guest API, so the host key is pinned
 before the first connection. The host key is what
 `/usr/local/bin/pk-sandbox-hostkey` prints in the sandbox; it gives each
