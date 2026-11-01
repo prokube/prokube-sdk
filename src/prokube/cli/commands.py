@@ -125,6 +125,8 @@ def login(url: str, workspace: str | None, no_browser: bool) -> None:
     if workspace is None and saved.get("url") == url:
         workspace = saved.get("workspace")
     auth.save_config(url, workspace)
+    if banner.wanted():
+        click.echo(banner.render() + "\n")
     click.echo(
         f"Logged in to {url}" + (f" (workspace {workspace})" if workspace else "")
     )

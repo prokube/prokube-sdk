@@ -254,6 +254,26 @@ def test_login_needs_an_https_url():
     assert "https://<domain>" in result.output
 
 
+def test_login_shows_the_wordmark_in_a_terminal(monkeypatch):
+    monkeypatch.setattr(commands.auth, "login", lambda url, **kw: None)
+    monkeypatch.setattr(banner, "wanted", lambda: True)
+    monkeypatch.setenv("NO_COLOR", "1")
+
+    result = pk("login", URL, "--workspace", "team-a")
+
+    assert result.exit_code == 0, result.output
+    assert result.output.startswith(banner.WORDMARK.splitlines()[0])
+    assert result.output.endswith(f"Logged in to {URL} (workspace team-a)\n")
+
+
+def test_login_is_plain_outside_a_terminal(monkeypatch):
+    monkeypatch.setattr(commands.auth, "login", lambda url, **kw: None)
+
+    result = pk("login", URL)
+
+    assert result.output == f"Logged in to {URL}\n"
+
+
 def test_auth_status_shows_platform_workspace_and_user(logged_in):
     result = pk("auth", "status")
 
