@@ -2,7 +2,7 @@
 
 A sandbox is an Actor named ``sbx-<name>`` in the Atespace of a workspace
 (Atespace name = workspace namespace). Lifecycle calls go to the ate API
-(``ateapi.Control``); commands and files go to the env guest API through the
+(``substrate.ateapi.v1.Control``); commands and files go to the env guest API through the
 upstream ``ate_env`` client. Every call carries the caller's token, which
 Agent Gateway passes through to Substrate. Results are the upstream types
 (``Actor`` protos, ``ate_env.ShellResult``) and errors the ``ate_env`` ones.
@@ -311,7 +311,7 @@ class AsyncSandboxClient:
 
     async def delete(self, name: str) -> Actor:
         """Delete a sandbox in any state, including a running one."""
-        request = ateapi.DeleteActorRequest(actor=self._ref(name), any_state=True)
+        request = ateapi.DeleteActorRequest(actor=self._ref(name))
         return await _call(self._control.DeleteActor(request))
 
     async def suspend(self, name: str) -> Actor:

@@ -318,7 +318,7 @@ The sandbox sends the header with any placeholder, e.g.
 |-----|-----------|
 | workspace | Atespace with the same name |
 | sandbox `demo` | Actor `sbx-demo` in that Atespace |
-| `create`, `list`, `get`, `delete`, `suspend`, `resume`, `revert` | `ateapi.Control` (`CreateActor`, `ListActors`, ..., `RevertActor`) |
+| `create`, `list`, `get`, `delete`, `suspend`, `resume`, `revert` | `substrate.ateapi.v1.Control` (`CreateActor`, `ListActors`, ..., `RevertActor`) |
 | `list_actors`, `workers`, `worker_actors` | `ListActors` (every Actor), `ListWorkers`, `ListWorkerActorAssignments`, all pages |
 | preset | ActorTemplate `sandbox-templates/<template>` |
 | `create` | `CreateActor` on the preset's template, then `CreateActorEgressPolicy` (preset's rules or `network`); if that fails, `DeleteActor` |

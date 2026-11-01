@@ -3,9 +3,9 @@
 # src/prokube/sandbox/_ateapi/ from the pinned upstream proto.
 set -euo pipefail
 
-# kagent fork of Substrate, tag v0.6.0-alpha2: the version the platform installs.
+# kagent fork of Substrate, tag v1.0.0-rc1: the version the platform installs.
 SUBSTRATE_REPO="kagent-dev/substrate"
-SUBSTRATE_COMMIT="4df1cd30f54e7efd277252e6372ccbd68fdad9c2"
+SUBSTRATE_COMMIT="71b1f9ec80848f8fd46f5d5d7e6b84ba36a80966"
 # Keep in step with the grpcio and protobuf floors in pyproject.toml.
 GRPCIO_TOOLS_VERSION="1.84.0"
 
@@ -15,7 +15,7 @@ TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
 curl -fsSL -o "$TMP/ateapi.proto" \
-  "https://raw.githubusercontent.com/$SUBSTRATE_REPO/$SUBSTRATE_COMMIT/pkg/proto/ateapipb/ateapi.proto"
+  "https://raw.githubusercontent.com/$SUBSTRATE_REPO/$SUBSTRATE_COMMIT/api/ateapi/v1/ateapi.proto"
 
 uv run --no-project --with "grpcio-tools==$GRPCIO_TOOLS_VERSION" \
   python -m grpc_tools.protoc -I "$TMP" \
