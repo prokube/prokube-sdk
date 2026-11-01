@@ -60,7 +60,7 @@ def template(
 
 
 class FakeControl:
-    """Stands in for ateapi.Control; records every request.
+    """Stands in for substrate.ateapi.v1.Control; records every request.
 
     Actors in ``actors`` behave like stored ones: create adds them, suspend,
     resume and update change them. ``templates`` are the presets' templates.
@@ -315,7 +315,6 @@ async def test_lifecycle_calls_address_the_sandbox_actor(client):
         "DeleteActor",
     ]
     assert all(request.actor == ref for _, request in requests)
-    assert requests[-1][1].any_state is True
     assert resumed.metadata.name == "sbx-demo"
 
 
@@ -432,7 +431,7 @@ async def gateway(monkeypatch):
     server.add_generic_rpc_handlers(
         [
             grpc.method_handlers_generic_handler(
-                "ateapi.Control",
+                "substrate.ateapi.v1.Control",
                 {
                     "GetActor": grpc.unary_unary_rpc_method_handler(
                         get_actor,

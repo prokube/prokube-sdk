@@ -57,7 +57,7 @@ def dex_issuer(url: str) -> str:
 
 
 def grpc_target(url: str) -> str:
-    """gRPC target of ate-api (``ateapi.Control``) and the env guest API.
+    """gRPC target of ate-api (``substrate.ateapi.v1.Control``) and the env guest API.
 
     Both are behind Agent Gateway. Env calls carry ``x-env-id`` and
     ``x-env-atespace`` metadata, which the gateway uses to reach the Actor.
