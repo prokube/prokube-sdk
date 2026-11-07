@@ -6,7 +6,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "prokube.ai" }]
-keywords = ["prokube", "sandbox", "ai", "coding", "sdk"]
+keywords = ["prokube", "sandbox", "agent-substrate", "sdk"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -19,19 +19,34 @@ classifiers = [
     "Programming Language :: Python :: 3.14",
 ]
 dependencies = [
+    # Upstream env client (agent-substrate/env), not on PyPI. Same commit as the
+    # env guest in the coding runtime image (prokube/sandbox-images#16).
+    "ate-env-client @ git+https://github.com/agent-substrate/env@7be7449433f5549f02404b0b85e75d3fa686ea7e#subdirectory=clients/python",
+    # Floors match the generated stubs in src/prokube/sandbox/_ateapi/.
+    "grpcio>=1.84.0",
+    "protobuf>=7.35.1",
     "httpx>=0.25.0",
-    "pydantic>=2.0.0",
-    "typing_extensions>=4.0.0; python_version < '3.11'",
+    "keyring>=25.0.0",
 ]
 
 [project.optional-dependencies]
+# The pk command line.
+cli = [
+    "click>=8.1.0",
+    "mcp>=2.3,<3",
+    "websockets>=15.0",
+]
 dev = [
+    "prokube-sdk[cli]",
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
-    "pytest-httpx>=0.30.0",
+    "pytest-httpx>=0.35.0",
     "pyright>=1.1.400",
     "ruff>=0.4.0",
 ]
+
+[project.scripts]
+pk = "prokube.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/prokube/prokube-sdk"
@@ -42,12 +57,16 @@ Issues = "https://github.com/prokube/prokube-sdk/issues"
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.hatch.metadata]
+allow-direct-references = true
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/prokube"]
 
 [tool.ruff]
 line-length = 88
 target-version = "py310"
+extend-exclude = ["src/prokube/sandbox/_ateapi"]
 
 [tool.ruff.lint]
 select = [
@@ -68,6 +87,7 @@ known-first-party = ["prokube"]
 
 [tool.pyright]
 include = ["src", "tests"]
+exclude = ["src/prokube/sandbox/_ateapi"]
 pythonVersion = "3.10"
 # pyright's own default; pinned so a future default change cannot move the gate.
 typeCheckingMode = "standard"
