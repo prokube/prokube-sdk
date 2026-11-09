@@ -65,7 +65,7 @@ with SandboxClient("https://my-platform.example.com", "my-workspace") as client:
 ```
 
 `url` and `workspace` default to `PROKUBE_URL` and `PROKUBE_WORKSPACE`, then
-to what `pk login` saved (see [Command line](#command-line)).
+to what `pk auth login` saved (see [Command line](#command-line)).
 `SandboxClient` works in scripts and in notebooks. `read_file` and `write_file`
 only accept paths under `/workspace`; use `run` for files elsewhere.
 `write_files` sends many files as one gzipped tar archive, which `tar` unpacks
@@ -92,7 +92,7 @@ async with AsyncSandboxClient("https://my-platform.example.com", "my-workspace")
 ```bash
 pip install 'prokube-sdk[cli] @ git+https://github.com/prokube/prokube-sdk.git'
 
-pk login https://my-platform.example.com --workspace my-workspace
+pk auth login https://my-platform.example.com --workspace my-workspace
 pk auth status
 
 pk sandbox create demo --connect                    # ends in an SSH session
@@ -105,10 +105,10 @@ pk sandbox resume demo
 pk sandbox revert demo                              # after a crash: back to the last snapshot
 pk sandbox network demo                             # egress rules; see Network and credentials
 pk sandbox delete demo
-pk logout
+pk auth logout
 ```
 
-`pk login` remembers the platform and the default workspace in
+`pk auth login` remembers the platform and the default workspace in
 `~/.config/prokube/config.json`. `--url` and `--workspace` (or `PROKUBE_URL`
 and `PROKUBE_WORKSPACE`) override them per command.
 
@@ -121,7 +121,7 @@ get plain output.
 Set up SSH once:
 
 ```bash
-pk login https://my-platform.example.com --workspace my-workspace
+pk auth login https://my-platform.example.com --workspace my-workspace
 pk sandbox create demo --install-ssh
 ```
 
@@ -222,7 +222,7 @@ no env guest.
 
 `pk sandbox mcp` gives any MCP client the tools `list`, `create`, `run`,
 `read_file`, `write_file`, `suspend`, `resume`, `revert` and `delete`. Each is one
-`AsyncSandboxClient` call. Locally it speaks stdio and uses your `pk login`:
+`AsyncSandboxClient` call. Locally it speaks stdio and uses your `pk auth login`:
 
 ```bash
 claude mcp add sandbox -- pk sandbox mcp
@@ -341,7 +341,7 @@ in this order:
    `SandboxClient(url, "my-workspace", token_provider=lambda: my_token)`
 2. an API key: `api_key`, else `PROKUBE_API_KEY`. It is sent as `x-api-key`
    instead of a token (see [API keys](#api-keys)).
-3. the stored login for `url` (`prokube.auth.login`, `pk login`)
+3. the stored login for `url` (`prokube.auth.login`, `pk auth login`)
 4. the pod's workload token: the file in `PROKUBE_SANDBOX_TOKEN_FILE`, else
    `/var/run/secrets/prokube.ai/sandbox/token`. The SDK reads it again
    shortly before the token in it expires, since Kubernetes replaces it.
@@ -351,7 +351,7 @@ in this order:
 For CI, servers and agents outside the platform, create a key in the platform
 UI under AI Gateway Keys, with the scope "All sandboxes" and the format
 `x-api-key`. It can do what a workspace editor can, in the key's workspace
-only. No `pk login` needed:
+only. No `pk auth login` needed:
 
 ```sh
 export PROKUBE_URL=https://my-platform.example.com
@@ -451,7 +451,7 @@ it.
 [E2B](https://e2b.dev) and prints p50/p95 per operation: create + first
 command, a command, two Python snippets in one interpreter, 1 KiB and 1 MiB
 file write and read, suspend, resume until a command works, delete. It uses
-your `pk login`; E2B is not an SDK dependency.
+your `pk auth login`; E2B is not an SDK dependency.
 
 ```bash
 uv run --with e2b==2.56.0 --with e2b-code-interpreter==2.11.0 \

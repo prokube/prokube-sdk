@@ -180,4 +180,4 @@ def test_mcp_needs_a_login_outside_a_pod():
     result = CliRunner().invoke(commands.cli, ["sandbox", "mcp"])
 
     assert result.exit_code == 2
-    assert "No platform URL. Run: pk login <url>" in result.output
+    assert "No platform URL. Run: pk auth login <url>" in result.output

@@ -1,4 +1,4 @@
-"""The prokube wordmark for `pk --help`, `pk --version` and `pk login` in a terminal."""
+"""The prokube wordmark for `pk --help`, `pk --version` and `pk auth login` in a terminal."""
 
 from __future__ import annotations
 

@@ -222,7 +222,7 @@ def config_dir() -> Path:
 
 
 def load_config() -> dict[str, str]:
-    """The platform URL and workspace that pk login saved, if any."""
+    """The platform URL and workspace that pk auth login saved, if any."""
     path = _config_file()
     return json.loads(path.read_text()) if path.exists() else {}
 

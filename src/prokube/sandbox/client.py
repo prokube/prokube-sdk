@@ -80,7 +80,7 @@ class AsyncSandboxClient:
     """Create and use the sandboxes of a workspace.
 
     ``url`` (``https://<domain>``) defaults to ``$PROKUBE_URL`` and
-    ``workspace`` to ``$PROKUBE_WORKSPACE``, both then to what ``pk login``
+    ``workspace`` to ``$PROKUBE_WORKSPACE``, both then to what ``pk auth login``
     saved. ``token_provider`` defaults to ``api_key`` (``$PROKUBE_API_KEY``),
     a pkui API key with the scope "Sandboxes", then to the stored login for
     ``url`` (see ``prokube.auth.login``), then to the pod's workload token.
@@ -412,7 +412,7 @@ class AsyncSandboxClient:
         if not self.workspace:
             raise ValueError(
                 "This call needs a workspace: pass workspace, set "
-                "PROKUBE_WORKSPACE or run pk login --workspace."
+                "PROKUBE_WORKSPACE or run pk auth login --workspace."
             )
         return self.workspace
 

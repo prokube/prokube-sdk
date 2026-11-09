@@ -228,7 +228,7 @@ def test_login_saves_the_platform_and_workspace(monkeypatch):
         commands.auth, "login", lambda url, **kw: logins.append((url, kw))
     )
 
-    result = pk("login", URL + "/", "--workspace", "team-a", "--no-browser")
+    result = pk("auth", "login", URL + "/", "--workspace", "team-a", "--no-browser")
 
     assert result.exit_code == 0, result.output
     assert logins == [(URL, {"open_browser": False})]
@@ -240,15 +240,15 @@ def test_login_keeps_the_workspace_only_for_the_same_platform(monkeypatch):
     monkeypatch.setattr(commands.auth, "login", lambda url, **kw: None)
     auth.save_config(URL, "team-a")
 
-    pk("login", URL)
+    pk("auth", "login", URL)
     assert auth.load_config() == {"url": URL, "workspace": "team-a"}
 
-    pk("login", "https://other.example.com")
+    pk("auth", "login", "https://other.example.com")
     assert auth.load_config() == {"url": "https://other.example.com"}
 
 
 def test_login_needs_an_https_url():
-    result = pk("login", "http://platform.example.com")
+    result = pk("auth", "login", "http://platform.example.com")
 
     assert result.exit_code == 2
     assert "https://<domain>" in result.output
@@ -259,7 +259,7 @@ def test_login_shows_the_wordmark_in_a_terminal(monkeypatch):
     monkeypatch.setattr(banner, "wanted", lambda: True)
     monkeypatch.setenv("NO_COLOR", "1")
 
-    result = pk("login", URL, "--workspace", "team-a")
+    result = pk("auth", "login", URL, "--workspace", "team-a")
 
     assert result.exit_code == 0, result.output
     assert result.output.startswith(banner.WORDMARK.splitlines()[0])
@@ -269,7 +269,7 @@ def test_login_shows_the_wordmark_in_a_terminal(monkeypatch):
 def test_login_is_plain_outside_a_terminal(monkeypatch):
     monkeypatch.setattr(commands.auth, "login", lambda url, **kw: None)
 
-    result = pk("login", URL)
+    result = pk("auth", "login", URL)
 
     assert result.output == f"Logged in to {URL}\n"
 
@@ -285,16 +285,16 @@ def test_auth_status_shows_platform_workspace_and_user(logged_in):
 
 
 def test_auth_status_without_login():
-    assert "pk login <url>" in pk("auth", "status").output
+    assert "pk auth login <url>" in pk("auth", "status").output
 
     auth.save_config(URL, None)
     result = pk("auth", "status")
     assert result.exit_code == 1
-    assert f"Not logged in to {URL}. Run: pk login {URL}" in result.output
+    assert f"Not logged in to {URL}. Run: pk auth login {URL}" in result.output
 
 
 def test_logout_forgets_the_tokens(logged_in):
-    result = pk("logout")
+    result = pk("auth", "logout")
 
     assert result.exit_code == 0, result.output
     with pytest.raises(auth.LoginRequired):
@@ -338,7 +338,7 @@ def test_sdk_errors_are_one_line_messages(sandboxes, logged_in, monkeypatch):
 
     monkeypatch.setattr(commands, "AsyncSandboxClient", not_logged_in)
     result = pk("sandbox", "list")
-    assert result.output == f"Error: Not logged in to {URL}. Run: pk login {URL}\n"
+    assert result.output == f"Error: Not logged in to {URL}. Run: pk auth login {URL}\n"
 
 
 # --- Sandbox commands ------------------------------------------------------

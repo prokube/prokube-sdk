@@ -61,17 +61,17 @@ def _show_version(ctx: click.Context, _param: click.Parameter, value: bool) -> N
 
 
 def _target_options(command: Callable[..., Any]) -> Callable[..., Any]:
-    """Adds --url and --workspace; both default to what pk login saved."""
+    """Adds --url and --workspace; both default to what pk auth login saved."""
     command = click.option(
         "-w",
         "--workspace",
         envvar="PROKUBE_WORKSPACE",
-        help="Workspace (default: $PROKUBE_WORKSPACE, then the one from pk login).",
+        help="Workspace (default: $PROKUBE_WORKSPACE, then the one from pk auth login).",
     )(command)
     return click.option(
         "--url",
         envvar="PROKUBE_URL",
-        help="Platform URL (default: $PROKUBE_URL, then the one from pk login).",
+        help="Platform URL (default: $PROKUBE_URL, then the one from pk auth login).",
     )(command)
 
 
@@ -110,7 +110,12 @@ def cli() -> None:
 # --- Login -----------------------------------------------------------------
 
 
-@cli.command()
+@cli.group("auth")
+def auth_commands() -> None:
+    """Log in to the platform, log out and show the login."""
+
+
+@auth_commands.command()
 @click.argument("url")
 @click.option("-w", "--workspace", help="Default workspace for sandbox commands.")
 @click.option("--no-browser", is_flag=True, help="Only print the login URL.")
@@ -132,7 +137,7 @@ def login(url: str, workspace: str | None, no_browser: bool) -> None:
     )
 
 
-@cli.command()
+@auth_commands.command()
 @click.option("--url", envvar="PROKUBE_URL", help="Platform URL (default: current).")
 def logout(url: str | None) -> None:
     """Forget the login for the current platform."""
@@ -143,18 +148,13 @@ def logout(url: str | None) -> None:
     click.echo(f"Logged out of {url}")
 
 
-@cli.group("auth")
-def auth_commands() -> None:
-    """Show the login."""
-
-
 @auth_commands.command("status")
 @_target_options
 def auth_status(url: str | None, workspace: str | None) -> None:
     """Show the current platform, workspace and user."""
     url, workspace = _resolve(url, workspace)
     if not url:
-        raise click.ClickException("Not logged in. Run: pk login <url>")
+        raise click.ClickException("Not logged in. Run: pk auth login <url>")
     click.echo(f"Platform:  {url}")
     click.echo(f"Workspace: {workspace or '-'}")
     if os.environ.get(auth.API_KEY_ENV):
@@ -835,7 +835,7 @@ def _with_client(
         return asyncio.run(run())
     except auth.LoginRequired as error:
         raise click.ClickException(
-            f"Not logged in to {url}. Run: pk login {url}"
+            f"Not logged in to {url}. Run: pk auth login {url}"
         ) from error
 
 
@@ -844,7 +844,7 @@ def _token(url: str) -> str:
         return auth.LoginSession(url).token()
     except auth.LoginRequired as error:
         raise click.ClickException(
-            f"Not logged in to {url}. Run: pk login {url}"
+            f"Not logged in to {url}. Run: pk auth login {url}"
         ) from error
 
 
@@ -854,7 +854,7 @@ def _credential(url: str) -> tuple[str, str]:
         return auth.credential(url)()
     except auth.LoginRequired as error:
         raise click.ClickException(
-            f"Not logged in to {url}. Run: pk login {url}"
+            f"Not logged in to {url}. Run: pk auth login {url}"
         ) from error
 
 
@@ -871,10 +871,10 @@ def _resolve(url: str | None, workspace: str | None) -> tuple[str | None, str | 
 def _require(url: str | None, workspace: str | None) -> tuple[str, str]:
     url, workspace = _resolve(url, workspace)
     if not url:
-        raise click.UsageError("No platform URL. Run: pk login <url>")
+        raise click.UsageError("No platform URL. Run: pk auth login <url>")
     if not workspace:
         raise click.UsageError(
-            "No workspace. Pass --workspace or run: pk login <url> --workspace <name>"
+            "No workspace. Pass --workspace or run: pk auth login <url> --workspace <name>"
         )
     return url, workspace
 
