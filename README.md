@@ -149,8 +149,8 @@ Include "/home/me/.config/prokube/ssh/hosts/*.conf"
 `pk sandbox ssh-config --install` adds only that line. Without `--install`,
 `pk sandbox ssh-config demo` prints the host entry instead.
 
-`pk sandbox connect demo` installs your public key (`~/.ssh/id_ed25519.pub`,
-or the key given with `--identity`) in the sandbox, pins the sandbox's host key
+`pk sandbox connect demo` installs pk's own public key in the sandbox (or the
+key given with `--identity`), pins the sandbox's host key
 in `~/.config/prokube/ssh/known_hosts` and runs `ssh` as `root`. Both
 keys go through the authenticated env guest API, so the host key is pinned
 before the first connection. The host key is what
@@ -160,6 +160,10 @@ sandbox its own key, also one cloned from a preset's golden snapshot
 reads `/workspace/ssh/ssh_host_ed25519_key.pub`. SSH travels over a
 WebSocket; `pk sandbox proxy` is the `ProxyCommand` and sends your login
 token.
+
+pk generates its key on first use, without a passphrase, as
+`~/.config/prokube/ssh/id_ed25519` (0600), and says so once. The host entries
+name it as `IdentityFile`, so ssh and IDEs use it too.
 
 ### Reach a server in a sandbox
 

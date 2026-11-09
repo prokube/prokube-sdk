@@ -8,8 +8,8 @@ in the sandbox, from ``/workspace/ssh/authorized_keys`` and keeps its host key i
 key it pins is the sandbox's real key, not one learned on first use. sshd allows
 forwarding to the sandbox's loopback, which ``pk sandbox forward`` uses.
 
-The ssh files live under ``<config dir>/ssh/``: one private ``known_hosts`` and
-one config file per sandbox in ``hosts/``. ``install_include`` puts one
+The ssh files live under ``<config dir>/ssh/``: pk's own key ``id_ed25519``, one
+private ``known_hosts`` and one config file per sandbox in ``hosts/``. ``install_include`` puts one
 ``Include`` of ``hosts/*.conf`` at the top of ``~/.ssh/config``, so ssh and IDEs
 find every sandbox.
 """
@@ -21,6 +21,7 @@ import re
 import shlex
 import socket
 import stat
+import subprocess
 import tempfile
 import threading
 from pathlib import Path
@@ -36,7 +37,6 @@ HOST_KEY_PATH = "/workspace/ssh/ssh_host_ed25519_key.pub"
 # golden snapshot (prokube/sandbox-images#21). Older images only have the file.
 HOST_KEY_COMMAND = "/usr/local/bin/pk-sandbox-hostkey"
 AUTHORIZED_KEYS_PATH = "/workspace/ssh/authorized_keys"
-DEFAULT_IDENTITIES = ("id_ed25519", "id_ecdsa", "id_rsa")
 INCLUDE_MARKER = "# added by pk"
 # An ssh_config line: keyword, then whitespace or "=", then the arguments.
 _CONFIG_LINE = re.compile(r"\s*(\w+)(?:\s*=\s*|\s+)(.*)")
@@ -68,13 +68,30 @@ def host_alias(workspace: str, name: str) -> str:
     return f"pk.{workspace}.{name}"
 
 
-def default_identity() -> Path | None:
-    """The user's first default private key that has a .pub next to it."""
-    for name in DEFAULT_IDENTITIES:
-        path = Path.home() / ".ssh" / name
-        if path.with_name(name + ".pub").exists():
-            return path
-    return None
+def identity_file() -> Path:
+    return ssh_dir() / "id_ed25519"
+
+
+def ensure_identity() -> bool:
+    """Generate pk's own key unless it exists; return whether it was generated.
+
+    Without a passphrase, so ssh from IDEs needs no agent; the file is 0600.
+    """
+    key = identity_file()
+    if key.exists() and key.with_name(key.name + ".pub").exists():
+        return False
+    key.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with tempfile.TemporaryDirectory(dir=key.parent) as temporary:
+        new = Path(temporary) / key.name
+        comment = f"pk@{socket.gethostname()}"
+        subprocess.run(
+            ["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", comment, "-f", new],
+            check=True,
+            stdin=subprocess.DEVNULL,
+        )
+        os.replace(new.with_name(new.name + ".pub"), key.with_name(key.name + ".pub"))
+        os.replace(new, key)
+    return True
 
 
 def add_authorized_key(authorized_keys: str, public_key: str) -> str:

@@ -16,6 +16,19 @@ from prokube import endpoints
 from prokube.cli import ssh
 
 
+@pytest.mark.skipif(shutil.which("ssh-keygen") is None, reason="needs ssh-keygen")
+def test_ensure_identity_generates_a_private_ed25519_key_once():
+    assert ssh.ensure_identity() is True
+    key = ssh.identity_file()
+    assert stat.S_IMODE(key.stat().st_mode) == 0o600
+    assert key.with_name("id_ed25519.pub").read_text().startswith("ssh-ed25519 ")
+    first = key.read_bytes()
+
+    assert ssh.ensure_identity() is False
+    assert key.read_bytes() == first
+    assert [p.name for p in key.parent.iterdir()] == ["id_ed25519", "id_ed25519.pub"]
+
+
 @contextmanager
 def websocket_server(handler: Callable[[ServerConnection], None]) -> Iterator[str]:
     """A local WebSocket server standing in for the sandbox's websocat."""

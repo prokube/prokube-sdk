@@ -1,4 +1,5 @@
 import json
+import shutil
 import socket
 import time
 
@@ -754,6 +755,24 @@ def test_ssh_config_prints_the_entry(sandboxes, logged_in, identity):
     assert not ssh.user_config_file().exists()
 
 
+@pytest.mark.skipif(shutil.which("ssh-keygen") is None, reason="needs ssh-keygen")
+def test_without_identity_pk_generates_its_own_key_once(sandboxes, logged_in):
+    sandboxes.files[("demo", ssh.HOST_KEY_PATH)] = HOST_KEY.encode()
+    sandboxes.files[("demo", ssh.AUTHORIZED_KEYS_PATH)] = b""
+
+    result = pk("sandbox", "ssh-config", "demo")
+
+    assert result.exit_code == 0, result.output
+    key = ssh.identity_file()
+    assert result.stderr == (
+        f"Generated an SSH key for pk: {key} (--identity uses another key)\n"
+    )
+    assert f'IdentityFile "{key}"' in result.stdout
+    public_key = key.with_name("id_ed25519.pub").read_text()
+    assert sandboxes.files[("demo", ssh.AUTHORIZED_KEYS_PATH)] == public_key.encode()
+    assert pk("sandbox", "ssh-config", "demo").stderr == ""
+
+
 def test_ssh_config_install_without_a_sandbox_only_adds_the_include(sandboxes):
     result = pk("sandbox", "ssh-config", "--install")
 
@@ -830,13 +849,15 @@ def test_connect_install_ssh_adds_the_include_before_running_ssh(
     assert execs == [["ssh", "-F", str(config_file), "pk.team-a.demo"]]
 
 
-def test_connect_needs_an_ssh_key(sandboxes, logged_in, tmp_path, monkeypatch):
-    monkeypatch.setenv("HOME", str(tmp_path))
+def test_connect_without_ssh_keygen_explains(sandboxes, logged_in, monkeypatch):
+    monkeypatch.setenv("PATH", "")
 
     result = pk("sandbox", "connect", "demo")
 
     assert result.exit_code == 1
-    assert "ssh-keygen" in result.output
+    assert result.output == (
+        "Error: ssh-keygen not found. Install OpenSSH or pass --identity.\n"
+    )
 
 
 def test_delete_forgets_the_ssh_entry(sandboxes, logged_in, identity, monkeypatch):

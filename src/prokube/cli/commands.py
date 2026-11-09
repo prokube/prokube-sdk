@@ -6,6 +6,7 @@ import asyncio
 import base64
 import json
 import os
+import subprocess
 import sys
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
@@ -80,8 +81,8 @@ def _identity_option(command: Callable[..., Any]) -> Callable[..., Any]:
         "-i",
         "--identity",
         type=click.Path(dir_okay=False, path_type=Path),
-        help="Private SSH key whose .pub to install (default: ~/.ssh/id_ed25519, "
-        "id_ecdsa or id_rsa).",
+        help="Private SSH key whose .pub to install (default: pk's own key, "
+        "generated on first use).",
     )(command)
 
 
@@ -757,12 +758,14 @@ def _prepare_ssh(
     resume None keeps whether the existing entry resumes a suspended sandbox.
     """
     url, workspace = _require(url, workspace)
-    identity = identity or ssh.default_identity()
     if identity is None:
-        raise click.ClickException(
-            "No SSH key in ~/.ssh. Create one with ssh-keygen -t ed25519 "
-            "or pass --identity."
-        )
+        identity = ssh.identity_file()
+        if _generate_identity():
+            click.echo(
+                f"Generated an SSH key for pk: {identity} "
+                "(--identity uses another key)",
+                err=True,
+            )
     public_key = identity.with_name(identity.name + ".pub").read_text()
 
     async def install_key(client: AsyncSandboxClient) -> str:
@@ -783,6 +786,19 @@ def _prepare_ssh(
     if resume:
         proxy_command.append("--resume")
     return alias, ssh.write_host_config(alias, proxy_command, identity)
+
+
+def _generate_identity() -> bool:
+    try:
+        return ssh.ensure_identity()
+    except FileNotFoundError as error:
+        raise click.ClickException(
+            "ssh-keygen not found. Install OpenSSH or pass --identity."
+        ) from error
+    except subprocess.CalledProcessError as error:
+        raise click.ClickException(
+            f"ssh-keygen failed (exit {error.returncode})."
+        ) from error
 
 
 async def _host_key(client: AsyncSandboxClient, name: str) -> str:
