@@ -14,7 +14,7 @@ from typing import Any, TypeVar
 
 import click
 import httpx
-from ate_env import EnvError
+from ate_env import EnvError, NotFoundError, PermissionDeniedError
 from google.protobuf import json_format
 from websockets.exceptions import WebSocketException
 
@@ -129,6 +129,12 @@ def login(url: str, workspace: str | None, no_browser: bool) -> None:
     saved = auth.load_config()
     if workspace is None and saved.get("url") == url:
         workspace = saved.get("workspace")
+    elif workspace and not _can_use(url, workspace):
+        auth.save_config(url, None)
+        raise click.ClickException(
+            f"Logged in to {url}, but {_no_access(workspace)} "
+            "Pick one with: pk auth workspace set <name>"
+        )
     auth.save_config(url, workspace)
     if banner.wanted():
         click.echo(banner.render() + "\n")
@@ -146,6 +152,36 @@ def logout(url: str | None) -> None:
         raise click.ClickException("Not logged in.")
     auth.logout(url)
     click.echo(f"Logged out of {url}")
+
+
+@auth_commands.group("workspace")
+def workspace_commands() -> None:
+    """Show or change the default workspace of the sandbox commands."""
+
+
+@workspace_commands.command("get")
+def workspace_get() -> None:
+    """Print the workspace the sandbox commands use."""
+    workspace = _resolve(None, None)[1]
+    if not workspace:
+        raise click.ClickException("No workspace. Run: pk auth workspace set <name>")
+    click.echo(workspace)
+
+
+@workspace_commands.command("set")
+@click.argument("name")
+def workspace_set(name: str) -> None:
+    """Make NAME the default workspace, after checking that you can use it."""
+    url = auth.load_config().get("url")
+    if not url:
+        raise click.ClickException("Not logged in. Run: pk auth login <url>")
+    if not _can_use(url, name):
+        raise click.ClickException(_no_access(name))
+    auth.save_config(url, name)
+    click.echo(f"Workspace: {name}")
+    overriding = os.environ.get("PROKUBE_WORKSPACE")
+    if overriding and overriding != name:
+        click.echo(f"Note: $PROKUBE_WORKSPACE ({overriding}) overrides it.", err=True)
 
 
 @auth_commands.command("status")
@@ -839,6 +875,19 @@ def _with_client(
         ) from error
 
 
+def _can_use(url: str, workspace: str) -> bool:
+    """Whether the login may view workspace on the platform at url."""
+    try:
+        _with_client(url, workspace, lambda client: client.get_workspace())
+    except (PermissionDeniedError, NotFoundError):
+        return False
+    return True
+
+
+def _no_access(workspace: str) -> str:
+    return f"workspace {workspace} does not exist or you have no access to it."
+
+
 def _token(url: str) -> str:
     try:
         return auth.LoginSession(url).token()
@@ -874,7 +923,7 @@ def _require(url: str | None, workspace: str | None) -> tuple[str, str]:
         raise click.UsageError("No platform URL. Run: pk auth login <url>")
     if not workspace:
         raise click.UsageError(
-            "No workspace. Pass --workspace or run: pk auth login <url> --workspace <name>"
+            "No workspace. Pass --workspace or run: pk auth workspace set <name>"
         )
     return url, workspace
 

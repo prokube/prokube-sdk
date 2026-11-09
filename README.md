@@ -94,6 +94,8 @@ pip install 'prokube-sdk[cli] @ git+https://github.com/prokube/prokube-sdk.git'
 
 pk auth login https://my-platform.example.com --workspace my-workspace
 pk auth status
+pk auth workspace set other-workspace               # switch the default workspace
+pk auth workspace get
 
 pk sandbox create demo --connect                    # ends in an SSH session
 pk sandbox list
@@ -109,8 +111,9 @@ pk auth logout
 ```
 
 `pk auth login` remembers the platform and the default workspace in
-`~/.config/prokube/config.json`. `--url` and `--workspace` (or `PROKUBE_URL`
-and `PROKUBE_WORKSPACE`) override them per command.
+`~/.config/prokube/config.json`; `pk auth workspace set` changes the
+workspace. Both first check that you can view it. `--url` and `--workspace`
+(or `PROKUBE_URL` and `PROKUBE_WORKSPACE`) override them per command.
 
 In a terminal, `pk --help` and `pk --version` show the prokube wordmark;
 `PK_NO_BANNER=1` turns it off, `NO_COLOR` keeps it uncolored. Pipes and scripts
@@ -319,6 +322,7 @@ The sandbox sends the header with any placeholder, e.g.
 | workspace | Atespace with the same name |
 | sandbox `demo` | Actor `sbx-demo` in that Atespace |
 | `create`, `list`, `get`, `delete`, `suspend`, `resume`, `revert` | `substrate.ateapi.v1.Control` (`CreateActor`, `ListActors`, ..., `RevertActor`) |
+| `get_workspace` | `GetAtespace`; needs viewer access to the workspace |
 | `list_actors`, `workers`, `worker_actors` | `ListActors` (every Actor), `ListWorkers`, `ListWorkerActorAssignments`, all pages |
 | preset | ActorTemplate `sandbox-templates/<template>` |
 | `create` | `CreateActor` on the preset's template, then `CreateActorEgressPolicy` (preset's rules or `network`); if that fails, `DeleteActor` |

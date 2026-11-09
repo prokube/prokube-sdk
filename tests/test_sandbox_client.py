@@ -114,6 +114,12 @@ class FakeControl:
         self.requests.append(("GetActor", request))
         return self.actors.get(request.actor.name) or actor(request.actor.name)
 
+    async def GetAtespace(self, request):
+        self.requests.append(("GetAtespace", request))
+        return ateapi.Atespace(
+            metadata=ateapi.ResourceMetadata(name=request.atespace.name)
+        )
+
     async def GetActorTemplate(self, request):
         self.requests.append(("GetActorTemplate", request))
         return self.templates[request.actor_template.name]
@@ -358,6 +364,18 @@ async def test_url_and_workspace_come_from_the_environment(monkeypatch):
     async with AsyncSandboxClient(token_provider=lambda: "token") as client:
         assert client.url == URL
         assert client.workspace == "team-b"
+
+
+async def test_get_workspace_reads_the_workspaces_atespace(client):
+    atespace = await client.get_workspace()
+
+    assert atespace.metadata.name == "team-a"
+    assert client._control.requests == [
+        (
+            "GetAtespace",
+            ateapi.GetAtespaceRequest(atespace=ateapi.ObjectRef(name="team-a")),
+        )
+    ]
 
 
 async def test_url_and_workspace_come_from_pk_login(monkeypatch):

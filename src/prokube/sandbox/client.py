@@ -64,6 +64,7 @@ ENV_GUEST_PORT = 80
 NAMESPACE_FILE = "/var/run/secrets/kubernetes.io/serviceaccount/namespace"
 
 Actor = ateapi.Actor
+Atespace = ateapi.Atespace
 ActorAssignment = ateapi.ActorAssignment
 Worker = ateapi.Worker
 # What write_file() takes; an (async) iterable of chunks is streamed.
@@ -309,6 +310,17 @@ class AsyncSandboxClient:
         request = ateapi.GetActorRequest(actor=self._ref(name))
         return await _call(self._control.GetActor(request))
 
+    async def get_workspace(self) -> Atespace:
+        """Return the workspace's Atespace; it needs viewer access to it.
+
+        Without access, or if it does not exist, ate-api answers
+        PermissionDeniedError (NotFoundError for callers who may view all).
+        """
+        ref = ateapi.ObjectRef(name=self._atespace())
+        return await _call(
+            self._control.GetAtespace(ateapi.GetAtespaceRequest(atespace=ref))
+        )
+
     async def delete(self, name: str) -> Actor:
         """Delete a sandbox in any state, including a running one."""
         request = ateapi.DeleteActorRequest(actor=self._ref(name))
@@ -412,7 +424,7 @@ class AsyncSandboxClient:
         if not self.workspace:
             raise ValueError(
                 "This call needs a workspace: pass workspace, set "
-                "PROKUBE_WORKSPACE or run pk auth login --workspace."
+                "PROKUBE_WORKSPACE or run pk auth workspace set <name>."
             )
         return self.workspace
 
@@ -514,6 +526,9 @@ class SandboxClient:
 
     def get(self, name: str) -> Actor:
         return self._run(self._client.get(name))
+
+    def get_workspace(self) -> Atespace:
+        return self._run(self._client.get_workspace())
 
     def delete(self, name: str) -> Actor:
         return self._run(self._client.delete(name))

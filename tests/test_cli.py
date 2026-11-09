@@ -5,6 +5,7 @@ import time
 import pytest
 from ate_env import (
     NotFoundError,
+    PermissionDeniedError,
     ProcessInfo,
     ProcessOutput,
     ProcessState,
@@ -95,6 +96,7 @@ class FakeSandboxes:
         self.state = "ACTOR_STATE_RUNNING"  # what get returns
         self.network_rules: list[dict] = [OPENCODE_RULE]  # what network returns
         self.created_network: list[dict] | None = None
+        self.denied_workspaces = {"team-x"}  # get_workspace answers permission denied
 
     def __call__(self, url: str, workspace: str) -> "FakeSandboxes":
         self.targets.append((url, workspace))
@@ -125,6 +127,12 @@ class FakeSandboxes:
             "ACTOR_STATE_RUNNING",
             ("sandbox-templates", "pk-default-medium-v1"),
         )
+
+    async def get_workspace(self):
+        workspace = self.targets[-1][1]
+        if workspace in self.denied_workspaces:
+            raise PermissionDeniedError(f"atespace {workspace}: permission denied")
+        return ateapi.Atespace(metadata=ateapi.ResourceMetadata(name=workspace))
 
     async def presets(self):
         if self.presets_error:
@@ -222,7 +230,7 @@ def pk(*args: str):
 # --- Login and saved config ------------------------------------------------
 
 
-def test_login_saves_the_platform_and_workspace(monkeypatch):
+def test_login_saves_the_platform_and_workspace(monkeypatch, sandboxes):
     logins = []
     monkeypatch.setattr(
         commands.auth, "login", lambda url, **kw: logins.append((url, kw))
@@ -254,7 +262,7 @@ def test_login_needs_an_https_url():
     assert "https://<domain>" in result.output
 
 
-def test_login_shows_the_wordmark_in_a_terminal(monkeypatch):
+def test_login_shows_the_wordmark_in_a_terminal(monkeypatch, sandboxes):
     monkeypatch.setattr(commands.auth, "login", lambda url, **kw: None)
     monkeypatch.setattr(banner, "wanted", lambda: True)
     monkeypatch.setenv("NO_COLOR", "1")
@@ -272,6 +280,60 @@ def test_login_is_plain_outside_a_terminal(monkeypatch):
     result = pk("auth", "login", URL)
 
     assert result.output == f"Logged in to {URL}\n"
+
+
+def test_login_checks_the_workspace(monkeypatch, sandboxes):
+    monkeypatch.setattr(commands.auth, "login", lambda url, **kw: None)
+
+    result = pk("auth", "login", URL, "--workspace", "team-x")
+
+    assert result.exit_code == 1
+    assert result.output == (
+        f"Error: Logged in to {URL}, but workspace team-x does not exist or you "
+        "have no access to it. Pick one with: pk auth workspace set <name>\n"
+    )
+    assert auth.load_config() == {"url": URL}
+
+
+def test_workspace_set_checks_access_and_saves(sandboxes, logged_in):
+    result = pk("auth", "workspace", "set", "team-b")
+
+    assert result.exit_code == 0, result.output
+    assert result.output == "Workspace: team-b\n"
+    assert sandboxes.targets == [(URL, "team-b")]
+    assert auth.load_config() == {"url": URL, "workspace": "team-b"}
+    assert pk("auth", "workspace", "get").output == "team-b\n"
+
+
+def test_workspace_set_refuses_a_workspace_without_access(sandboxes, logged_in):
+    result = pk("auth", "workspace", "set", "team-x")
+
+    assert result.exit_code == 1
+    assert result.output == (
+        "Error: workspace team-x does not exist or you have no access to it.\n"
+    )
+    assert auth.load_config() == {"url": URL, "workspace": "team-a"}
+
+
+def test_workspace_set_notes_an_overriding_environment(
+    monkeypatch, sandboxes, logged_in
+):
+    monkeypatch.setenv("PROKUBE_WORKSPACE", "team-c")
+
+    result = pk("auth", "workspace", "set", "team-b")
+
+    assert result.exit_code == 0, result.output
+    assert "$PROKUBE_WORKSPACE (team-c) overrides it" in result.output
+    assert pk("auth", "workspace", "get").output == "team-c\n"
+
+
+def test_workspace_needs_a_login_and_a_workspace():
+    assert "pk auth login <url>" in pk("auth", "workspace", "set", "a").output
+
+    auth.save_config(URL, None)
+    result = pk("auth", "workspace", "get")
+    assert result.exit_code == 1
+    assert result.output == "Error: No workspace. Run: pk auth workspace set <name>\n"
 
 
 def test_auth_status_shows_platform_workspace_and_user(logged_in):
