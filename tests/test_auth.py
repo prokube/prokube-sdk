@@ -286,8 +286,8 @@ def test_credential_prefers_a_token_provider_then_an_api_key(monkeypatch):
     monkeypatch.setenv("PROKUBE_API_KEY", "env-key")
 
     assert auth.credential(URL, lambda: "t")() == ("authorization", "Bearer t")
-    assert auth.credential(URL, api_key="key")() == ("x-api-key", "key")
-    assert auth.credential(URL)() == ("x-api-key", "env-key")
+    assert auth.credential(URL, api_key="key")() == ("authorization", "Bearer key")
+    assert auth.credential(URL)() == ("authorization", "Bearer env-key")
 
 
 def test_credential_without_an_api_key_needs_a_login():

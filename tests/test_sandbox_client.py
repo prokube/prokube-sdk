@@ -542,7 +542,7 @@ async def test_a_server_sends_the_callers_token_to_the_endpoint(gateway, monkeyp
     ] * 3
 
 
-async def test_an_api_key_goes_in_x_api_key(gateway, monkeypatch):
+async def test_an_api_key_goes_in_authorization(gateway, monkeypatch):
     endpoint = endpoints.IN_CLUSTER_GATEWAY  # where the gateway fixture listens
     monkeypatch.setenv("PROKUBE_API_KEY", "pk-key")
 
@@ -550,8 +550,8 @@ async def test_an_api_key_goes_in_x_api_key(gateway, monkeypatch):
         await client.get("demo")
 
     [(_, metadata)] = gateway
-    assert metadata["x-api-key"] == "pk-key"
-    assert "authorization" not in metadata
+    assert metadata["authorization"] == "Bearer pk-key"
+    assert "x-api-key" not in metadata
 
 
 def call_plugin(plugin: _CredentialPlugin) -> tuple:

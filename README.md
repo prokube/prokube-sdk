@@ -347,8 +347,8 @@ in this order:
 
 1. `token_provider`, any callable that returns a token:
    `SandboxClient(url, "my-workspace", token_provider=lambda: my_token)`
-2. an API key: `api_key`, else `PROKUBE_API_KEY`. It is sent as `x-api-key`
-   instead of a token (see [API keys](#api-keys)).
+2. an API key: `api_key`, else `PROKUBE_API_KEY`. It is sent in the same
+   header in place of a token (see [API keys](#api-keys)).
 3. the stored login for `url` (`prokube.auth.login`, `pk auth login`)
 4. the pod's workload token: the file in `PROKUBE_SANDBOX_TOKEN_FILE`, else
    `/var/run/secrets/prokube.ai/sandbox/token`. The SDK reads it again
@@ -358,7 +358,7 @@ in this order:
 
 For CI, servers and agents outside the platform, create a key in the platform
 UI under AI Gateway Keys, with the scope "All sandboxes" and the format
-`x-api-key`. It can do what a workspace editor can, in the key's workspace
+Bearer. It can do what a workspace editor can, in the key's workspace
 only. No `pk auth login` needed:
 
 ```sh

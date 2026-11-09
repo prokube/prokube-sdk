@@ -14,7 +14,8 @@ identity, prokube/prokube-neo#100). ``default_token_provider`` picks between
 the two.
 
 Without a login, a pkui API key with the scope "Sandboxes" works too: it goes
-in the ``x-api-key`` header instead of a token. ``credential`` picks the header.
+in the same ``Authorization: Bearer`` header as a token. ``credential`` picks
+which of the two to send.
 """
 
 from __future__ import annotations
@@ -153,15 +154,15 @@ def credential(
 ) -> Credential:
     """The credential header for API calls.
 
-    ``Authorization: Bearer`` with ``token_provider``'s tokens; else
-    ``x-api-key`` with ``api_key`` or ``$PROKUBE_API_KEY``; else the bearer
-    tokens of ``default_token_provider(url)``.
+    Always ``Authorization: Bearer``: with ``token_provider``'s tokens; else
+    with ``api_key`` or ``$PROKUBE_API_KEY``; else with the tokens of
+    ``default_token_provider(url)``.
     """
     if token_provider is None:
         api_key = api_key or os.environ.get(API_KEY_ENV)
         if api_key:
             key = api_key
-            return lambda: ("x-api-key", key)
+            return lambda: ("authorization", f"Bearer {key}")
         token_provider = default_token_provider(url)
     provider = token_provider
     return lambda: ("authorization", f"Bearer {provider()}")

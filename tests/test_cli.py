@@ -895,7 +895,7 @@ def test_proxy_sends_an_api_key_without_a_login(sandboxes, monkeypatch):
     result = pk("sandbox", "proxy", "demo")
 
     assert result.exit_code == 0, result.output
-    assert opened[0][1] == ("x-api-key", "pk-key")
+    assert opened[0][1] == ("authorization", "Bearer pk-key")
 
 
 def test_proxy_does_not_resume_a_suspended_sandbox(sandboxes, logged_in, monkeypatch):
