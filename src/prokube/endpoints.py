@@ -77,8 +77,8 @@ def presets_url(base: str) -> str:
 def ssh_url(url: str, atespace: str, actor: str) -> str:
     """WebSocket URL of an Actor's SSH bridge, used by ``pk sandbox proxy``.
 
-    Agent Gateway forwards ``/svc/sandbox/`` to ate-env-api's port proxy
-    (path form) after the data-plane check.
+    After the data-plane check, Agent Gateway tunnels the request with HTTP
+    CONNECT through the Substrate router to the Actor's port.
     """
     host = normalize_url(url).removeprefix("https://")
     return (
