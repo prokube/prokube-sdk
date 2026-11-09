@@ -526,7 +526,7 @@ def test_preset_errors_are_one_line_messages(sandboxes, logged_in):
 
 
 def test_preset_list_marks_the_default(sandboxes, logged_in):
-    result = pk("preset", "list")
+    result = pk("sandbox", "preset", "list")
 
     assert result.exit_code == 0, result.output
     assert result.output.splitlines() == [

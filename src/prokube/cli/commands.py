@@ -660,7 +660,7 @@ def mcp(port: int | None, host: str, url: str | None, workspace: str | None) -> 
 # --- Presets ---------------------------------------------------------------
 
 
-@cli.group()
+@sandbox.group()
 def preset() -> None:
     """Show the platform's sandbox presets."""
 

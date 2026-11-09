@@ -192,7 +192,7 @@ sees the request at `/<path>`. Only editors of the workspace get through.
 ### Presets
 
 ```bash
-pk preset list                                     # the platform's presets, default marked *
+pk sandbox preset list                             # the platform's presets, default marked *
 pk sandbox create demo                             # from the default preset
 pk sandbox create agent --preset pk-default-small-memory
 pk sandbox resize demo --preset pk-default-medium
