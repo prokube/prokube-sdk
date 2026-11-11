@@ -40,10 +40,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from ate_env import Process
-
 from prokube import auth
-from prokube.sandbox import AsyncSandboxClient
+from prokube.sandbox import AsyncSandboxClient, Process
 from prokube.sandbox._ateapi import ateapi_pb2 as ateapi
 
 UNITS = {"k": 1024, "m": 1024 * 1024}

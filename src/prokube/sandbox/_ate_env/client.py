@@ -1,0 +1,193 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Async client for the ate-env-api service."""
+
+from __future__ import annotations
+
+import collections
+
+import grpc
+import grpc.aio
+
+from ._gen.ateenv.v1alpha import env_pb2, env_pb2_grpc, guest_pb2_grpc
+from .env import Env
+from .errors import map_rpc_error
+from .types import EnvironmentInfo, _environment_info_from_pb
+
+__all__ = ["Client", "DEFAULT_ATESPACE"]
+
+DEFAULT_ATESPACE = "ate-env"
+
+
+def _normalize_target(endpoint: str) -> str:
+    target = endpoint.rstrip("/")
+    for prefix in ("http://", "https://"):
+        if target.startswith(prefix):
+            target = target[len(prefix) :]
+    return target
+
+
+class _ClientCallDetails(
+    collections.namedtuple(
+        "_ClientCallDetails",
+        ["method", "timeout", "metadata", "credentials", "wait_for_ready"],
+    ),
+    grpc.aio.ClientCallDetails,
+):
+    pass
+
+
+class _AuthInterceptor(
+    grpc.aio.UnaryUnaryClientInterceptor,
+    grpc.aio.UnaryStreamClientInterceptor,
+    grpc.aio.StreamUnaryClientInterceptor,
+    grpc.aio.StreamStreamClientInterceptor,
+):
+    def __init__(self, token: str):
+        self._token = token
+
+    def _inject(self, details: grpc.aio.ClientCallDetails) -> _ClientCallDetails:
+        md = list(details.metadata or [])
+        md.append(("authorization", f"Bearer {self._token}"))
+        return _ClientCallDetails(
+            details.method,
+            details.timeout,
+            md,
+            details.credentials,
+            details.wait_for_ready,
+        )
+
+    async def intercept_unary_unary(self, continuation, client_call_details, request):
+        return await continuation(self._inject(client_call_details), request)
+
+    async def intercept_unary_stream(self, continuation, client_call_details, request):
+        return await continuation(self._inject(client_call_details), request)
+
+    async def intercept_stream_unary(self, continuation, client_call_details, request_iterator):
+        return await continuation(self._inject(client_call_details), request_iterator)
+
+    async def intercept_stream_stream(self, continuation, client_call_details, request_iterator):
+        return await continuation(self._inject(client_call_details), request_iterator)
+
+
+class Client:
+    """Manages environments against an ate-env-api endpoint over gRPC.
+
+    A single Client multiplexes concurrent operations over one HTTP/2
+    channel and is safe to share across tasks; create one, share it, and
+    call close() on shutdown:
+
+        client = Client("localhost:7777")
+        try:
+            env = await client.create("dev1")
+            result = await env.shell("echo hello")
+        finally:
+            await client.close()
+    """
+
+    def __init__(
+        self,
+        endpoint: str = "localhost:7777",
+        *,
+        channel: grpc.aio.Channel | None = None,
+        auth_token: str | None = None,
+    ):
+        """Create a client for the ate-env-api service at endpoint.
+
+        endpoint accepts a host:port or an http(s):// URL, matching the Go
+        client. Pass channel to supply a caller-owned grpc.aio.Channel
+        instead; the client then never closes it.
+        """
+        self.endpoint = endpoint
+        if channel is not None:
+            self._channel = channel
+            self._owns_channel = False
+        else:
+            if not endpoint:
+                raise ValueError("ate_env: endpoint is required when channel is not given")
+            interceptors = [_AuthInterceptor(auth_token)] if auth_token else None
+            self._channel = grpc.aio.insecure_channel(
+                _normalize_target(endpoint), interceptors=interceptors
+            )
+            self._owns_channel = True
+        self._environments = env_pb2_grpc.EnvironmentServiceStub(self._channel)
+        self._processes = guest_pb2_grpc.ProcessServiceStub(self._channel)
+        self._filesystem = guest_pb2_grpc.FileSystemServiceStub(self._channel)
+
+    async def close(self) -> None:
+        """Release the client's resources (closes the channel if owned)."""
+        if self._owns_channel:
+            await self._channel.close()
+
+    async def create(
+        self,
+        id: str,
+        *,
+        atespace: str = DEFAULT_ATESPACE,
+        template_name: str | None = None,
+        template_atespace: str | None = None,
+        rootfs_image: str | None = None,
+    ) -> Env:
+        """Register and start a new environment; returns a handle to it.
+
+        The server fills defaults for the template (name "default-template" in
+        atespace "ate-env") when none is given.
+
+        With rootfs_image (a digest-pinned OCI reference, repo@sha256:...), the
+        environment runs that image unmodified: the server derives an
+        ActorTemplate from the template, which then acts as the base, with the
+        image as the container and the ate-env-guest mounted into it as an
+        image volume. The derived template is created on first use and reused
+        for later environments on the same image; info() reports its name.
+        """
+        req = env_pb2.CreateEnvironmentRequest(id=id, atespace=atespace, rootfs_image=rootfs_image or "")
+        if template_name or template_atespace:
+            req.template.name = template_name or ""
+            req.template.atespace = template_atespace or ""
+        try:
+            resp = await self._environments.CreateEnvironment(req)
+        except grpc.RpcError as e:
+            raise map_rpc_error(e) from e
+        created = resp.environment
+        return self.env(created.id, atespace=created.atespace)
+
+    async def get(self, id: str, *, atespace: str = DEFAULT_ATESPACE) -> EnvironmentInfo:
+        """Retrieve the status and configuration of an environment."""
+        req = env_pb2.GetEnvironmentRequest(id=id, atespace=atespace)
+        try:
+            resp = await self._environments.GetEnvironment(req)
+        except grpc.RpcError as e:
+            raise map_rpc_error(e) from e
+        return _environment_info_from_pb(resp.environment)
+
+    async def suspend(self, id: str, *, atespace: str = DEFAULT_ATESPACE) -> None:
+        """Checkpoint and stop the environment."""
+        req = env_pb2.SuspendEnvironmentRequest(id=id, atespace=atespace)
+        try:
+            await self._environments.SuspendEnvironment(req)
+        except grpc.RpcError as e:
+            raise map_rpc_error(e) from e
+
+    async def delete(self, id: str, *, atespace: str = DEFAULT_ATESPACE) -> None:
+        """Remove the environment permanently."""
+        req = env_pb2.DeleteEnvironmentRequest(id=id, atespace=atespace)
+        try:
+            await self._environments.DeleteEnvironment(req)
+        except grpc.RpcError as e:
+            raise map_rpc_error(e) from e
+
+    def env(self, id: str, *, atespace: str = DEFAULT_ATESPACE) -> Env:
+        """Return a handle to an environment without checking that it exists."""
+        return Env(self, id, atespace or DEFAULT_ATESPACE)

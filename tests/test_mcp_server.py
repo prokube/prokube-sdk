@@ -1,13 +1,12 @@
 from unittest.mock import AsyncMock, call
 
 import pytest
-from ate_env import NotFoundError, ShellResult
 from click.testing import CliRunner
 from mcp import Client
 
 from prokube.cli import commands
 from prokube.cli.mcp_server import create_server
-from prokube.sandbox import AsyncSandboxClient
+from prokube.sandbox import AsyncSandboxClient, NotFoundError, ShellResult
 from prokube.sandbox._ateapi import ateapi_pb2 as ateapi
 
 

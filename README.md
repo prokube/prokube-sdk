@@ -15,8 +15,9 @@ pip install git+https://github.com/prokube/prokube-sdk.git
 uv pip install git+https://github.com/prokube/prokube-sdk.git
 ```
 
-The upstream env client is not on PyPI; it is installed from its Git
-repository at a pinned commit, so `git` must be available.
+The upstream env client comes with the SDK (`src/prokube/sandbox/_ate_env/`,
+see `scripts/vendor-ate-env.sh`). The SDK runs on protobuf 6.31.1 and later,
+so it installs next to kfp and mlflow in a notebook.
 
 ## Login
 
@@ -332,9 +333,12 @@ The sandbox sends the header with any placeholder, e.g.
 | `create` | `CreateActor` on the preset's template, then `CreateActorEgressPolicy` (preset's rules or `network`); if that fails, `DeleteActor` |
 | `resize` | `SuspendActor`, `UpdateActor` (new `actor_template`), `ResumeActor` if it was running |
 | `network`, `set_network` | `GetActorEgressPolicy`, `UpdateActorEgressPolicy` |
-| `run`, `read_file`, `write_file`, `write_files`, `env()` | env guest API via `ate_env` |
-| return values | `Actor` protos and `ate_env.ShellResult` |
-| errors | `ate_env` errors (`NotFoundError`, `PermissionDeniedError`, `RpcError`, ...) |
+| `run`, `read_file`, `write_file`, `write_files`, `env()` | env guest API via the upstream env client |
+| return values | `Actor` protos and the env client's `ShellResult` |
+| errors | the env client's `EnvError` and its subclasses (`NotFoundError`, `PermissionDeniedError`, `RpcError`, ...) |
+
+`ShellResult`, `Env`, `Process`, `EnvError` and its subclasses can be imported
+from `prokube.sandbox`.
 
 A new sandbox is `SUSPENDED`; its first command or `resume()` starts it.
 `delete` removes a sandbox in any state.
@@ -416,8 +420,8 @@ the env guest API and the presets are all called there, and Substrate
 authorizes each call with the caller's token. Without a workspace, only
 `presets()`, `workers()`, `worker_actors(worker)` and
 `list_actors(all_workspaces=True)` work; other calls raise `ValueError`.
-Errors are the `ate_env` ones (`NotFoundError`, `PermissionDeniedError`, ...)
-and `PresetError`.
+Errors are `EnvError` and its subclasses (`NotFoundError`,
+`PermissionDeniedError`, ...) and `PresetError`, all from `prokube.sandbox`.
 
 Files can stream, so a large file never sits in memory whole:
 

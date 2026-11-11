@@ -15,7 +15,6 @@ from typing import Any, TypeVar
 
 import click
 import httpx
-from ate_env import EnvError, NotFoundError, PermissionDeniedError
 from google.protobuf import json_format
 from websockets.exceptions import WebSocketException
 
@@ -23,6 +22,9 @@ from prokube import auth, endpoints
 from prokube.cli import banner, ssh
 from prokube.sandbox import (
     AsyncSandboxClient,
+    EnvError,
+    NotFoundError,
+    PermissionDeniedError,
     PresetError,
     Presets,
     actor_name,

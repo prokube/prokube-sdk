@@ -3,9 +3,10 @@
 A sandbox is an Actor named ``sbx-<name>`` in the Atespace of a workspace
 (Atespace name = workspace namespace). Lifecycle calls go to the ate API
 (``substrate.ateapi.v1.Control``); commands and files go to the env guest API through the
-upstream ``ate_env`` client. Every call carries the caller's token, which
-Agent Gateway passes through to Substrate. Results are the upstream types
-(``Actor`` protos, ``ate_env.ShellResult``) and errors the ``ate_env`` ones.
+upstream env client, vendored in ``_ate_env``. Every call carries the caller's
+token, which Agent Gateway passes through to Substrate. Results are ``Actor``
+protos and the env client's ``ShellResult``, errors the env client's ones
+(``EnvError`` and its subclasses).
 
 Without a platform URL, or with ``endpoint``, the client calls Agent
 Gateway's in-cluster Service. In a workspace pod with a workload token
@@ -39,12 +40,12 @@ from typing import Any, TypeVar
 import grpc
 import grpc.aio
 import httpx
-from ate_env import Client as EnvClient
-from ate_env import Env, EnvError, ShellResult, map_rpc_error
 from google.protobuf import json_format
 
 from prokube import auth, endpoints
 from prokube.auth import TokenProvider
+from prokube.sandbox._ate_env import Client as EnvClient
+from prokube.sandbox._ate_env import Env, EnvError, ShellResult, map_rpc_error
 from prokube.sandbox._ateapi import ateapi_pb2 as ateapi
 from prokube.sandbox._ateapi.ateapi_pb2_grpc import ControlStub
 from prokube.sandbox.presets import PresetError, Presets
@@ -621,7 +622,7 @@ class _CallDetails(
 class _CredentialInterceptor:
     """Adds the credential header on plaintext channels.
 
-    Like the upstream ``ate_env`` client's, but asks for it on every call.
+    Like the upstream env client's, but asks for it on every call.
     """
 
     def __init__(self, credential: auth.Credential) -> None:

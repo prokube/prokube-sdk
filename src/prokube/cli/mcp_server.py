@@ -11,11 +11,10 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, TypeVar
 
-from ate_env import ShellResult
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
-from prokube.sandbox import AsyncSandboxClient
+from prokube.sandbox import AsyncSandboxClient, ShellResult
 from prokube.sandbox._ateapi import ateapi_pb2 as ateapi
 from prokube.sandbox.client import SANDBOX_PREFIX
 
