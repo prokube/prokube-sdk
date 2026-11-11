@@ -121,6 +121,9 @@ needs no login and acts as the workspace, like the SDK there (see
 [In a workspace pod](#in-a-workspace-pod)). Only SSH (`connect`, `forward`,
 `ssh-config`, `create --connect`) needs the platform URL.
 
+`man pk` lists every command with its options, the environment variables
+and the files pk uses.
+
 In a terminal, `pk --help` and `pk --version` show the prokube wordmark;
 `PK_NO_BANNER=1` turns it off, `NO_COLOR` keeps it uncolored. Pipes and scripts
 get plain output.
@@ -460,7 +463,12 @@ uv run pyright
 
 The ate API stubs in `src/prokube/sandbox/_ateapi/` are generated from the
 pinned Substrate proto. To move the pin, edit `scripts/gen-ateapi.sh` and run
-it.
+it. `scripts/vendor-ate-env.sh` does the same for the env client in
+`src/prokube/sandbox/_ate_env/`.
+
+`man/pk.1` is generated from the commands' help; a test fails when it is out
+of date. After changing a command, run
+`uv run python -m prokube.cli.manpage > man/pk.1`.
 
 ### Benchmark against E2B
 

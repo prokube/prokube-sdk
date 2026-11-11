@@ -1,0 +1,354 @@
+.TH PK 1 "" "pk 1.0.0" "prokube"
+.SH NAME
+pk \- command line for the prokube platform
+.SH SYNOPSIS
+.B pk
+[\fB\-\-version\fR] [\fB\-\-help\fR] \fICOMMAND\fR [\fIARGS\fR]...
+.SH DESCRIPTION
+pk logs in to a prokube platform and creates and uses sandboxes in a workspace: it runs commands in them, copies files, sets their network rules, connects over SSH and serves them to MCP clients.
+.PP
+pk auth login remembers the platform and a default workspace. \-\-url and \-\-workspace, or $PROKUBE_URL and $PROKUBE_WORKSPACE, override them per command.
+.PP
+In a workspace pod with sandbox access, such as a notebook, pk sandbox needs no login and acts as the workspace. Only SSH (connect, forward, ssh\-config, create \-\-connect) needs the platform URL.
+.PP
+Every command takes \fB\-\-help\fR.
+.SH COMMANDS
+.SS "pk auth login [OPTIONS] URL"
+Log in to the platform at URL (https://<domain>).
+.PP
+It becomes the current platform for the other commands.
+.TP
+\fB\-w\fR, \fB\-\-workspace\fR \fITEXT\fR
+Default workspace for sandbox commands.
+.TP
+\fB\-\-no\-browser\fR
+Only print the login URL.
+.SS "pk auth logout [OPTIONS]"
+Forget the login for the current platform.
+.TP
+\fB\-\-url\fR \fITEXT\fR
+Platform URL (default: current).
+.SS "pk auth status [OPTIONS]"
+Show the current platform, workspace and user.
+.TP
+\fB\-\-url\fR \fITEXT\fR
+Platform URL (default: $PROKUBE_URL, then the one from pk auth login).
+.TP
+\fB\-w\fR, \fB\-\-workspace\fR \fITEXT\fR
+Workspace (default: $PROKUBE_WORKSPACE, then the one from pk auth login).
+.SS "pk auth workspace get [OPTIONS]"
+Print the workspace the sandbox commands use.
+.SS "pk auth workspace set [OPTIONS] NAME"
+Make NAME the default workspace, after checking that you can use it.
+.SS "pk sandbox connect [OPTIONS] NAME"
+Open an SSH session to sandbox NAME.
+.PP
+Installs your public key in the sandbox, pins its host key and runs ssh.
+.TP
+\fB\-\-install\-ssh\fR
+Also make the sandbox reachable as an ssh host from ~/.ssh/config (ssh, VS Code Remote\-SSH, JetBrains Gateway).
+.TP
+\fB\-i\fR, \fB\-\-identity\fR \fIFILE\fR
+Private SSH key whose .pub to install (default: pk's own key, generated on first use).
+.TP
+\fB\-\-url\fR \fITEXT\fR
+Platform URL (default: $PROKUBE_URL, then the one from pk auth login).
+.TP
+\fB\-w\fR, \fB\-\-workspace\fR \fITEXT\fR
+Workspace (default: $PROKUBE_WORKSPACE, then the one from pk auth login).
+.SS "pk sandbox cp [OPTIONS] SOURCE DESTINATION"
+Copy a file to or from a sandbox.
+.PP
+.nf
+.RS 4
+pk sandbox cp train.py demo:/workspace/
+pk sandbox cp demo:/workspace/model.pt .
+.RE
+.fi
+.TP
+\fB\-\-url\fR \fITEXT\fR
+Platform URL (default: $PROKUBE_URL, then the one from pk auth login).
+.TP
+\fB\-w\fR, \fB\-\-workspace\fR \fITEXT\fR
+Workspace (default: $PROKUBE_WORKSPACE, then the one from pk auth login).
+.SS "pk sandbox create [OPTIONS] NAME"
+Create sandbox NAME from a preset, with the platform's network rules.
+.PP
+.nf
+.RS 4
+pk sandbox create demo \-\-inject api.anthropic.com x\-api\-key anthropic/API_KEY
+pk sandbox create demo \-\-inject\-bearer api.openai.com openai/API_KEY
+.RE
+.fi
+.PP
+\-\-inject, \-\-inject\-bearer and \-\-passthrough add rules to the preset's; a host they name leaves the preset's rules. See pk sandbox network.
+.TP
+\fB\-p\fR, \fB\-\-preset\fR \fITEXT\fR
+Preset to start from (default: the platform's default preset).
+.TP
+\fB\-\-connect\fR
+Open an SSH session afterwards.
+.TP
+\fB\-\-inject\fR \fIHOST HEADER SECRET/KEY\fR
+Set HEADER on HTTPS to HOST to key KEY of Secret SECRET in the workspace (label prokube.ai/sandbox\-credential=true). Repeatable.
+.TP
+\fB\-\-inject\-bearer\fR \fIHOST SECRET/KEY\fR
+Like \-\-inject, as 'Authorization: Bearer <key>'. Repeatable.
+.TP
+\fB\-\-passthrough\fR \fIHOST\fR
+Let TLS to HOST through unchanged. Repeatable.
+.TP
+\fB\-\-install\-ssh\fR
+Also make the sandbox reachable as an ssh host from ~/.ssh/config (ssh, VS Code Remote\-SSH, JetBrains Gateway).
+.TP
+\fB\-i\fR, \fB\-\-identity\fR \fIFILE\fR
+Private SSH key whose .pub to install (default: pk's own key, generated on first use).
+.TP
+\fB\-\-url\fR \fITEXT\fR
+Platform URL (default: $PROKUBE_URL, then the one from pk auth login).
+.TP
+\fB\-w\fR, \fB\-\-workspace\fR \fITEXT\fR
+Workspace (default: $PROKUBE_WORKSPACE, then the one from pk auth login).
+.SS "pk sandbox delete [OPTIONS] NAME"
+Delete sandbox NAME and its workspace volume.
+.TP
+\fB\-\-url\fR \fITEXT\fR
+Platform URL (default: $PROKUBE_URL, then the one from pk auth login).
+.TP
+\fB\-w\fR, \fB\-\-workspace\fR \fITEXT\fR
+Workspace (default: $PROKUBE_WORKSPACE, then the one from pk auth login).
+.SS "pk sandbox exec [OPTIONS] NAME COMMAND..."
+Run COMMAND in sandbox NAME and exit with its exit code.
+.PP
+Put \-\- before the command: pk sandbox exec demo \-\- ls \-l /workspace
+.TP
+\fB\-\-url\fR \fITEXT\fR
+Platform URL (default: $PROKUBE_URL, then the one from pk auth login).
+.TP
+\fB\-w\fR, \fB\-\-workspace\fR \fITEXT\fR
+Workspace (default: $PROKUBE_WORKSPACE, then the one from pk auth login).
+.SS "pk sandbox forward [OPTIONS] NAME REMOTE_PORT"
+Forward localhost to REMOTE_PORT in sandbox NAME until Ctrl\-C.
+.PP
+The tunnel runs over SSH, like connect, and listens on localhost only. For example, after `OPENCODE_PASSWORD=<password> opencode serve \-\-port 4096` in the sandbox:
+.PP
+.nf
+.RS 4
+pk sandbox forward demo 4096
+OPENCODE_PASSWORD=<password> opencode \-\-server http://localhost:4096
+.RE
+.fi
+.TP
+\fB\-\-local\-port\fR \fIINTEGER RANGE\fR
+Port on localhost (default: REMOTE_PORT).  [1<=x<=65535]
+.TP
+\fB\-i\fR, \fB\-\-identity\fR \fIFILE\fR
+Private SSH key whose .pub to install (default: pk's own key, generated on first use).
+.TP
+\fB\-\-url\fR \fITEXT\fR
+Platform URL (default: $PROKUBE_URL, then the one from pk auth login).
+.TP
+\fB\-w\fR, \fB\-\-workspace\fR \fITEXT\fR
+Workspace (default: $PROKUBE_WORKSPACE, then the one from pk auth login).
+.SS "pk sandbox list [OPTIONS]"
+List the sandboxes of the workspace with their preset.
+.TP
+\fB\-\-url\fR \fITEXT\fR
+Platform URL (default: $PROKUBE_URL, then the one from pk auth login).
+.TP
+\fB\-w\fR, \fB\-\-workspace\fR \fITEXT\fR
+Workspace (default: $PROKUBE_WORKSPACE, then the one from pk auth login).
+.SS "pk sandbox mcp [OPTIONS]"
+Serve the sandbox tools to MCP clients, over stdio by default.
+.PP
+.nf
+.RS 4
+claude mcp add sandbox \-\- pk sandbox mcp
+.RE
+.fi
+.PP
+In a workspace pod with sandbox access it needs no login and acts as the workspace.
+.TP
+\fB\-\-port\fR \fIINTEGER RANGE\fR
+Serve streamable HTTP on this port instead of stdio.  [1<=x<=65535]
+.TP
+\fB\-\-host\fR \fITEXT\fR
+With \-\-port.  [default: 127.0.0.1]
+.TP
+\fB\-\-url\fR \fITEXT\fR
+Platform URL (default: $PROKUBE_URL, then the one from pk auth login).
+.TP
+\fB\-w\fR, \fB\-\-workspace\fR \fITEXT\fR
+Workspace (default: $PROKUBE_WORKSPACE, then the one from pk auth login).
+.SS "pk sandbox network [OPTIONS] NAME"
+Show or change sandbox NAME's network rules.
+.PP
+.nf
+.RS 4
+pk sandbox network demo
+pk sandbox network demo \-\-inject api.anthropic.com x\-api\-key anthropic/API_KEY
+pk sandbox network demo \-\-set rules.json
+.RE
+.fi
+.PP
+Prints the rules as the JSON of Substrate EgressRules. \-\-set replaces them; \-\-inject, \-\-inject\-bearer and \-\-passthrough add rules, and a host they name leaves the other rules. Changes apply right away.
+.TP
+\fB\-\-set\fR \fIFILENAME\fR
+Replace the rules with the JSON list in FILE (\- for stdin).
+.TP
+\fB\-\-inject\fR \fIHOST HEADER SECRET/KEY\fR
+Set HEADER on HTTPS to HOST to key KEY of Secret SECRET in the workspace (label prokube.ai/sandbox\-credential=true). Repeatable.
+.TP
+\fB\-\-inject\-bearer\fR \fIHOST SECRET/KEY\fR
+Like \-\-inject, as 'Authorization: Bearer <key>'. Repeatable.
+.TP
+\fB\-\-passthrough\fR \fIHOST\fR
+Let TLS to HOST through unchanged. Repeatable.
+.TP
+\fB\-\-url\fR \fITEXT\fR
+Platform URL (default: $PROKUBE_URL, then the one from pk auth login).
+.TP
+\fB\-w\fR, \fB\-\-workspace\fR \fITEXT\fR
+Workspace (default: $PROKUBE_WORKSPACE, then the one from pk auth login).
+.SS "pk sandbox preset list [OPTIONS]"
+List the presets; the default one is marked with *.
+.TP
+\fB\-\-url\fR \fITEXT\fR
+Platform URL (default: $PROKUBE_URL, then the one from pk auth login).
+.TP
+\fB\-w\fR, \fB\-\-workspace\fR \fITEXT\fR
+Workspace (default: $PROKUBE_WORKSPACE, then the one from pk auth login).
+.SS "pk sandbox proxy [OPTIONS] NAME"
+Carry SSH to sandbox NAME over a WebSocket (OpenSSH ProxyCommand).
+.PP
+Refuses a suspended sandbox unless \-\-resume is given: connecting would resume it.
+.TP
+\fB\-\-resume\fR
+Resume the sandbox if it is suspended.
+.TP
+\fB\-\-url\fR \fITEXT\fR
+Platform URL (default: $PROKUBE_URL, then the one from pk auth login).
+.TP
+\fB\-w\fR, \fB\-\-workspace\fR \fITEXT\fR
+Workspace (default: $PROKUBE_WORKSPACE, then the one from pk auth login).
+.SS "pk sandbox resize [OPTIONS] NAME"
+Switch sandbox NAME to another preset, e.g. a larger one.
+.PP
+The preset must have the sandbox's image and snapshot fidelity. A running sandbox is suspended and resumed: /workspace is kept, running processes restart. A suspended sandbox stays suspended. Network rules and credentials stay.
+.TP
+\fB\-p\fR, \fB\-\-preset\fR \fITEXT\fR
+Preset with the sandbox's image.  [required]
+.TP
+\fB\-\-url\fR \fITEXT\fR
+Platform URL (default: $PROKUBE_URL, then the one from pk auth login).
+.TP
+\fB\-w\fR, \fB\-\-workspace\fR \fITEXT\fR
+Workspace (default: $PROKUBE_WORKSPACE, then the one from pk auth login).
+.SS "pk sandbox resume [OPTIONS] NAME"
+Resume sandbox NAME.
+.TP
+\fB\-\-url\fR \fITEXT\fR
+Platform URL (default: $PROKUBE_URL, then the one from pk auth login).
+.TP
+\fB\-w\fR, \fB\-\-workspace\fR \fITEXT\fR
+Workspace (default: $PROKUBE_WORKSPACE, then the one from pk auth login).
+.SS "pk sandbox revert [OPTIONS] NAME"
+Return sandbox NAME to its last snapshot, suspended.
+.PP
+Use it for a crashed sandbox, for example after a node restart. Everything since the last snapshot is lost. Asks first unless the sandbox crashed: its changes are gone already.
+.TP
+\fB\-\-yes\fR
+Do not ask for confirmation.
+.TP
+\fB\-\-url\fR \fITEXT\fR
+Platform URL (default: $PROKUBE_URL, then the one from pk auth login).
+.TP
+\fB\-w\fR, \fB\-\-workspace\fR \fITEXT\fR
+Workspace (default: $PROKUBE_WORKSPACE, then the one from pk auth login).
+.SS "pk sandbox ssh\-config [OPTIONS] [NAME]"
+Print an OpenSSH config entry for sandbox NAME.
+.PP
+Installs your public key and pins the host key like connect. With \-\-install, adds an Include of the entries of all sandboxes at the top of ~/.ssh/config once, so ssh and IDEs that read it find them.
+.PP
+ssh through the entry refuses a suspended sandbox, so an IDE that reconnects on its own does not wake it; \-\-resume lets it resume the sandbox instead. connect, forward and create keep the entry's setting.
+.TP
+\fB\-\-install\fR
+Include all pk ssh hosts from ~/.ssh/config instead of printing the entry. NAME is optional then.
+.TP
+\fB\-\-resume\fR
+Let ssh and IDEs resume the sandbox when it is suspended.
+.TP
+\fB\-i\fR, \fB\-\-identity\fR \fIFILE\fR
+Private SSH key whose .pub to install (default: pk's own key, generated on first use).
+.TP
+\fB\-\-url\fR \fITEXT\fR
+Platform URL (default: $PROKUBE_URL, then the one from pk auth login).
+.TP
+\fB\-w\fR, \fB\-\-workspace\fR \fITEXT\fR
+Workspace (default: $PROKUBE_WORKSPACE, then the one from pk auth login).
+.SS "pk sandbox suspend [OPTIONS] NAME"
+Suspend sandbox NAME; its next use resumes it, except plain ssh.
+.TP
+\fB\-\-url\fR \fITEXT\fR
+Platform URL (default: $PROKUBE_URL, then the one from pk auth login).
+.TP
+\fB\-w\fR, \fB\-\-workspace\fR \fITEXT\fR
+Workspace (default: $PROKUBE_WORKSPACE, then the one from pk auth login).
+.SH ENVIRONMENT
+.TP
+\fBPROKUBE_URL\fR
+Platform URL, https://<domain>.
+.TP
+\fBPROKUBE_WORKSPACE\fR
+Workspace of the sandbox commands.
+.TP
+\fBPROKUBE_API_KEY\fR
+API key with the scope All sandboxes; used in place of a login.
+.TP
+\fBPROKUBE_SANDBOX_TOKEN_FILE\fR
+Workload token of a workspace pod (default: /var/run/secrets/prokube.ai/sandbox/token).
+.TP
+\fBPROKUBE_CONFIG_DIR\fR
+Configuration directory (default: ~/.config/prokube).
+.TP
+\fBPYTHON_KEYRING_BACKEND\fR
+keyring.backends.fail.Keyring stores tokens in files instead of the OS keyring.
+.TP
+\fBPK_NO_BANNER\fR
+Leave out the prokube wordmark in a terminal.
+.TP
+\fBNO_COLOR\fR
+Show the wordmark without color.
+.SH FILES
+.TP
+\fI~/.config/prokube/config.json\fR
+Platform URL and default workspace.
+.TP
+\fI~/.config/prokube/tokens/\fR
+Login tokens, when no OS keyring is usable (mode 0600).
+.TP
+\fI~/.config/prokube/ssh/id_ed25519\fR
+pk's own SSH key, generated on first use.
+.TP
+\fI~/.config/prokube/ssh/known_hosts\fR
+Pinned host keys of the sandboxes.
+.TP
+\fI~/.config/prokube/ssh/hosts/\fR
+ssh config entries, pk.<workspace>.<name>.conf.
+.SH EXAMPLES
+.nf
+.RS 4
+pk auth login https://my\-platform.example.com \-\-workspace my\-workspace
+pk sandbox create demo
+pk sandbox exec demo \-\- python3 \-c 'print(6 * 7)'
+pk sandbox cp train.py demo:/workspace/
+pk sandbox create agent \-\-inject api.anthropic.com x\-api\-key anthropic/API_KEY
+pk sandbox connect demo
+pk sandbox delete demo
+claude mcp add sandbox \-\- pk sandbox mcp
+.RE
+.fi
+.SH SEE ALSO
+\fBssh\fR(1)
+.PP
+https://github.com/prokube/prokube\-sdk
