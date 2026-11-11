@@ -113,7 +113,7 @@ class AsyncSandboxClient:
             workspace or os.environ.get("PROKUBE_WORKSPACE") or saved.get("workspace")
         )
         if not workspace and auth.workload_token_file():
-            workspace = _pod_namespace()
+            workspace = pod_namespace()
         self.url = endpoints.normalize_url(url) if url else None
         self.workspace = workspace
         credential = auth.credential(self.url, token_provider, api_key)
@@ -684,7 +684,8 @@ def _parse_rules(rules: Sequence[Mapping[str, Any]]) -> list[ateapi.EgressRule]:
     return [json_format.ParseDict(dict(rule), ateapi.EgressRule()) for rule in rules]
 
 
-def _pod_namespace() -> str | None:
+def pod_namespace() -> str | None:
+    """The namespace of the pod this runs in, which is its workspace."""
     path = Path(NAMESPACE_FILE)
     return path.read_text().strip() if path.is_file() else None
 

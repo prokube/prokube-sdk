@@ -33,7 +33,7 @@ from prokube.sandbox import (
     passthrough,
 )
 from prokube.sandbox._ateapi import ateapi_pb2 as ateapi
-from prokube.sandbox.client import SANDBOX_PREFIX
+from prokube.sandbox.client import SANDBOX_PREFIX, pod_namespace
 
 T = TypeVar("T")
 
@@ -271,7 +271,11 @@ def _secret_key(reference: str) -> tuple[str, str]:
 
 @cli.group()
 def sandbox() -> None:
-    """Create and use sandboxes in a workspace."""
+    """Create and use sandboxes in a workspace.
+
+    In a workspace pod with sandbox access, they need no login and act as the
+    workspace; only SSH (connect, forward, ssh-config) needs the platform URL.
+    """
 
 
 @sandbox.command()
@@ -309,6 +313,8 @@ def create(
     """
     for reference in [i[2] for i in injects] + [i[1] for i in bearer_injects]:
         _secret_key(reference)
+    if connect or install_ssh:
+        _require(url, workspace)
 
     async def run(client: AsyncSandboxClient) -> tuple[ateapi.Actor, Presets]:
         presets = await client.presets()
@@ -526,6 +532,7 @@ def forward(
     pk sandbox forward demo 4096
     OPENCODE_PASSWORD=<password> opencode --server http://localhost:4096
     """
+    _require(url, workspace)
     local_port = local_port or remote_port
     if ssh.port_in_use(local_port):
         raise click.ClickException(
@@ -594,7 +601,7 @@ def revert(name: str, yes: bool, url: str | None, workspace: str | None) -> None
 @_target_options
 def delete(name: str, url: str | None, workspace: str | None) -> None:
     """Delete sandbox NAME and its workspace volume."""
-    url, workspace = _require(url, workspace)
+    url, workspace = _target(url, workspace)
     actor = _with_client(url, workspace, lambda client: client.delete(name))
     ssh.forget_host(ssh.host_alias(workspace, _name(actor)))
     click.echo(f"Deleted {_name(actor)}")
@@ -686,9 +693,7 @@ def mcp(port: int | None, host: str, url: str | None, workspace: str | None) -> 
     """
     from prokube.cli.mcp_server import create_server  # the MCP SDK loads slowly
 
-    url, workspace = _resolve(url, workspace)
-    if auth.workload_token_file() is None:
-        url, workspace = _require(url, workspace)
+    url, workspace = _target(url, workspace)
     server = create_server(lambda: AsyncSandboxClient(url, workspace))
     if port:
         server.run("streamable-http", host=host, port=port, stateless_http=True)
@@ -879,7 +884,7 @@ def _with_client(
     action: Callable[[AsyncSandboxClient], Awaitable[T]],
 ) -> T:
     """Run action with a sandbox client for the workspace."""
-    url, workspace = _require(url, workspace)
+    url, workspace = _target(url, workspace)
 
     async def run() -> T:
         async with AsyncSandboxClient(url, workspace) as client:
@@ -888,6 +893,8 @@ def _with_client(
     try:
         return asyncio.run(run())
     except auth.LoginRequired as error:
+        if not url:
+            raise click.ClickException(str(error)) from error
         raise click.ClickException(
             f"Not logged in to {url}. Run: pk auth login {url}"
         ) from error
@@ -935,13 +942,32 @@ def _resolve(url: str | None, workspace: str | None) -> tuple[str | None, str | 
     return (_normalize(url) if url else None), workspace
 
 
-def _require(url: str | None, workspace: str | None) -> tuple[str, str]:
+def _target(url: str | None, workspace: str | None) -> tuple[str | None, str]:
+    """The platform URL and workspace of a sandbox command.
+
+    In a workspace pod with sandbox access, the URL may be missing: the client
+    then calls Agent Gateway's in-cluster Service as the pod. The workspace
+    defaults to the pod's there.
+    """
     url, workspace = _resolve(url, workspace)
-    if not url:
+    in_pod = auth.workload_token_file() is not None
+    if in_pod:
+        workspace = workspace or pod_namespace()
+    if not url and not in_pod:
         raise click.UsageError("No platform URL. Run: pk auth login <url>")
     if not workspace:
         raise click.UsageError(
             "No workspace. Pass --workspace or run: pk auth workspace set <name>"
+        )
+    return url, workspace
+
+
+def _require(url: str | None, workspace: str | None) -> tuple[str, str]:
+    """Like _target, for SSH: it goes through the platform URL."""
+    url, workspace = _target(url, workspace)
+    if not url:
+        raise click.UsageError(
+            "SSH to a sandbox needs the platform URL. Pass --url or set $PROKUBE_URL."
         )
     return url, workspace
 

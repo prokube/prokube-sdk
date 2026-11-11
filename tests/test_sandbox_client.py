@@ -21,11 +21,9 @@ from prokube.sandbox import (
     inject,
     passthrough,
 )
-from prokube.sandbox import client as client_module
 from prokube.sandbox._ate_env._gen.ateenv.v1alpha import guest_pb2
 from prokube.sandbox._ateapi import ateapi_pb2 as ateapi
 from prokube.sandbox.client import _CredentialPlugin
-from tests.conftest import make_jwt
 from tests.test_presets import OPENCODE_POLICY, PRESETS, PRESETS_JSON
 
 URL = "https://platform.example.com"
@@ -410,17 +408,6 @@ async def test_default_credentials_are_the_stored_login():
     )
     async with AsyncSandboxClient(URL, "team-a") as client:
         assert client.workspace == "team-a"
-
-
-@pytest.fixture
-def workload_token(tmp_path, monkeypatch) -> str:
-    """A workspace pod: a workload token and namespace team-pod."""
-    token = make_jwt(time.time() + 3600)
-    (tmp_path / "token").write_text(token)
-    (tmp_path / "namespace").write_text("team-pod\n")
-    monkeypatch.setenv("PROKUBE_SANDBOX_TOKEN_FILE", str(tmp_path / "token"))
-    monkeypatch.setattr(client_module, "NAMESPACE_FILE", str(tmp_path / "namespace"))
-    return token
 
 
 @pytest.fixture

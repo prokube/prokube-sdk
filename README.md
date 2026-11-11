@@ -116,6 +116,11 @@ pk auth logout
 workspace. Both first check that you can view it. `--url` and `--workspace`
 (or `PROKUBE_URL` and `PROKUBE_WORKSPACE`) override them per command.
 
+In a workspace pod with sandbox access, such as a notebook, `pk sandbox`
+needs no login and acts as the workspace, like the SDK there (see
+[In a workspace pod](#in-a-workspace-pod)). Only SSH (`connect`, `forward`,
+`ssh-config`, `create --connect`) needs the platform URL.
+
 In a terminal, `pk --help` and `pk --version` show the prokube wordmark;
 `PK_NO_BANNER=1` turns it off, `NO_COLOR` keeps it uncolored. Pipes and scripts
 get plain output.
