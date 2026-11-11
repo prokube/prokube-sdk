@@ -272,7 +272,7 @@ spec:
   podTemplateSpec:
     metadata:
       labels:
-        access-sandboxes: "true"   # the workload token, see Credentials
+        sandbox.prokube.ai/access: "true"   # the workload token, see Credentials
     spec:
       imagePullSecrets:
       - name: regcred-prokube
