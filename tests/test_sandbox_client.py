@@ -7,23 +7,23 @@ from typing import Any
 import grpc
 import grpc.aio
 import pytest
-from ate_env import NotFoundError, PermissionDeniedError, ShellResult
-from ate_env._gen.ateenv.v1alpha import guest_pb2
 
 from prokube import auth, endpoints
 from prokube.sandbox import (
     AsyncSandboxClient,
+    NotFoundError,
+    PermissionDeniedError,
     PresetError,
     SandboxClient,
+    ShellResult,
     actor_name,
     add_rules,
     inject,
     passthrough,
 )
-from prokube.sandbox import client as client_module
+from prokube.sandbox._ate_env._gen.ateenv.v1alpha import guest_pb2
 from prokube.sandbox._ateapi import ateapi_pb2 as ateapi
 from prokube.sandbox.client import _CredentialPlugin
-from tests.conftest import make_jwt
 from tests.test_presets import OPENCODE_POLICY, PRESETS, PRESETS_JSON
 
 URL = "https://platform.example.com"
@@ -165,7 +165,7 @@ class FakeControl:
 
 
 class FakeEnv:
-    """Stands in for an ate_env.Env handle."""
+    """Stands in for an env client Env handle."""
 
     def __init__(self, id: str, atespace: str) -> None:
         self.id = id
@@ -187,7 +187,7 @@ class FakeEnv:
 
 
 class FakeEnvClient:
-    """Stands in for ate_env.Client; hands out one FakeEnv per sandbox."""
+    """Stands in for the env client; hands out one FakeEnv per sandbox."""
 
     def __init__(self) -> None:
         self.envs: dict[tuple[str, str], FakeEnv] = {}
@@ -408,17 +408,6 @@ async def test_default_credentials_are_the_stored_login():
     )
     async with AsyncSandboxClient(URL, "team-a") as client:
         assert client.workspace == "team-a"
-
-
-@pytest.fixture
-def workload_token(tmp_path, monkeypatch) -> str:
-    """A workspace pod: a workload token and namespace team-pod."""
-    token = make_jwt(time.time() + 3600)
-    (tmp_path / "token").write_text(token)
-    (tmp_path / "namespace").write_text("team-pod\n")
-    monkeypatch.setenv("PROKUBE_SANDBOX_TOKEN_FILE", str(tmp_path / "token"))
-    monkeypatch.setattr(client_module, "NAMESPACE_FILE", str(tmp_path / "namespace"))
-    return token
 
 
 @pytest.fixture

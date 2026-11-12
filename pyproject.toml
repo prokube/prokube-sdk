@@ -1,6 +1,6 @@
 [project]
 name = "prokube-sdk"
-version = "0.3.0"
+version = "1.0.0"
 description = "Python SDK for prokube.ai platform"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -19,12 +19,11 @@ classifiers = [
     "Programming Language :: Python :: 3.14",
 ]
 dependencies = [
-    # Upstream env client (agent-substrate/env), not on PyPI. Same commit as the
-    # env guest in the coding runtime image (prokube/sandbox-images#16).
-    "ate-env-client @ git+https://github.com/agent-substrate/env@7be7449433f5549f02404b0b85e75d3fa686ea7e#subdirectory=clients/python",
-    # Floors match the generated stubs in src/prokube/sandbox/_ateapi/.
-    "grpcio>=1.84.0",
-    "protobuf>=7.35.1",
+    # Floors match the generated stubs in src/prokube/sandbox/_ateapi/ and
+    # _ate_env/ (protobuf 6.31.1 gencode, as kfp and mlflow need protobuf 6).
+    # protobuf 8 may refuse gencode two major versions older.
+    "grpcio>=1.80.0",
+    "protobuf>=6.31.1,<8",
     "httpx>=0.25.0",
     "keyring>=25.0.0",
 ]
@@ -57,16 +56,17 @@ Issues = "https://github.com/prokube/prokube-sdk/issues"
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
-[tool.hatch.metadata]
-allow-direct-references = true
-
 [tool.hatch.build.targets.wheel]
 packages = ["src/prokube"]
+
+# man pk: pip installs it under <prefix>/share/man, which man finds via PATH.
+[tool.hatch.build.targets.wheel.shared-data]
+"man/pk.1" = "share/man/man1/pk.1"
 
 [tool.ruff]
 line-length = 88
 target-version = "py310"
-extend-exclude = ["src/prokube/sandbox/_ateapi"]
+extend-exclude = ["src/prokube/sandbox/_ateapi", "src/prokube/sandbox/_ate_env"]
 
 [tool.ruff.lint]
 select = [
@@ -87,7 +87,7 @@ known-first-party = ["prokube"]
 
 [tool.pyright]
 include = ["src", "tests"]
-exclude = ["src/prokube/sandbox/_ateapi"]
+exclude = ["src/prokube/sandbox/_ateapi", "src/prokube/sandbox/_ate_env"]
 pythonVersion = "3.10"
 # pyright's own default; pinned so a future default change cannot move the gate.
 typeCheckingMode = "standard"

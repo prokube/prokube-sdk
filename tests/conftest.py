@@ -1,10 +1,13 @@
 import base64
 import json
+import time
 
 import keyring
 import pytest
 from keyring.backend import KeyringBackend
 from keyring.errors import PasswordDeleteError
+
+from prokube.sandbox import client as client_module
 
 
 class MemoryKeyring(KeyringBackend):
@@ -49,3 +52,14 @@ def make_jwt(exp: float) -> str:
         return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
 
     return f"{encode({'alg': 'none'})}.{encode({'exp': exp, 'sub': 'x'})}.sig"
+
+
+@pytest.fixture
+def workload_token(tmp_path, monkeypatch) -> str:
+    """A workspace pod: a workload token and namespace team-pod."""
+    token = make_jwt(time.time() + 3600)
+    (tmp_path / "token").write_text(token)
+    (tmp_path / "namespace").write_text("team-pod\n")
+    monkeypatch.setenv("PROKUBE_SANDBOX_TOKEN_FILE", str(tmp_path / "token"))
+    monkeypatch.setattr(client_module, "NAMESPACE_FILE", str(tmp_path / "namespace"))
+    return token

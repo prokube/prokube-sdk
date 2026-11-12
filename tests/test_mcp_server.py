@@ -1,13 +1,12 @@
 from unittest.mock import AsyncMock, call
 
 import pytest
-from ate_env import NotFoundError, ShellResult
 from click.testing import CliRunner
 from mcp import Client
 
-from prokube.cli import commands
+from prokube.cli import commands, mcp_server
 from prokube.cli.mcp_server import create_server
-from prokube.sandbox import AsyncSandboxClient
+from prokube.sandbox import AsyncSandboxClient, NotFoundError, ShellResult
 from prokube.sandbox._ateapi import ateapi_pb2 as ateapi
 
 
@@ -181,3 +180,22 @@ def test_mcp_needs_a_login_outside_a_pod():
 
     assert result.exit_code == 2
     assert "No platform URL. Run: pk auth login <url>" in result.output
+
+
+def test_mcp_in_a_workspace_pod_acts_as_the_pod(workload_token, monkeypatch):
+    clients = []
+
+    class Server:
+        def __init__(self, connect):
+            self.connect = connect
+
+        def run(self, *args, **kwargs):
+            clients.append(self.connect())
+
+    monkeypatch.setattr(mcp_server, "create_server", Server)
+    monkeypatch.setattr(commands, "AsyncSandboxClient", lambda *target: target)
+
+    result = CliRunner().invoke(commands.cli, ["sandbox", "mcp"])
+
+    assert result.exit_code == 0, result.output
+    assert clients == [(None, "team-pod")]

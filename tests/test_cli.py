@@ -4,20 +4,20 @@ import socket
 import time
 
 import pytest
-from ate_env import (
-    NotFoundError,
-    PermissionDeniedError,
-    ProcessInfo,
-    ProcessOutput,
-    ProcessState,
-    RpcError,
-    ShellResult,
-)
 from click.testing import CliRunner
 
 from prokube import auth
 from prokube.cli import banner, commands, ssh
-from prokube.sandbox import PresetError, inject, passthrough
+from prokube.sandbox import (
+    NotFoundError,
+    PermissionDeniedError,
+    PresetError,
+    RpcError,
+    ShellResult,
+    inject,
+    passthrough,
+)
+from prokube.sandbox._ate_env import ProcessInfo, ProcessOutput, ProcessState
 from prokube.sandbox._ateapi import ateapi_pb2 as ateapi
 from tests.conftest import make_jwt
 from tests.test_presets import OPENCODE_RULE, PRESETS
@@ -389,6 +389,63 @@ def test_flags_and_environment_override_the_saved_target(
         (URL, "team-b"),
         ("https://other.example.com", "team-c"),
     ]
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ("list",),
+        ("create", "demo"),
+        ("exec", "demo", "--", "ls"),
+        ("network", "demo"),
+        ("suspend", "demo"),
+        ("resume", "demo"),
+        ("revert", "demo", "--yes"),
+        ("resize", "demo", "--preset", "pk-default-medium"),
+        ("delete", "demo"),
+        ("preset", "list"),
+    ],
+)
+def test_in_a_workspace_pod_sandbox_commands_need_no_login(
+    sandboxes, workload_token, args
+):
+    result = pk("sandbox", *args)
+
+    # exec exits with the command's exit code
+    assert result.exit_code == (3 if args[0] == "exec" else 0), result.output
+    assert sandboxes.targets == [(None, "team-pod")]
+
+
+def test_in_a_workspace_pod_flags_and_the_environment_still_count(
+    sandboxes, workload_token, monkeypatch
+):
+    pk("sandbox", "list", "-w", "team-b")
+    monkeypatch.setenv("PROKUBE_URL", URL)
+    pk("sandbox", "list")
+
+    assert sandboxes.targets == [(None, "team-b"), (URL, "team-pod")]
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ("connect", "demo"),
+        ("ssh-config", "demo"),
+        ("forward", "demo", "4096"),
+        ("proxy", "demo"),
+        ("create", "demo", "--connect"),
+        ("create", "demo", "--install-ssh"),
+    ],
+)
+def test_in_a_workspace_pod_ssh_needs_the_platform_url(sandboxes, workload_token, args):
+    result = pk("sandbox", *args)
+
+    assert result.exit_code == 2
+    assert (
+        "SSH to a sandbox needs the platform URL. Pass --url or set $PROKUBE_URL."
+        in result.output
+    )
+    assert sandboxes.calls == []
 
 
 def test_sdk_errors_are_one_line_messages(sandboxes, logged_in, monkeypatch):

@@ -15,8 +15,9 @@ pip install git+https://github.com/prokube/prokube-sdk.git
 uv pip install git+https://github.com/prokube/prokube-sdk.git
 ```
 
-The upstream env client is not on PyPI; it is installed from its Git
-repository at a pinned commit, so `git` must be available.
+The upstream env client comes with the SDK (`src/prokube/sandbox/_ate_env/`,
+see `scripts/vendor-ate-env.sh`). The SDK runs on protobuf 6.31.1 and later,
+so it installs next to kfp and mlflow in a notebook.
 
 ## Login
 
@@ -114,6 +115,14 @@ pk auth logout
 `~/.config/prokube/config.json`; `pk auth workspace set` changes the
 workspace. Both first check that you can view it. `--url` and `--workspace`
 (or `PROKUBE_URL` and `PROKUBE_WORKSPACE`) override them per command.
+
+In a workspace pod with sandbox access, such as a notebook, `pk sandbox`
+needs no login and acts as the workspace, like the SDK there (see
+[In a workspace pod](#in-a-workspace-pod)). Only SSH (`connect`, `forward`,
+`ssh-config`, `create --connect`) needs the platform URL.
+
+`man pk` lists every command with its options, the environment variables
+and the files pk uses.
 
 In a terminal, `pk --help` and `pk --version` show the prokube wordmark;
 `PK_NO_BANNER=1` turns it off, `NO_COLOR` keeps it uncolored. Pipes and scripts
@@ -266,7 +275,7 @@ spec:
   podTemplateSpec:
     metadata:
       labels:
-        access-sandboxes: "true"   # the workload token, see Credentials
+        sandbox.prokube.ai/access: "true"   # the workload token, see Credentials
     spec:
       imagePullSecrets:
       - name: regcred-prokube
@@ -332,9 +341,12 @@ The sandbox sends the header with any placeholder, e.g.
 | `create` | `CreateActor` on the preset's template, then `CreateActorEgressPolicy` (preset's rules or `network`); if that fails, `DeleteActor` |
 | `resize` | `SuspendActor`, `UpdateActor` (new `actor_template`), `ResumeActor` if it was running |
 | `network`, `set_network` | `GetActorEgressPolicy`, `UpdateActorEgressPolicy` |
-| `run`, `read_file`, `write_file`, `write_files`, `env()` | env guest API via `ate_env` |
-| return values | `Actor` protos and `ate_env.ShellResult` |
-| errors | `ate_env` errors (`NotFoundError`, `PermissionDeniedError`, `RpcError`, ...) |
+| `run`, `read_file`, `write_file`, `write_files`, `env()` | env guest API via the upstream env client |
+| return values | `Actor` protos and the env client's `ShellResult` |
+| errors | the env client's `EnvError` and its subclasses (`NotFoundError`, `PermissionDeniedError`, `RpcError`, ...) |
+
+`ShellResult`, `Env`, `Process`, `EnvError` and its subclasses can be imported
+from `prokube.sandbox`.
 
 A new sandbox is `SUSPENDED`; its first command or `resume()` starts it.
 `delete` removes a sandbox in any state.
@@ -416,8 +428,8 @@ the env guest API and the presets are all called there, and Substrate
 authorizes each call with the caller's token. Without a workspace, only
 `presets()`, `workers()`, `worker_actors(worker)` and
 `list_actors(all_workspaces=True)` work; other calls raise `ValueError`.
-Errors are the `ate_env` ones (`NotFoundError`, `PermissionDeniedError`, ...)
-and `PresetError`.
+Errors are `EnvError` and its subclasses (`NotFoundError`,
+`PermissionDeniedError`, ...) and `PresetError`, all from `prokube.sandbox`.
 
 Files can stream, so a large file never sits in memory whole:
 
@@ -451,7 +463,12 @@ uv run pyright
 
 The ate API stubs in `src/prokube/sandbox/_ateapi/` are generated from the
 pinned Substrate proto. To move the pin, edit `scripts/gen-ateapi.sh` and run
-it.
+it. `scripts/vendor-ate-env.sh` does the same for the env client in
+`src/prokube/sandbox/_ate_env/`.
+
+`man/pk.1` is generated from the commands' help; a test fails when it is out
+of date. After changing a command, run
+`uv run python -m prokube.cli.manpage > man/pk.1`.
 
 ### Benchmark against E2B
 

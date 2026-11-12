@@ -727,7 +727,7 @@ class ResumeActorResponse(_message.Message):
     RESUMED_FIELD_NUMBER: _ClassVar[int]
     actor: Actor
     resumed: bool
-    def __init__(self, actor: _Optional[_Union[Actor, _Mapping]] = ..., resumed: _Optional[bool] = ...) -> None: ...
+    def __init__(self, actor: _Optional[_Union[Actor, _Mapping]] = ..., resumed: bool = ...) -> None: ...
 
 class RevertActorRequest(_message.Message):
     __slots__ = ("actor",)
@@ -1324,7 +1324,7 @@ class ResourceAnnotation(_message.Message):
     singleton: bool
     scope: Scope
     plural: str
-    def __init__(self, parents: _Optional[_Iterable[str]] = ..., singleton: _Optional[bool] = ..., scope: _Optional[_Union[Scope, str]] = ..., plural: _Optional[str] = ...) -> None: ...
+    def __init__(self, parents: _Optional[_Iterable[str]] = ..., singleton: bool = ..., scope: _Optional[_Union[Scope, str]] = ..., plural: _Optional[str] = ...) -> None: ...
 
 class MethodAnnotation(_message.Message):
     __slots__ = ("resource",)

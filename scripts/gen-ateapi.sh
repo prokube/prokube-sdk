@@ -6,8 +6,9 @@ set -euo pipefail
 # kagent fork of Substrate, tag v1.0.0: the version the platform installs.
 SUBSTRATE_REPO="kagent-dev/substrate"
 SUBSTRATE_COMMIT="563df06f6be751c101539986896c17c55aa22a9d"
-# Keep in step with the grpcio and protobuf floors in pyproject.toml.
-GRPCIO_TOOLS_VERSION="1.84.0"
+# Keep in step with the grpcio and protobuf floors in pyproject.toml: its protoc
+# emits gencode for protobuf 6.31.1, which runs on protobuf 6 and 7.
+GRPCIO_TOOLS_VERSION="1.80.0"
 
 ROOT=$(git rev-parse --show-toplevel)
 OUT="$ROOT/src/prokube/sandbox/_ateapi"
