@@ -293,3 +293,65 @@ def test_credential_prefers_a_token_provider_then_an_api_key(monkeypatch):
 def test_credential_without_an_api_key_needs_a_login():
     with pytest.raises(auth.LoginRequired):
         auth.credential(URL)
+
+
+KEYCLOAK = f"{URL}/auth/realms/prokube"
+
+
+@pytest.fixture
+def keycloak(httpx_mock):
+    httpx_mock.add_response(
+        url=f"{KEYCLOAK}/.well-known/openid-configuration",
+        json={
+            "issuer": KEYCLOAK,
+            "authorization_endpoint": f"{KEYCLOAK}/protocol/openid-connect/auth",
+            "token_endpoint": f"{KEYCLOAK}/protocol/openid-connect/token",
+        },
+        is_reusable=True,
+    )
+    return httpx_mock
+
+
+def test_workflows_login_uses_keycloak_and_keeps_the_platform_login(
+    monkeypatch, keycloak, free_redirect
+):
+    auth._save_tokens(
+        URL, {"id_token": "dex", "refresh_token": "r", "expires_at": time.time() + 3600}
+    )
+    access_token = make_jwt(time.time() + 300, temporal_permissions=["team-a:write"])
+    keycloak.add_response(
+        url=f"{KEYCLOAK}/protocol/openid-connect/token",
+        method="POST",
+        json={"access_token": access_token, "id_token": "id", "refresh_token": "kc-1"},
+    )
+    seen = fake_browser(monkeypatch, lambda p: {"code": "c", "state": p["state"]})
+
+    session = auth.login(URL, provider=auth.WORKFLOWS)
+
+    assert seen["client_id"] == "temporal-cli"
+    assert seen["scope"] == "openid offline_access"
+    assert session.token() == access_token
+    assert stored(URL + "#workflows")["refresh_token"] == "kc-1"
+    assert auth.LoginSession(URL).token() == "dex"
+
+    auth.logout(URL)
+    assert stored() is None and stored(URL + "#workflows") is None
+
+
+def test_workflows_token_refreshes_at_keycloak(keycloak):
+    auth._save_tokens(
+        URL,
+        {"access_token": "old", "refresh_token": "kc-1", "expires_at": time.time()},
+        provider=auth.WORKFLOWS,
+    )
+    new_token = make_jwt(time.time() + 300)
+    keycloak.add_response(
+        url=f"{KEYCLOAK}/protocol/openid-connect/token",
+        method="POST",
+        json={"access_token": new_token, "refresh_token": "kc-2"},
+    )
+
+    assert auth.LoginSession(URL, auth.WORKFLOWS).token() == new_token
+    form = parse_qs(keycloak.get_request(method="POST").content.decode())
+    assert form["client_id"] == ["temporal-cli"]
+    assert stored(URL + "#workflows")["refresh_token"] == "kc-2"

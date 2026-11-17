@@ -27,6 +27,13 @@ REDIRECT_URIS = (
 # offline_access makes Dex return a refresh token.
 SCOPES = "openid profile email offline_access"
 
+# Public Keycloak client for the workflows login (created by the Temporal
+# provisioner in prokube-neo). Its access tokens carry the user's Temporal
+# permissions; offline_access keeps the refresh token valid beyond the SSO session.
+KEYCLOAK_REALM = "prokube"
+WORKFLOWS_CLIENT_ID = "temporal-cli"
+WORKFLOWS_SCOPES = "openid offline_access"
+
 # Atespace holding the presets' templates, viewable by every workspace
 # (prokube/prokube-neo#98, #132).
 TEMPLATE_ATESPACE = "sandbox-templates"
@@ -54,6 +61,11 @@ def normalize_url(url: str) -> str:
 def dex_issuer(url: str) -> str:
     """OIDC issuer of the platform's Dex."""
     return f"{normalize_url(url)}/dex"
+
+
+def keycloak_issuer(url: str) -> str:
+    """OIDC issuer of the platform's Keycloak realm."""
+    return f"{normalize_url(url)}/auth/realms/{KEYCLOAK_REALM}"
 
 
 def grpc_target(url: str) -> str:

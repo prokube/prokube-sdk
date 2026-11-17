@@ -16,13 +16,16 @@ Every command takes \fB\-\-help\fR.
 .SS "pk auth login [OPTIONS] URL"
 Log in to the platform at URL (https://<domain>).
 .PP
-It becomes the current platform for the other commands.
+It becomes the current platform for the other commands. A second login for workflows follows; with the platform's single sign\-on it needs no password.
 .TP
 \fB\-w\fR, \fB\-\-workspace\fR \fITEXT\fR
 Default workspace for sandbox commands.
 .TP
 \fB\-\-no\-browser\fR
 Only print the login URL.
+.TP
+\fB\-\-no\-workflows\fR
+Skip the second login for workflows (Temporal).
 .SS "pk auth logout [OPTIONS]"
 Forget the login for the current platform.
 .TP
@@ -288,6 +291,24 @@ Platform URL (default: $PROKUBE_URL, then the one from pk auth login).
 Workspace (default: $PROKUBE_WORKSPACE, then the one from pk auth login).
 .SS "pk sandbox suspend [OPTIONS] NAME"
 Suspend sandbox NAME; its next use resumes it, except plain ssh.
+.TP
+\fB\-\-url\fR \fITEXT\fR
+Platform URL (default: $PROKUBE_URL, then the one from pk auth login).
+.TP
+\fB\-w\fR, \fB\-\-workspace\fR \fITEXT\fR
+Workspace (default: $PROKUBE_WORKSPACE, then the one from pk auth login).
+.SS "pk workflow env [OPTIONS]"
+Print the Temporal CLI's environment for the workspace.
+.PP
+Run: eval "$(pk workflow env)" and then e.g. temporal workflow list. The API key in it is valid for a few minutes.
+.TP
+\fB\-\-url\fR \fITEXT\fR
+Platform URL (default: $PROKUBE_URL, then the one from pk auth login).
+.TP
+\fB\-w\fR, \fB\-\-workspace\fR \fITEXT\fR
+Workspace (default: $PROKUBE_WORKSPACE, then the one from pk auth login).
+.SS "pk workflow token [OPTIONS]"
+Print a fresh API key for Temporal clients (valid for a few minutes).
 .TP
 \fB\-\-url\fR \fITEXT\fR
 Platform URL (default: $PROKUBE_URL, then the one from pk auth login).

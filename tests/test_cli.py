@@ -240,9 +240,62 @@ def test_login_saves_the_platform_and_workspace(monkeypatch, sandboxes):
     result = pk("auth", "login", URL + "/", "--workspace", "team-a", "--no-browser")
 
     assert result.exit_code == 0, result.output
-    assert logins == [(URL, {"open_browser": False})]
+    assert logins == [
+        (URL, {"open_browser": False}),
+        (URL, {"open_browser": False, "provider": auth.WORKFLOWS}),
+    ]
     saved = json.loads((auth.config_dir() / "config.json").read_text())
     assert saved == {"url": URL, "workspace": "team-a"}
+
+
+def test_login_skips_workflows_on_request_or_failure(monkeypatch):
+    logins = []
+
+    def fake_login(url, **kw):
+        logins.append(kw.get("provider", auth.DEX).name)
+        if kw.get("provider") is auth.WORKFLOWS:
+            raise auth.LoginError("no client temporal-cli")
+
+    monkeypatch.setattr(commands.auth, "login", fake_login)
+
+    result = pk("auth", "login", URL)
+    assert result.exit_code == 0, result.output
+    assert "Workflows login skipped: no client temporal-cli" in result.output
+    assert logins == ["platform", "workflows"]
+
+    logins.clear()
+    assert pk("auth", "login", URL, "--no-workflows").exit_code == 0
+    assert logins == ["platform"]
+
+
+def test_workflow_env_prints_the_temporal_cli_environment(monkeypatch):
+    auth.save_config(URL, "team-a")
+    token = make_jwt(time.time() + 300, temporal_permissions=["team-a:write"])
+    auth._save_tokens(
+        URL,
+        {"access_token": token, "refresh_token": "r", "expires_at": time.time() + 300},
+        provider=auth.WORKFLOWS,
+    )
+
+    result = pk("workflow", "env")
+
+    assert result.exit_code == 0, result.output
+    assert result.output.splitlines() == [
+        "export TEMPORAL_ADDRESS=platform.example.com:443",
+        "export TEMPORAL_NAMESPACE=team-a",
+        "export TEMPORAL_TLS=true",
+        f"export TEMPORAL_API_KEY={token}",
+    ]
+    assert pk("workflow", "token").output.strip() == token
+
+
+def test_workflow_env_needs_the_workflows_login():
+    auth.save_config(URL, "team-a")
+
+    result = pk("workflow", "env")
+
+    assert result.exit_code == 1
+    assert "No workflows login" in result.output
 
 
 def test_login_keeps_the_workspace_only_for_the_same_platform(monkeypatch):

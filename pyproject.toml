@@ -35,8 +35,12 @@ cli = [
     "mcp>=2.3,<3",
     "websockets>=15.0",
 ]
+# prokube.workflows: Temporal's Python client for a workspace's workflows.
+workflows = [
+    "temporalio>=1.18.0",
+]
 dev = [
-    "prokube-sdk[cli]",
+    "prokube-sdk[cli,workflows]",
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
     "pytest-httpx>=0.35.0",

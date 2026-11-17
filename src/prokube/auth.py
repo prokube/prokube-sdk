@@ -9,6 +9,11 @@ redirect. The tokens are stored in the OS keyring, or in a private file
 token shortly before it expires. Dex rotates the refresh token on every use,
 so the new one is stored each time.
 
+``login(url, provider=WORKFLOWS)`` logs in to the platform's Keycloak with the
+public client ``temporal-cli`` instead. Its access token carries the user's
+Temporal permissions (``temporal_permissions``), so Temporal's own clients can
+use it as their API key (see ``prokube.workflows``).
+
 In a workspace pod, ``TokenFile`` reads the pod's own token instead (workload
 identity, prokube/prokube-neo#100). ``default_token_provider`` picks between
 the two.
@@ -30,6 +35,7 @@ import threading
 import time
 import webbrowser
 from collections.abc import Callable
+from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -61,6 +67,41 @@ TOKEN_FILE_ENV = "PROKUBE_SANDBOX_TOKEN_FILE"
 DEFAULT_TOKEN_FILE = "/var/run/secrets/prokube.ai/sandbox/token"
 
 
+@dataclass(frozen=True)
+class Provider:
+    """An OIDC login: where it happens and which of its tokens the SDK sends."""
+
+    name: str
+    issuer: Callable[[str], str]
+    client_id: str
+    scopes: str
+    token_field: Literal["id_token", "access_token"]
+    # Suffix of the keyring entry and token file; "" for the platform login.
+    store_suffix: str = ""
+
+
+# The platform login: Dex, whose ID token Substrate and Agent Gateway accept.
+DEX = Provider(
+    name="platform",
+    issuer=endpoints.dex_issuer,
+    client_id=endpoints.DEX_CLIENT_ID,
+    scopes=endpoints.SCOPES,
+    token_field="id_token",
+)
+
+# The workflows login: Keycloak, whose access token Temporal accepts.
+WORKFLOWS = Provider(
+    name="workflows",
+    issuer=endpoints.keycloak_issuer,
+    client_id=endpoints.WORKFLOWS_CLIENT_ID,
+    scopes=endpoints.WORKFLOWS_SCOPES,
+    token_field="access_token",
+    store_suffix="#workflows",
+)
+
+PROVIDERS = (DEX, WORKFLOWS)
+
+
 class LoginRequired(Exception):
     """There is no usable login for the platform."""
 
@@ -74,28 +115,38 @@ class LoginSession:
 
     _store: Store
 
-    def __init__(self, url: str) -> None:
+    def __init__(self, url: str, provider: Provider = DEX) -> None:
         self.url = endpoints.normalize_url(url)
-        loaded = _load_tokens(self.url)
+        self.provider = provider
+        loaded = _load_tokens(self.url, provider)
         if loaded is None:
+            hint = "" if provider is DEX else ", provider=prokube.auth.WORKFLOWS"
             raise LoginRequired(
-                f"Not logged in to {self.url}. Run prokube.auth.login({self.url!r})."
+                f"No {provider.name} login for {self.url}. "
+                f"Run prokube.auth.login({self.url!r}{hint})."
             )
         self._tokens, self._store = loaded
         self._lock = threading.Lock()
 
     def token(self) -> str:
-        """Return a valid ID token, refreshing it if it is about to expire."""
+        """Return a valid token, refreshing it if it is about to expire.
+
+        The ID token for the platform login, the access token for workflows.
+        """
         with self._lock:
             if _expiring(self._tokens):
                 # Another process may have refreshed (and rotated) it already.
-                loaded = _load_tokens(self.url)
+                loaded = _load_tokens(self.url, self.provider)
                 if loaded is not None:
                     self._tokens, self._store = loaded
             if _expiring(self._tokens):
-                self._tokens = _refresh(self.url, self._tokens)
-                _save_tokens(self.url, self._tokens, self._store)
-            return self._tokens["id_token"]
+                self._tokens = _refresh(self.url, self._tokens, self.provider)
+                _save_tokens(self.url, self._tokens, self._store, self.provider)
+            return self._tokens[self.provider.token_field]
+
+    def expires_at(self) -> float:
+        """When the token ``token()`` returned last expires (epoch seconds)."""
+        return float(self._tokens["expires_at"])
 
 
 class TokenFile:
@@ -168,10 +219,16 @@ def credential(
     return lambda: ("authorization", f"Bearer {provider()}")
 
 
-def login(url: str, *, open_browser: bool = True, timeout: float = 300) -> LoginSession:
+def login(
+    url: str,
+    *,
+    open_browser: bool = True,
+    timeout: float = 300,
+    provider: Provider = DEX,
+) -> LoginSession:
     """Log in through the browser and store the tokens for the platform url."""
     url = endpoints.normalize_url(url)
-    dex = _discover(url)
+    dex = _discover(url, provider)
     verifier = secrets.token_urlsafe(64)
     state = secrets.token_urlsafe(32)
     server, redirect_uri = _start_callback_server()
@@ -179,9 +236,9 @@ def login(url: str, *, open_browser: bool = True, timeout: float = 300) -> Login
         query = urlencode(
             {
                 "response_type": "code",
-                "client_id": endpoints.DEX_CLIENT_ID,
+                "client_id": provider.client_id,
                 "redirect_uri": redirect_uri,
-                "scope": endpoints.SCOPES,
+                "scope": provider.scopes,
                 "state": state,
                 "code_challenge": _pkce_challenge(verifier),
                 "code_challenge_method": "S256",
@@ -204,16 +261,18 @@ def login(url: str, *, open_browser: bool = True, timeout: float = 300) -> Login
             "grant_type": "authorization_code",
             "code": params["code"],
             "redirect_uri": redirect_uri,
-            "client_id": endpoints.DEX_CLIENT_ID,
+            "client_id": provider.client_id,
             "code_verifier": verifier,
         },
         timeout=30,
     )
     response.raise_for_status()
     # Dex revokes the previous refresh token, so no old copy may stay behind.
-    logout(url)
-    _save_tokens(url, _tokens_from_response(response.json()))
-    return LoginSession(url)
+    _forget(url, provider)
+    _save_tokens(
+        url, _tokens_from_response(response.json(), provider), provider=provider
+    )
+    return LoginSession(url, provider)
 
 
 def config_dir() -> Path:
@@ -240,23 +299,29 @@ def _config_file() -> Path:
 
 
 def logout(url: str) -> None:
-    """Forget the stored tokens for the platform url."""
+    """Forget all stored tokens for the platform url."""
     url = endpoints.normalize_url(url)
+    for provider in PROVIDERS:
+        _forget(url, provider)
+
+
+def _forget(url: str, provider: Provider) -> None:
     try:
-        keyring.delete_password(KEYRING_SERVICE, url)
+        keyring.delete_password(KEYRING_SERVICE, url + provider.store_suffix)
     except Exception:
         pass  # nothing stored there, or no keyring
-    _token_file(url).unlink(missing_ok=True)
+    _token_file(url, provider).unlink(missing_ok=True)
 
 
-def _discover(url: str) -> dict[str, Any]:
-    issuer = endpoints.dex_issuer(url)
+def _discover(url: str, provider: Provider) -> dict[str, Any]:
+    issuer = provider.issuer(url)
     response = httpx.get(f"{issuer}/.well-known/openid-configuration", timeout=30)
     response.raise_for_status()
     metadata = response.json()
     if metadata.get("issuer") != issuer:
         raise LoginError(
-            f"Dex reports issuer {metadata.get('issuer')!r}, expected {issuer!r}"
+            f"{provider.name} login reports issuer {metadata.get('issuer')!r}, "
+            f"expected {issuer!r}"
         )
     return metadata
 
@@ -266,34 +331,35 @@ def _pkce_challenge(verifier: str) -> str:
     return base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
 
 
-def _refresh(url: str, tokens: dict[str, Any]) -> dict[str, Any]:
+def _refresh(url: str, tokens: dict[str, Any], provider: Provider) -> dict[str, Any]:
     expired = LoginRequired(
-        f"The login for {url} expired. Run prokube.auth.login({url!r})."
+        f"The {provider.name} login for {url} expired. Run: pk auth login {url}"
     )
     if not tokens.get("refresh_token"):
         raise expired
     response = httpx.post(
-        _discover(url)["token_endpoint"],
+        _discover(url, provider)["token_endpoint"],
         data={
             "grant_type": "refresh_token",
             "refresh_token": tokens["refresh_token"],
-            "client_id": endpoints.DEX_CLIENT_ID,
+            "client_id": provider.client_id,
         },
         timeout=30,
     )
     if response.status_code in (400, 401):
         raise expired  # refresh token revoked, expired or already rotated away
     response.raise_for_status()
-    return _tokens_from_response(response.json(), tokens["refresh_token"])
+    return _tokens_from_response(response.json(), provider, tokens["refresh_token"])
 
 
 def _tokens_from_response(
-    body: dict[str, Any], refresh_token: str | None = None
+    body: dict[str, Any], provider: Provider, refresh_token: str | None = None
 ) -> dict[str, Any]:
+    token = body[provider.token_field]
     return {
-        "id_token": body["id_token"],
+        provider.token_field: token,
         "refresh_token": body.get("refresh_token", refresh_token),
-        "expires_at": _jwt_expiry(body["id_token"]),
+        "expires_at": _jwt_expiry(token),
     }
 
 
@@ -370,28 +436,32 @@ def _wait_for_callback(server: _CallbackServer, timeout: float) -> dict[str, str
 Store = Literal["keyring", "file"]
 
 
-def _load_tokens(url: str) -> tuple[dict[str, Any], Store] | None:
+def _load_tokens(
+    url: str, provider: Provider = DEX
+) -> tuple[dict[str, Any], Store] | None:
     try:
-        stored = keyring.get_password(KEYRING_SERVICE, url)
+        stored = keyring.get_password(KEYRING_SERVICE, url + provider.store_suffix)
     except Exception:
         stored = None
     if stored:
         return json.loads(stored), "keyring"
-    path = _token_file(url)
+    path = _token_file(url, provider)
     if path.exists():
         return json.loads(path.read_text()), "file"
     return None
 
 
-def _save_tokens(url: str, tokens: dict[str, Any], store: Store = "keyring") -> None:
+def _save_tokens(
+    url: str, tokens: dict[str, Any], store: Store = "keyring", provider: Provider = DEX
+) -> None:
     data = json.dumps(tokens)
     if store == "keyring":
         try:
-            keyring.set_password(KEYRING_SERVICE, url, data)
+            keyring.set_password(KEYRING_SERVICE, url + provider.store_suffix, data)
             return
         except Exception:
             pass
-    path = _token_file(url)
+    path = _token_file(url, provider)
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as file:
@@ -399,5 +469,7 @@ def _save_tokens(url: str, tokens: dict[str, Any], store: Store = "keyring") -> 
     os.chmod(path, 0o600)  # the mode above only applies to new files
 
 
-def _token_file(url: str) -> Path:
-    return config_dir() / "tokens" / f"{urlparse(url).netloc.replace(':', '_')}.json"
+def _token_file(url: str, provider: Provider = DEX) -> Path:
+    name = urlparse(url).netloc.replace(":", "_")
+    suffix = provider.store_suffix.replace("#", ".")
+    return config_dir() / "tokens" / f"{name}{suffix}.json"

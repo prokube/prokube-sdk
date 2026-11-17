@@ -44,14 +44,15 @@ def memory_keyring(tmp_path, monkeypatch):
     keyring.set_keyring(previous)
 
 
-def make_jwt(exp: float) -> str:
-    """An unsigned JWT with only an exp claim; the SDK never verifies it."""
+def make_jwt(exp: float, **claims: object) -> str:
+    """An unsigned JWT with exp and the given claims; the SDK never verifies it."""
 
     def encode(value: dict) -> str:
         raw = json.dumps(value).encode()
         return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
 
-    return f"{encode({'alg': 'none'})}.{encode({'exp': exp, 'sub': 'x'})}.sig"
+    payload = {"exp": exp, "sub": "x", **claims}
+    return f"{encode({'alg': 'none'})}.{encode(payload)}.sig"
 
 
 @pytest.fixture

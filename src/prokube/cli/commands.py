@@ -6,6 +6,7 @@ import asyncio
 import base64
 import json
 import os
+import shlex
 import subprocess
 import sys
 from collections.abc import Awaitable, Callable
@@ -18,7 +19,7 @@ import httpx
 from google.protobuf import json_format
 from websockets.exceptions import WebSocketException
 
-from prokube import auth, endpoints
+from prokube import auth, endpoints, workflows
 from prokube.cli import banner, ssh
 from prokube.sandbox import (
     AsyncSandboxClient,
@@ -122,13 +123,27 @@ def auth_commands() -> None:
 @click.argument("url")
 @click.option("-w", "--workspace", help="Default workspace for sandbox commands.")
 @click.option("--no-browser", is_flag=True, help="Only print the login URL.")
-def login(url: str, workspace: str | None, no_browser: bool) -> None:
+@click.option(
+    "--no-workflows",
+    is_flag=True,
+    help="Skip the second login for workflows (Temporal).",
+)
+def login(
+    url: str, workspace: str | None, no_browser: bool, no_workflows: bool
+) -> None:
     """Log in to the platform at URL (https://<domain>).
 
-    It becomes the current platform for the other commands.
+    It becomes the current platform for the other commands. A second login
+    for workflows follows; with the platform's single sign-on it needs no
+    password.
     """
     url = _normalize(url)
     auth.login(url, open_browser=not no_browser)
+    if not no_workflows:
+        try:
+            auth.login(url, open_browser=not no_browser, provider=auth.WORKFLOWS)
+        except (auth.LoginError, httpx.HTTPError) as exc:
+            click.echo(f"Workflows login skipped: {exc}", err=True)
     saved = auth.load_config()
     if workspace is None and saved.get("url") == url:
         workspace = saved.get("workspace")
@@ -203,6 +218,48 @@ def auth_status(url: str | None, workspace: str | None) -> None:
     expires = datetime.fromtimestamp(claims["exp"], timezone.utc)
     click.echo(f"User:      {claims.get('email') or claims.get('sub')}")
     click.echo(f"Token:     valid until {expires:%Y-%m-%d %H:%M} UTC")
+    try:
+        token = auth.LoginSession(url, auth.WORKFLOWS).token()
+    except auth.LoginRequired:
+        click.echo("Workflows: not logged in")
+    else:
+        permissions = _claims(token).get("temporal_permissions") or []
+        click.echo(f"Workflows: {', '.join(sorted(permissions)) or 'no workspace'}")
+
+
+# --- Workflows -------------------------------------------------------------
+
+
+@cli.group("workflow")
+def workflow_commands() -> None:
+    """Use Temporal's own clients with a workspace's workflows."""
+
+
+@workflow_commands.command("env")
+@_target_options
+def workflow_env(url: str | None, workspace: str | None) -> None:
+    """Print the Temporal CLI's environment for the workspace.
+
+    Run: eval "$(pk workflow env)" and then e.g. temporal workflow list.
+    The API key in it is valid for a few minutes.
+    """
+    for name, value in _workflow_settings(url, workspace).items():
+        click.echo(f"export {name}={shlex.quote(value)}")
+
+
+@workflow_commands.command("token")
+@_target_options
+def workflow_token(url: str | None, workspace: str | None) -> None:
+    """Print a fresh API key for Temporal clients (valid for a few minutes)."""
+    click.echo(_workflow_settings(url, workspace)["TEMPORAL_API_KEY"])
+
+
+def _workflow_settings(url: str | None, workspace: str | None) -> dict[str, str]:
+    url, workspace = _resolve(url, workspace)
+    try:
+        return workflows.settings(url, workspace)
+    except (auth.LoginRequired, ValueError) as exc:
+        raise click.ClickException(str(exc)) from exc
 
 
 # --- Sandboxes -------------------------------------------------------------

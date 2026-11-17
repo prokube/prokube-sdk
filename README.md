@@ -285,6 +285,41 @@ There every caller acts as the workspace (`default-editor`), and only on its
 sandboxes. Who may call the server is decided by Agent Gateway, as for every
 MCP server in the workspace.
 
+## Workflows
+
+The platform runs [Temporal](https://temporal.io) with one Temporal namespace
+per workspace; its gRPC API is at `<domain>:443`. Use Temporal's own clients
+with the workflows login that `pk auth login` makes after the platform login
+(a second browser step; single sign-on asks for no password). Its Keycloak
+access token carries your workspace roles, and Temporal checks them itself.
+
+```bash
+pip install 'prokube-sdk[workflows] @ git+https://github.com/prokube/prokube-sdk.git'
+```
+
+```python
+from prokube.workflows import connect
+
+client = await connect()  # platform and workspace from pk auth login
+handle = await client.start_workflow(
+    "ResearchWithApproval", {"topic": "Otters"},
+    id="otters-1", task_queue="research-with-approval",
+)
+```
+
+`connect()` returns an ordinary `temporalio.client.Client` and renews the
+token while the event loop runs; `url`, `workspace` and other
+`Client.connect` arguments can be passed. For the Temporal CLI:
+
+```bash
+eval "$(pk workflow env)"     # TEMPORAL_ADDRESS, _NAMESPACE, _TLS, _API_KEY
+temporal workflow list
+```
+
+The API key from `pk workflow env` and `pk workflow token` is valid for a few
+minutes. `pk auth status` lists your Temporal permissions;
+`pk auth login --no-workflows` skips the second login.
+
 ## Network and credentials
 
 A new sandbox gets its preset's network rules, or the ones passed as
