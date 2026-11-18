@@ -325,6 +325,13 @@ The API key from `pk workflow env` and `pk workflow token` is valid for a few
 minutes. `pk auth status` lists your Temporal permissions;
 `pk auth login --no-workflows` skips the second login.
 
+On a worker the platform deploys into a workspace, `connect()` needs no login:
+it uses the workspace's worker client and Temporal's address from the
+environment (`TEMPORAL_ADDRESS`, `TEMPORAL_NAMESPACE`, `TEMPORAL_TLS` and
+`PROKUBE_WORKFLOWS_CLIENT_ID`, `_CLIENT_SECRET`, `_TOKEN_URL`).
+`prokube.workflows.worker_token()` returns the worker's current token for
+activities that call other platform services, such as Agents over A2A.
+
 ## Network and credentials
 
 A new sandbox gets its preset's network rules, or the ones passed as
