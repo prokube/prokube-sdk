@@ -225,11 +225,41 @@ def login(
     open_browser: bool = True,
     timeout: float = 300,
     provider: Provider = DEX,
+    device: bool | None = None,
 ) -> LoginSession:
-    """Log in through the browser and store the tokens for the platform url."""
+    """Log in and store the tokens for the platform url.
+
+    ``device`` uses the OAuth device login: open the printed URL in any
+    browser and confirm the code. It is the default in a pod (a Jupyter Lab,
+    for instance), where the browser login cannot reach back.
+    """
     url = endpoints.normalize_url(url)
-    dex = _discover(url, provider)
+    metadata = _discover(url, provider)
+    if device is None:
+        device = in_pod()
     verifier = secrets.token_urlsafe(64)
+    if device:
+        tokens = _device_login(metadata, provider, verifier, open_browser, timeout)
+    else:
+        tokens = _browser_login(metadata, provider, verifier, open_browser, timeout)
+    # Dex revokes the previous refresh token, so no old copy may stay behind.
+    _forget(url, provider)
+    _save_tokens(url, _tokens_from_response(tokens, provider), provider=provider)
+    return LoginSession(url, provider)
+
+
+def in_pod() -> bool:
+    """Whether this runs in a Kubernetes pod."""
+    return bool(os.environ.get("KUBERNETES_SERVICE_HOST"))
+
+
+def _browser_login(
+    metadata: dict[str, Any],
+    provider: Provider,
+    verifier: str,
+    open_browser: bool,
+    timeout: float,
+) -> dict[str, Any]:
     state = secrets.token_urlsafe(32)
     server, redirect_uri = _start_callback_server()
     with server:
@@ -244,7 +274,7 @@ def login(
                 "code_challenge_method": "S256",
             }
         )
-        auth_url = f"{dex['authorization_endpoint']}?{query}"
+        auth_url = f"{metadata['authorization_endpoint']}?{query}"
         print(f"Open this URL to log in:\n{auth_url}", file=sys.stderr)
         if open_browser:
             webbrowser.open(auth_url)
@@ -256,7 +286,7 @@ def login(
         reason = params.get("error_description") or params.get("error", "no code")
         raise LoginError(f"Login failed: {reason}")
     response = httpx.post(
-        dex["token_endpoint"],
+        metadata["token_endpoint"],
         data={
             "grant_type": "authorization_code",
             "code": params["code"],
@@ -267,12 +297,75 @@ def login(
         timeout=30,
     )
     response.raise_for_status()
-    # Dex revokes the previous refresh token, so no old copy may stay behind.
-    _forget(url, provider)
-    _save_tokens(
-        url, _tokens_from_response(response.json(), provider), provider=provider
+    return cast(dict[str, Any], response.json())
+
+
+DEVICE_GRANT = "urn:ietf:params:oauth:grant-type:device_code"
+
+
+def _device_login(
+    metadata: dict[str, Any],
+    provider: Provider,
+    verifier: str,
+    open_browser: bool,
+    timeout: float,
+) -> dict[str, Any]:
+    """OAuth device authorization grant (RFC 8628), with PKCE."""
+    endpoint = metadata.get("device_authorization_endpoint")
+    if not endpoint:
+        raise LoginError(f"The {provider.name} login offers no device login.")
+    response = httpx.post(
+        endpoint,
+        data={
+            "client_id": provider.client_id,
+            "scope": provider.scopes,
+            "code_challenge": _pkce_challenge(verifier),
+            "code_challenge_method": "S256",
+        },
+        timeout=30,
     )
-    return LoginSession(url, provider)
+    if response.status_code >= 400:
+        raise LoginError(f"{provider.name} device login: {_oauth_error(response)}")
+    grant = response.json()
+    link = grant.get("verification_uri_complete") or grant["verification_uri"]
+    print(
+        f"Open this URL to log in to {provider.name} and confirm code "
+        f"{grant['user_code']}:\n{link}",
+        file=sys.stderr,
+    )
+    if open_browser and not in_pod():
+        webbrowser.open(link)
+    interval = float(grant.get("interval", 5))
+    deadline = time.monotonic() + min(timeout, float(grant.get("expires_in", timeout)))
+    while time.monotonic() < deadline:
+        time.sleep(interval)
+        response = httpx.post(
+            metadata["token_endpoint"],
+            data={
+                "grant_type": DEVICE_GRANT,
+                "device_code": grant["device_code"],
+                "client_id": provider.client_id,
+                "code_verifier": verifier,
+            },
+            timeout=30,
+        )
+        if response.status_code < 400:
+            return cast(dict[str, Any], response.json())
+        error = _oauth_error(response)
+        if error == "authorization_pending":
+            continue
+        if error == "slow_down":
+            interval += 5
+            continue
+        raise LoginError(f"{provider.name} device login failed: {error}")
+    raise LoginError("Timed out waiting for the device login.")
+
+
+def _oauth_error(response: httpx.Response) -> str:
+    try:
+        return str(response.json().get("error", response.status_code))
+    except ValueError:
+        return f"HTTP {response.status_code}"
 
 
 def config_dir() -> Path:

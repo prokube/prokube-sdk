@@ -33,6 +33,11 @@ platform's Dex (`https://<domain>/dex`, public client `prokube-cli`, redirect
 to `http://localhost:8000/callback` or `:18000`). It prints the URL as well,
 for when no browser opens.
 
+In a pod, such as a Jupyter Lab, the browser cannot reach that redirect, so
+`login` uses the device login there instead: it prints a URL and a code, you
+open the URL in any browser and confirm the code. `device=True` (or
+`pk auth login --device`) picks it anywhere.
+
 Tokens are stored in the OS keyring. Without a usable keyring they go to
 `~/.config/prokube/tokens/<domain>.json` with mode 0600 (`PROKUBE_CONFIG_DIR`
 moves the directory). To skip the keyring, set

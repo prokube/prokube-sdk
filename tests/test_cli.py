@@ -241,11 +241,22 @@ def test_login_saves_the_platform_and_workspace(monkeypatch, sandboxes):
 
     assert result.exit_code == 0, result.output
     assert logins == [
-        (URL, {"open_browser": False}),
-        (URL, {"open_browser": False, "provider": auth.WORKFLOWS}),
+        (URL, {"open_browser": False, "device": None}),
+        (URL, {"open_browser": False, "provider": auth.WORKFLOWS, "device": None}),
     ]
     saved = json.loads((auth.config_dir() / "config.json").read_text())
     assert saved == {"url": URL, "workspace": "team-a"}
+
+
+def test_login_device_flag(monkeypatch):
+    devices = []
+    monkeypatch.setattr(
+        commands.auth, "login", lambda url, **kw: devices.append(kw["device"])
+    )
+
+    assert pk("auth", "login", URL, "--device").exit_code == 0
+    assert pk("auth", "login", URL, "--browser", "--no-workflows").exit_code == 0
+    assert devices == [True, True, False]
 
 
 def test_login_skips_workflows_on_request_or_failure(monkeypatch):

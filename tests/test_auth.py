@@ -112,6 +112,92 @@ def test_login_runs_pkce_flow_and_stores_tokens(monkeypatch, dex, free_redirect)
     assert session.token() == id_token
 
 
+DEVICE_ENDPOINT = f"{ISSUER}/device/code"
+
+
+@pytest.fixture
+def device_dex(httpx_mock, monkeypatch):
+    httpx_mock.add_response(
+        url=DISCOVERY,
+        json={
+            "issuer": ISSUER,
+            "authorization_endpoint": f"{ISSUER}/auth",
+            "token_endpoint": TOKEN_ENDPOINT,
+            "device_authorization_endpoint": DEVICE_ENDPOINT,
+        },
+        is_reusable=True,
+    )
+    httpx_mock.add_response(
+        url=DEVICE_ENDPOINT,
+        method="POST",
+        json={
+            "device_code": "dev-1",
+            "user_code": "ABCD-EFGH",
+            "verification_uri": f"{ISSUER}/device",
+            "verification_uri_complete": f"{ISSUER}/device?user_code=ABCD-EFGH",
+            "expires_in": 300,
+            "interval": 5,
+        },
+    )
+    monkeypatch.setattr(auth.time, "sleep", lambda _: None)
+    monkeypatch.setattr(
+        auth.webbrowser, "open", lambda _: pytest.fail("no browser in a pod")
+    )
+    return httpx_mock
+
+
+def test_device_login_in_a_pod(monkeypatch, device_dex, capsys):
+    monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "10.0.0.1")
+    id_token = make_jwt(time.time() + 3600)
+    device_dex.add_response(
+        url=TOKEN_ENDPOINT,
+        method="POST",
+        status_code=400,
+        json={"error": "authorization_pending"},
+    )
+    device_dex.add_response(
+        url=TOKEN_ENDPOINT, method="POST", status_code=400, json={"error": "slow_down"}
+    )
+    device_dex.add_response(
+        url=TOKEN_ENDPOINT,
+        method="POST",
+        json={"id_token": id_token, "refresh_token": "refresh-1"},
+    )
+
+    session = auth.login(URL)
+
+    assert "ABCD-EFGH" in capsys.readouterr().err
+    start = parse_qs(device_dex.get_request(url=DEVICE_ENDPOINT).content.decode())
+    assert start["client_id"] == ["prokube-cli"]
+    assert start["code_challenge_method"] == ["S256"]
+    polls = device_dex.get_requests(url=TOKEN_ENDPOINT)
+    assert len(polls) == 3
+    form = parse_qs(polls[-1].content.decode())
+    assert form["grant_type"] == [auth.DEVICE_GRANT]
+    assert form["device_code"] == ["dev-1"]
+    assert auth._pkce_challenge(form["code_verifier"][0]) == start["code_challenge"][0]
+    assert session.token() == id_token
+    assert stored()["refresh_token"] == "refresh-1"
+
+
+def test_device_login_reports_a_denial(device_dex):
+    device_dex.add_response(
+        url=TOKEN_ENDPOINT,
+        method="POST",
+        status_code=400,
+        json={"error": "access_denied"},
+    )
+
+    with pytest.raises(auth.LoginError, match="access_denied"):
+        auth.login(URL, device=True, open_browser=False)
+    assert stored() is None
+
+
+def test_device_login_needs_the_endpoint(dex):
+    with pytest.raises(auth.LoginError, match="no device login"):
+        auth.login(URL, device=True)
+
+
 def test_login_rejects_a_foreign_state(monkeypatch, dex, free_redirect):
     fake_browser(monkeypatch, lambda p: {"code": "the-code", "state": "forged"})
 

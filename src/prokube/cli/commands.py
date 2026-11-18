@@ -124,12 +124,22 @@ def auth_commands() -> None:
 @click.option("-w", "--workspace", help="Default workspace for sandbox commands.")
 @click.option("--no-browser", is_flag=True, help="Only print the login URL.")
 @click.option(
+    "--device/--browser",
+    default=None,
+    help="Device login: open the printed URL anywhere and confirm the code. "
+    "Default in a pod, such as a Jupyter Lab.",
+)
+@click.option(
     "--no-workflows",
     is_flag=True,
     help="Skip the second login for workflows (Temporal).",
 )
-def login(
-    url: str, workspace: str | None, no_browser: bool, no_workflows: bool
+def login(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+    url: str,
+    workspace: str | None,
+    no_browser: bool,
+    device: bool | None,
+    no_workflows: bool,
 ) -> None:
     """Log in to the platform at URL (https://<domain>).
 
@@ -138,10 +148,15 @@ def login(
     password.
     """
     url = _normalize(url)
-    auth.login(url, open_browser=not no_browser)
+    auth.login(url, open_browser=not no_browser, device=device)
     if not no_workflows:
         try:
-            auth.login(url, open_browser=not no_browser, provider=auth.WORKFLOWS)
+            auth.login(
+                url,
+                open_browser=not no_browser,
+                provider=auth.WORKFLOWS,
+                device=device,
+            )
         except (auth.LoginError, httpx.HTTPError) as exc:
             click.echo(f"Workflows login skipped: {exc}", err=True)
     saved = auth.load_config()

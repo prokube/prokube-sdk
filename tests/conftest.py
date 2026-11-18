@@ -37,6 +37,8 @@ def memory_keyring(tmp_path, monkeypatch):
     monkeypatch.delenv("PROKUBE_WORKSPACE", raising=False)
     # No workload token, even when the tests run in a workspace pod.
     monkeypatch.setenv("PROKUBE_SANDBOX_TOKEN_FILE", str(tmp_path / "no-token"))
+    # Browser login by default, also when the tests run in a pod.
+    monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
     previous = keyring.get_keyring()
     backend = MemoryKeyring()
     keyring.set_keyring(backend)
